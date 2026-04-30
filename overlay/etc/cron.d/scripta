@@ -1,0 +1,18 @@
+#update system time. every hour
+0 *     * * *     root   /usr/sbin/ntpdate -u 0.pool.ntp.org
+
+#watch dog constantly check the cgminer instance to make sure it is always running.
+#every 30 seconds
+* *     * * *     root  /opt/scripta/startup/miner-start.sh 2>&1 |/usr/bin/logger -t scripta_watchdog
+* *     * * *     root  sleep 30;/opt/scripta/startup/miner-start.sh 2>&1 |/usr/bin/logger -t scripta_watchdog
+
+#report and hashrate update — Blakestream-GaintB v2.x: the per-board hashrate
+# pipeline (hashrate-history-recorder.py + Highcharts) replaces the factory
+# RRDtool aggregate graphs, so the ALERThashrate/hashrate 5-min PHP writers
+# are commented out below. The ALERTdeviceCount + temp jobs stay because
+# they're orthogonal to the hashrate plumbing.
+*/5 * * * * www-data /usr/bin/php5 /opt/scripta/etc/cron.d/5min/ALERTdeviceCount 2>&1 |/usr/bin/logger -t scripta_background
+#*/5 * * * * www-data /usr/bin/php5 /opt/scripta/etc/cron.d/5min/ALERThashrate 2>&1 |/usr/bin/logger -t scripta_background
+#*/5 * * * * www-data /usr/bin/php5 /opt/scripta/etc/cron.d/5min/hashrate 2>&1 |/usr/bin/logger -t scripta_background
+*/5 * * * * www-data /usr/bin/php5 /opt/scripta/etc/cron.d/5min/temp 2>&1 |/usr/bin/logger -t scripta_background
+#

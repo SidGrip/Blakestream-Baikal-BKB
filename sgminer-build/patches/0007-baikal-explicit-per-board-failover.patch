@@ -1,0 +1,297 @@
+From: sid <sidgrip@gmail.com>
+Subject: [PATCH 0007] baikal: explicit per-board failover pool
+
+Adds an `ascfailover|<asc>,<pool_no>` API command + cgpu_info
+failover_pool_no field. select_baikal_failover_pool_locked honors
+the explicit pin first; if the explicit pool is unworkable it
+returns NULL (board halts), bypassing the auto-search across all
+same-algo pools. Pin survives hotplug via static table in
+driver-baikalu.c, mirroring the existing primary pin storage.
+
+---
+--- a/miner.h
++++ b/miner.h
+@@ -632,6 +632,7 @@
+   int primary_pool_no;
+   int effective_pool_no;
+   bool pool_failover_active;
++  int failover_pool_no;          /* explicit per-board failover, BAIKAL_POOL_UNSET = none */
+ 
+   time_t device_last_well;
+   time_t device_last_not_well;
+--- a/driver-baikal.h
++++ b/driver-baikal.h
+@@ -104,6 +104,9 @@
+ int baikal_primary_pool(const struct cgpu_info *cgpu);
+ int baikal_effective_pool(const struct cgpu_info *cgpu);
+ bool baikal_pool_failover_active(const struct cgpu_info *cgpu);
++void baikal_pin_failover(struct cgpu_info *cgpu, int pool_no);
++void baikal_clear_failover_pin(struct cgpu_info *cgpu);
++int baikal_user_failover_pool(const struct cgpu_info *cgpu);
+ 
+ 
+ #endif /* __DEVICE_BAIKAL_H__ */
+--- a/driver-baikalu.c
++++ b/driver-baikalu.c
+@@ -34,6 +34,7 @@
+ static int baikal_primary_pins[BAIKAL_MAXMINERS];
+ static int baikal_effective_pins[BAIKAL_MAXMINERS];
+ static bool baikal_failover_pins[BAIKAL_MAXMINERS];
++static int baikal_user_failover_pins[BAIKAL_MAXMINERS]; /* explicit per-board failover, BAIKAL_POOL_UNSET = none */
+ 
+ static bool baikal_pin_index_valid(int miner_id)
+ {
+@@ -51,6 +52,7 @@
+         baikal_primary_pins[i] = BAIKAL_POOL_UNSET;
+         baikal_effective_pins[i] = BAIKAL_POOL_UNSET;
+         baikal_failover_pins[i] = false;
++        baikal_user_failover_pins[i] = BAIKAL_POOL_UNSET;
+     }
+ 
+     baikal_pin_state_ready = true;
+@@ -79,12 +81,15 @@
+ 
+     mutex_lock(&baikal_pin_lock);
+     baikal_init_pin_state_locked();
++    int user_failover_pool_no;
+     primary_pool_no = baikal_primary_pins[cgpu->miner_id];
+     effective_pool_no = baikal_effective_pins[cgpu->miner_id];
+     failover_active = baikal_failover_pins[cgpu->miner_id];
++    user_failover_pool_no = baikal_user_failover_pins[cgpu->miner_id];
+     mutex_unlock(&baikal_pin_lock);
+ 
+     baikal_sync_pool_state(cgpu, primary_pool_no, effective_pool_no, failover_active);
++    cgpu->failover_pool_no = user_failover_pool_no;
+ }
+ 
+ void baikal_pin_pool(struct cgpu_info *cgpu, int pool_no)
+@@ -114,9 +119,44 @@
+     baikal_primary_pins[cgpu->miner_id] = BAIKAL_POOL_UNSET;
+     baikal_effective_pins[cgpu->miner_id] = BAIKAL_POOL_UNSET;
+     baikal_failover_pins[cgpu->miner_id] = false;
++    baikal_user_failover_pins[cgpu->miner_id] = BAIKAL_POOL_UNSET;
+     mutex_unlock(&baikal_pin_lock);
+ 
+     baikal_sync_pool_state(cgpu, BAIKAL_POOL_UNSET, BAIKAL_POOL_UNSET, false);
++    cgpu->failover_pool_no = BAIKAL_POOL_UNSET;
++}
++
++void baikal_pin_failover(struct cgpu_info *cgpu, int pool_no)
++{
++    if (!cgpu || !baikal_pin_index_valid(cgpu->miner_id))
++        return;
++
++    mutex_lock(&baikal_pin_lock);
++    baikal_init_pin_state_locked();
++    baikal_user_failover_pins[cgpu->miner_id] = pool_no;
++    mutex_unlock(&baikal_pin_lock);
++
++    cgpu->failover_pool_no = pool_no;
++}
++
++void baikal_clear_failover_pin(struct cgpu_info *cgpu)
++{
++    if (!cgpu || !baikal_pin_index_valid(cgpu->miner_id)) {
++        if (cgpu) cgpu->failover_pool_no = BAIKAL_POOL_UNSET;
++        return;
++    }
++
++    mutex_lock(&baikal_pin_lock);
++    baikal_init_pin_state_locked();
++    baikal_user_failover_pins[cgpu->miner_id] = BAIKAL_POOL_UNSET;
++    mutex_unlock(&baikal_pin_lock);
++
++    cgpu->failover_pool_no = BAIKAL_POOL_UNSET;
++}
++
++int baikal_user_failover_pool(const struct cgpu_info *cgpu)
++{
++    return cgpu ? cgpu->failover_pool_no : BAIKAL_POOL_UNSET;
+ }
+ 
+ void baikal_set_effective_pool(struct cgpu_info *cgpu, int pool_no, bool failover_active)
+@@ -881,7 +921,18 @@
+             }
+ 
+             if (msg.param & 0x02) {
+-                baikal_send_work(baikal, i);
++                /* PATCH 5: skip auto-refill for administratively disabled
++                 * miners. Patch 1 only covered baikal_update_work; this is
++                 * the OTHER work-push path. Without this skip, the firmware
++                 * keeps requesting more work via the result-poll bit and
++                 * the disabled board hashes forever. With this skip the
++                 * FIFO drains naturally and the board goes truly idle. */
++                {
++                    struct thr_info *_t = mining_thr[miner->thr_id];
++                    if (!_t || !_t->cgpu || _t->cgpu->deven != DEV_DISABLED) {
++                        baikal_send_work(baikal, i);
++                    }
++                }
+             }
+ 
+             if (msg.param & 0x04) {
+@@ -970,14 +1021,31 @@
+         return (-1);
+     }
+ 
+-    if (baikal->miner_id == 0) {
+-        if (baikal_process_result(baikal) != true) {
+-            baikal_cleanup(baikal);
+-            return (-1);
++    /* PATCH 4: Determine which miner_id should poll USB results.
++     * Originally hardcoded to 0, but if miner 0 is administratively
++     * disabled (ascdisable), sgminer suspends its thread, which would
++     * stop USB polling for everyone. Instead, the LOWEST currently-
++     * enabled miner_id polls. Also: do NOT cleanup the device on a
++     * transient process_result failure -- that nukes ALL miners. */
++    {
++        int _pm = 0, _i;
++        for (_i = 0; _i < info->miner_count; _i++) {
++            struct thr_info *_t = mining_thr[info->miners[_i].thr_id];
++            if (_t && _t->cgpu && _t->cgpu->deven != DEV_DISABLED) {
++                _pm = _i;
++                break;
++            }
++        }
++        if (baikal->miner_id == _pm) {
++            if (baikal_process_result(baikal) != true) {
++                applog(LOG_WARNING,
++                    "baikal_process_result transient failure miner %d, skipping (was: full cleanup)",
++                    baikal->miner_id);
++                return 0;
++            }
++        } else {
++            cgsleep_ms(50);
+         }
+-    }
+-    else {
+-        cgsleep_ms(50);
+     }
+ 
+     baikal->temp = miner->temp;
+--- a/api.h
++++ b/api.h
+@@ -196,6 +196,9 @@
+ #define MSG_ASCNOPOOL 147
+ #define MSG_ASCPOOLSET 148
+ #define MSG_ASCPOOLCLR 149
++#define MSG_ASCFAILOVERSET 150
++#define MSG_ASCFAILOVERCLR 151
++#define MSG_INVASCFAILOVER 152
+ #endif
+ #define MSG_BYE 0x101
+ 
+--- a/api.c
++++ b/api.c
+@@ -247,6 +247,9 @@
+     {SEVERITY_WARN,  MSG_ASCNOPOOL, PARAM_ASC, "ASC %d does not support ascpool"},
+     {SEVERITY_SUCC,  MSG_ASCPOOLSET, PARAM_BOTH, "ASC %d pinned to pool %s"},
+     {SEVERITY_SUCC,  MSG_ASCPOOLCLR, PARAM_ASC, "ASC %d cleared pool pin"},
++    {SEVERITY_SUCC,  MSG_ASCFAILOVERSET, PARAM_BOTH, "ASC %d failover pinned to pool %s"},
++    {SEVERITY_SUCC,  MSG_ASCFAILOVERCLR, PARAM_ASC, "ASC %d cleared failover pin"},
++    {SEVERITY_ERR,   MSG_INVASCFAILOVER, PARAM_STR, "Invalid ASC failover target"},
+ #endif
+ 
+     {SEVERITY_FAIL, 0, (enum code_parameters)0, NULL}
+@@ -3645,6 +3648,38 @@
+     snprintf(pool_buf, sizeof(pool_buf), "%ld", pool_no);
+     message(io_data, MSG_ASCPOOLSET, id, pool_buf, isjson);
+ }
++
++static void ascfailover(struct io_data *io_data, __maybe_unused SOCKETTYPE c, char *param, bool isjson, __maybe_unused char group)
++{
++    struct cgpu_info *cgpu;
++    char pool_buf[24];
++    char *opt;
++    char *endptr;
++    long pool_no;
++    int numasc = numascs();
++    int id;
++
++    if (numasc == 0) { message(io_data, MSG_ASCNON, 0, NULL, isjson); return; }
++    if (param == NULL || *param == 0) { message(io_data, MSG_MISID, 0, NULL, isjson); return; }
++    opt = strchr(param, ',');
++    if (opt) *(opt++) = 0;
++    if (!opt || !*opt) { message(io_data, MSG_MISASCPOOL, 0, NULL, isjson); return; }
++    id = atoi(param);
++    if (id < 0 || id >= numasc) { message(io_data, MSG_INVASC, id, NULL, isjson); return; }
++    while (isspace((unsigned char)*opt)) opt++;
++    int dev = ascdevice(id);
++    if (dev < 0) { message(io_data, MSG_INVASC, id, NULL, isjson); return; }
++    cgpu = get_devices(dev);
++    if (cgpu->drv->drv_id != DRIVER_baikalu) { message(io_data, MSG_ASCNOPOOL, id, NULL, isjson); return; }
++    pool_no = strtol(opt, &endptr, 10);
++    while (isspace((unsigned char)*endptr)) endptr++;
++    if (*opt == 0 || *endptr != 0) { message(io_data, MSG_INVASCFAILOVER, 0, opt, isjson); return; }
++    if (pool_no == BAIKAL_POOL_UNSET) { baikal_clear_failover_pin(cgpu); message(io_data, MSG_ASCFAILOVERCLR, id, NULL, isjson); return; }
++    if (pool_no < 0 || pool_no >= total_pools) { message(io_data, MSG_INVASCFAILOVER, 0, opt, isjson); return; }
++    baikal_pin_failover(cgpu, (int)pool_no);
++    snprintf(pool_buf, sizeof(pool_buf), "%ld", pool_no);
++    message(io_data, MSG_ASCFAILOVERSET, id, pool_buf, isjson);
++}
+ #endif
+ 
+ static void checkcommand(struct io_data *io_data, __maybe_unused SOCKETTYPE c, char *param, bool isjson, char group);
+@@ -3703,6 +3738,7 @@
+     {"ascdisable",		ascdisable,	true,	false},
+     {"ascidentify",	ascidentify,	true,	false},
+     {"ascpool",		ascpool,	true,	false},
++    {"ascfailover",	ascfailover,	true,	false},
+     {"ascset",		ascset,		true,	false},
+     {"hotplug",		dohotplug,	true,	false},
+     {"asccount",		asccount,	false,	true},
+--- a/sgminer.c
++++ b/sgminer.c
+@@ -6782,8 +6782,8 @@
+  * is non-NULL, walks staged_work skipping items where work->pool != target_pool.
+  *
+  * Why a filter on the GLOBAL queue rather than per-pool queues: the per-pool
+- * queue rewrite (the abandoned Path A branch) caused a generator-thread
+- * starvation deadlock — Path A is therefore abandoned. The filter
++ * queue rewrite (codex's v2-perasc-routing branch) caused a generator-thread
++ * starvation deadlock — see docs/v2-routing-paths.md Path A. The filter
+  * approach is O(N) per pop where N is total staged items, but N is typically
+  * 5-10 on a BK-B so the cost is microseconds. The starvation class is gone:
+  * gen_thread checks pool_with_routed_deficit() before sleeping, so it won't
+@@ -8020,8 +8020,8 @@
+ /* ============================================================================
+  * v2 Path B: per-ASC pool routing helpers (failover policy + demand probes)
+  *
+- * These are lifted nearly verbatim from the earlier Path A development
+- * branch. The only difference: select_baikal_failover_pool_locked
++ * These are lifted nearly verbatim from codex's v2-perasc-routing branch
++ * (commit 0e0b60e). The only difference: select_baikal_failover_pool_locked
+  * does NOT use the staged_work_count tiebreaker, because Path B doesn't add
+  * staged_work_count to struct pool. Tiebreaker order is: same-algo,
+  * lowest effective ASC count, then lowest pool prio.
+@@ -8061,6 +8061,22 @@
+     if (!cgpu || !primary_pool)
+         return (NULL);
+ 
++    /* If the user has set an explicit failover for this board, honour it
++     * exclusively: prefer the chosen pool when it is workable + same algo,
++     * otherwise return NULL so the board halts (the user's "stop hashing
++     * if both die" guarantee). Do NOT fall through to the auto-search. */
++    if (cgpu->failover_pool_no != BAIKAL_POOL_UNSET) {
++        if (cgpu->failover_pool_no >= 0 && cgpu->failover_pool_no < total_pools) {
++            struct pool *explicit_pool = pools[cgpu->failover_pool_no];
++            if (explicit_pool && explicit_pool != primary_pool
++                    && cmp_algorithm(&explicit_pool->algorithm, &primary_pool->algorithm)
++                    && !pool_unworkable(explicit_pool)) {
++                return (explicit_pool);
++            }
++        }
++        return (NULL);
++    }
++
+     for (i = 0; i < total_pools; i++) {
+         struct pool *candidate = pools[i];
+         int candidate_load;
+@@ -9918,6 +9934,7 @@
+     cgpu->primary_pool_no = BAIKAL_POOL_UNSET;
+     cgpu->effective_pool_no = BAIKAL_POOL_UNSET;
+     cgpu->pool_failover_active = false;
++    cgpu->failover_pool_no = BAIKAL_POOL_UNSET;
+     mutex_unlock(&stats_lock);
+ 
+     wr_lock(&devices_lock);

@@ -1,0 +1,235 @@
+
+<!-- Per-board hashrate cards. ng-if (not ng-show) so the directives unmount
+     and free Highcharts heap when the user disables charts in Settings. -->
+<div ng-if="settings.userCharts !== false">
+<h3>
+  Per-Board Hashrate
+  <small>
+    <span ng-show="bsHashrateUpdated"> &mdash; updated {{1000*bsHashrateUpdated|bsTzDate:'HH:mm:ss'}}</span>
+    <a href ng-click="bsLoadHashrateHistory(bsHashrateWindow)" class="pull-right">refresh</a>
+  </small>
+</h3>
+
+<div class="row bs-hashrate-cards" ng-show="bsHashrate.boards.length > 0">
+  <div class="col-md-4" ng-repeat="board in bsHashrate.boards track by board.id">
+    <div class="box box-solid bs-board-card" ng-class="{'bs-board-idle': !board.enabled || board.current_mhs5s === 0}">
+      <div class="box-header">
+        <h4 class="box-title">Board {{board.id}}</h4>
+        <span class="pull-right text-muted">
+          <span ng-show="board.pool_name">{{board.pool_name}}</span>
+          <span ng-hide="board.pool_name">&mdash; idle &mdash;</span>
+        </span>
+      </div>
+      <div class="box-body">
+        <div class="bs-hashrate-current">
+          {{board.current_mhs5s|mhs}}<span class="bs-hashrate-unit">h/s</span>
+          <span ng-show="bsBoardFailoverActive(board.id)" class="bs-failover-tag pull-right">FAILOVER</span>
+        </div>
+        <ul class="nav nav-pills nav-sm bs-range-tabs">
+          <li ng-class="{active: board.range==='hour'}"><a href ng-click="bsSetBoardRange(board, 'hour')">Hour</a></li>
+          <li ng-class="{active: board.range==='day'}"><a href ng-click="bsSetBoardRange(board, 'day')">Day</a></li>
+          <li ng-class="{active: board.range==='week'}"><a href ng-click="bsSetBoardRange(board, 'week')">Week</a></li>
+        </ul>
+        <div class="bs-hashrate-graph"
+             bs-hashrate-chart
+             board-data="board"
+             range="board.range"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div ng-show="bsHashrate.boards.length === 0" class="alert alert-info">
+  No hashrate history yet. The recorder runs every minute &mdash; data will appear shortly after sgminer starts hashing.
+</div>
+</div><!-- /ng-if settings.userCharts !== false -->
+
+<br ng-hide="status.devs">
+<div ng-hide="status.devs" class='alert alert-danger'>No devices running</div>
+<h3 ng-show="status.devs">
+  Devices
+  <small>
+    <a href ng-click="bsLoadStatusPools()" title="Reload saved pools and assignments">reload pools</a>
+    -
+    <a href ng-click="bsRestart()" title="Restart sgminer with current assignments">restart miner</a>
+  </small>
+</h3>
+<div class="bs-devices-wrapper">
+<table ng-show="status.devs" id="statusDevs" class="table table-bordered table-right table-hover">
+  <thead>
+    <tr>
+      <th>Name</th>
+      <th>ID</th>
+      <th class="bs-pool-header">
+        <select class="bs-pool-header-select"
+                ng-model="bsAssignmentsView"
+                ng-change="bsSetAssignmentsView(bsAssignmentsView)"
+                ng-options="opt.v as opt.label for opt in [{v:'primary',label:'MAIN POOL'},{v:'failover',label:'FAILOVER'}]"></select>
+      </th>
+      <th>Algo</th>
+      <th>Temp</th>
+      <th>Total Chips</th>
+      <th>Clock</th>
+      <th>Hashrate 5s</th>
+      <th>Hashrate av</th>
+      <th>Accepted</th>
+      <th>Rejected</th>
+      <th>HW Errors</th>
+      <th>Utility</th>
+      <th>Last Share Time</th>
+      <th>Identify</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr ng-repeat="d in status.devs" ng-class="{'text-muted':d.MHS5s==0, 'bs-row-disabled':bsBoardDisabled(d.ID)}">
+      <td ng-bind="d.Name" class='text-left' ng-class="{danger:d.MHS5s>0 && (d.Rejected/d.TotalShares > .1 || d.HardwareErrors/d.TotalShares > .1)}"></td>
+      <td ng-bind="d.ID"></td>
+      <!-- DISABLED: single colspan cell with the centered banner message -->
+      <td ng-if="bsBoardDisabled(d.ID)" colspan="13" class="bs-disabled-banner">
+        <strong>Disabled</strong>
+        &mdash; {{bsBoardDisabledReason(d.ID)}}
+        &mdash; will resume when temp &le; {{bsTempConfig.recover_at}}&deg;C
+      </td>
+
+      <!-- ACTIVE: normal columns. Pool cell switches lane on bsAssignmentsView. -->
+      <td ng-if="!bsBoardDisabled(d.ID)" class="text-center bs-pool-cell" ng-switch="bsAssignmentsView">
+        <!-- MAIN POOL view (default) -->
+        <span ng-switch-default>
+          <select class="bs-pool-select bs-pool-cat"
+                  ng-show="savedPools.categories.length > 1"
+                  ng-model="boardCategories.primary[d.ID]"
+                  ng-change="bsCategoryChanged(d.ID, 'primary')"
+                  ng-options="c.id as c.name for c in savedPools.categories">
+            <option value="">— category —</option>
+          </select>
+          <select class="bs-pool-select bs-pool-pool"
+                  ng-model="assignments[d.ID].primary"
+                  ng-change="bsAssignBoard(d.ID, 'primary')"
+                  ng-options="p.id as p.name for p in bsPoolsInCategory(bsEffectiveCategory(d.ID, 'primary'))"
+                  ng-disabled="savedPools.categories.length > 1 && !boardCategories.primary[d.ID]">
+            <option value="">— idle —</option>
+          </select>
+        </span>
+        <!-- FAILOVER view -->
+        <span ng-switch-when="failover">
+          <select class="bs-pool-select bs-pool-cat"
+                  ng-show="savedPools.categories.length > 1"
+                  ng-model="boardCategories.failover[d.ID]"
+                  ng-change="bsCategoryChanged(d.ID, 'failover')"
+                  ng-options="c.id as c.name for c in savedPools.categories"
+                  ng-disabled="!bsHasPrimary(d.ID)">
+            <option value="">— category —</option>
+          </select>
+          <select class="bs-pool-select bs-pool-pool"
+                  ng-model="assignments[d.ID].failover"
+                  ng-change="bsAssignBoard(d.ID, 'failover')"
+                  ng-options="p.id as p.name for p in bsFailoverPoolsForBoard(d.ID)"
+                  ng-disabled="!bsHasPrimary(d.ID) || (savedPools.categories.length > 1 && !boardCategories.failover[d.ID])">
+            <option value="">— none —</option>
+          </select>
+          <span class="bs-set-primary-first" ng-show="!bsHasPrimary(d.ID)">set primary first</span>
+        </span>
+      </td>
+      <td ng-if="!bsBoardDisabled(d.ID)">{{d.Algo}}</td>
+      <td ng-if="!bsBoardDisabled(d.ID)">{{d.Temperature}} °C</td>
+      <td ng-if="!bsBoardDisabled(d.ID)">{{d.Chips}}</td>
+      <td ng-if="!bsBoardDisabled(d.ID)">{{d.Clock}}MHz</td>
+      <td ng-if="!bsBoardDisabled(d.ID)">{{d.MHS5s|mhs}}h/s</td>
+      <td ng-if="!bsBoardDisabled(d.ID)">{{d.MHSav|mhs}}h/s</td>
+      <td ng-if="!bsBoardDisabled(d.ID)" ng-bind="d.Accepted"></td>
+      <td ng-if="!bsBoardDisabled(d.ID)" ng-bind-template="{{d.Rejected}}&nbsp;[{{100*d.Rejected/d.TotalShares|number:2}}%]" ng-class="{danger:d.Rejected/d.TotalShares > .1&&d.MHS5s>0}"></td>
+      <td ng-if="!bsBoardDisabled(d.ID)" ng-bind-template="{{d.HardwareErrors}}&nbsp;[{{100*d.HardwareErrors/d.TotalShares|number:2}}%]" ng-class="{danger:d.HardwareErrors/d.TotalShares > .1&&d.MHS5s>0}"></td>
+      <td ng-if="!bsBoardDisabled(d.ID)" ng-bind="d.Utility"></td>
+      <td ng-if="!bsBoardDisabled(d.ID)" ng-bind="1000*d.LastShareTime|bsTzDate:'HH:mm:ss'"></td>
+      <td ng-if="!bsBoardDisabled(d.ID)">
+        <div class="input-group-btn">
+      		 <button type="button" ng-click="cgminer('ascidentify','0{{d.ID}}')" class="btn btn-default">&#10003;</button>
+        </div>
+      </td>
+    </tr>
+  </tbody>
+  <tfoot>
+    <tr class="bs-totals-row">
+      <th class='text-left'>Totals</th>                                       <!-- Name -->
+      <th></th>                                                                <!-- ID -->
+      <th class='text-center bs-apply-cell'>                                   <!-- Pool -->
+        <button type="button" class="btn btn-success btn-sm"
+                ng-show="bsAssignmentsDirty"
+                ng-click="bsApplyAssignments()">Apply &amp; restart</button>
+      </th>
+      <th class='text-center bs-cancel-cell'>                                  <!-- Algo -->
+        <button type="button" class="btn btn-default btn-sm"
+                ng-show="bsAssignmentsDirty"
+                ng-click="bsRevertAssignments()">Cancel</button>
+      </th>
+      <th></th>                                                                <!-- Temp -->
+      <th></th>                                                                <!-- Total Chips -->
+      <th>{{status.dtot.devices}} devs</th>                                    <!-- Clock -->
+      <th>{{status.dtot.MHS5s|mhs}}h/s</th>                                    <!-- Hashrate 5s -->
+      <th>{{status.dtot.MHSav|mhs}}h/s</th>                                    <!-- Hashrate av -->
+      <th ng-bind="status.dtot.Accepted"></th>                                 <!-- Accepted -->
+      <th ng-bind-template="{{status.dtot.Rejected}}&nbsp;[{{100*status.dtot.Rejected/(status.dtot.TotalShares)|number:2}}%]"></th>
+      <th ng-bind-template="{{status.dtot.HardwareErrors}}&nbsp;[{{100*status.dtot.HardwareErrors/(status.dtot.TotalShares)|number:2}}%]"></th>
+      <th ng-bind="status.dtot.Utility"></th>
+      <th></th>                                                                <!-- Last Share Time -->
+      <th></th>                                                                <!-- Identify -->
+    </tr>
+  </tfoot>
+</table>
+</div><!-- /.bs-devices-wrapper -->
+
+<div ng-hide="status.pools" class="alert alert-danger">No pools loaded</div>
+<h3 ng-show="status.pools">Pools</h3>
+<table ng-show="status.pools" id="statusPools" class="table table-bordered table-right table-hover">
+  <thead>
+    <tr>
+
+      <th>URL</th>
+      <th>User</th>
+      <th>Status</th>
+      <th>Active</th>
+      <th><div title="Priority">Pr</div></th>
+      <th><div title="GetWorks">GW</div></th>
+      <th><div title="Accepted">Acc</div></th>
+      <th><div title="Rejected">Rej</div></th>
+      <th><div title="Discarded">Disc</div></th>
+      <th><div title="Last Share Time">Last</div></th>
+      <th><div title="Difficulty 1 Shares">Diff1</div></th>
+      <th><div title="Difficulty Accepted">DAcc</div></th>
+      <th><div title="Difficulty Rejected">DRej</div></th>
+      <th><div title="Last Share Difficulty">DLast</div></th>
+      <th><div title="Best Share">Best</div></th>
+      <th>SWITCH TO</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr ng-repeat="p in status.pools">
+
+
+
+      <td ng-bind="p.URL|cleanPoolUrl" class='text-left ellipsis' ng-class="{'bs-failover-row': bsPoolIsActiveFailover(p.POOL)}"></td>
+      <td ng-bind="p.User" class='text-left ellipsis' ng-class="{'bs-failover-row': bsPoolIsActiveFailover(p.POOL)}"></td>
+      <td ng-bind="p.Status" class='text-left' ng-class="{success:p.Status=='Alive',danger:p.Status!='Alive'}"></td>
+        <td class='text-left ellipsis' ng-class="{success:p.StratumActive,danger:!p.StratumActive}">{{p.StratumActive ? 'True' : 'False'}}</td>
+
+      <td ng-bind="p.Priority"></td>
+      <td ng-bind="p.Getworks"></td>
+      <td ng-bind="p.Accepted"></td>
+      <td ng-bind="p.Rejected"></td>
+      <td ng-bind="p.Discarded"></td>
+      <td ng-bind="1000*p.LastShareTime|bsTzDate:'HH:mm:ss'"></td>
+      <td ng-bind="p.Diff1Shares"></td>
+      <td ng-bind-template="{{p.DifficultyAccepted}}&nbsp;[{{100*p.DifficultyAccepted/p.Diff1Shares|number:2}}%]"></td>
+      <td ng-bind-template="{{p.DifficultyRejected}}&nbsp;[{{100*p.DifficultyRejected/p.Diff1Shares|number:2}}%]"></td>
+      <td ng-bind="p.LastShareDifficulty"></td>
+      <td ng-bind="p.BestShare"></td>
+      <td class="text-center bs-switch-cell">
+        <button type="button"
+                ng-click="bsSwitchAllToPool(p)"
+                data-tip="Assign all 3 boards to this pool"
+                class="btn btn-default btn-sm bs-switch-btn bs-tip">&#10003;</button>
+      </td>
+    </tr>
+  </tbody>
+</table>
+

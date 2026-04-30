@@ -1,0 +1,1138 @@
+/* Blakestream dark mode CSS overlay
+ * Applies when <body> has class "bs-dark".
+ * Designed to override stock Bootstrap 3 + Scripta's tiny theme.css.
+ * Light mode (default) is byte-identical to factory.
+ *
+ * Palette (matches Blakestream Explorer):
+ *   bg deep:    #0f1316
+ *   bg base:    #1a1d21
+ *   bg raised:  #232830
+ *   border:     #2d3540
+ *   accent:     #4fc3f7  (Blakestream cyan)
+ *   accent-2:   #29b6f6
+ *   text:       #e6f3ff
+ *   text-muted: #8b9bb0
+ *   danger:     #ef5350
+ *   success:    #66bb6a
+ *   warning:    #ffa726
+ */
+
+/* ========== Base ========== */
+body.bs-dark,
+body.bs-dark .container,
+body.bs-dark .container-fluid {
+    background-color: #1a1d21 !important;
+    color: #e6f3ff !important;
+}
+
+body.bs-dark a {
+    color: #4fc3f7;
+}
+body.bs-dark a:hover,
+body.bs-dark a:focus {
+    color: #29b6f6;
+    text-decoration: underline;
+}
+
+body.bs-dark hr {
+    border-top-color: #2d3540;
+}
+
+body.bs-dark h1, body.bs-dark h2, body.bs-dark h3,
+body.bs-dark h4, body.bs-dark h5, body.bs-dark h6,
+body.bs-dark .h1, body.bs-dark .h2, body.bs-dark .h3 {
+    color: #e6f3ff;
+}
+
+body.bs-dark small,
+body.bs-dark .small,
+body.bs-dark .text-muted {
+    color: #a8bccc !important;
+}
+
+/* ========== Navbar ========== */
+body.bs-dark .navbar-default {
+    background-color: #0f1316;
+    border-color: #2d3540;
+    background-image: linear-gradient(to bottom, #1a1d21, #0f1316);
+}
+
+body.bs-dark .navbar-default .navbar-brand {
+    color: #4fc3f7;
+    text-shadow: 0 0 8px rgba(79, 195, 247, 0.3);
+}
+body.bs-dark .navbar-default .navbar-brand:hover {
+    color: #ffffff;
+    text-shadow: 0 0 12px rgba(79, 195, 247, 0.6);
+}
+
+body.bs-dark .navbar-default .navbar-nav > li > a {
+    color: #b0c4d4;
+}
+body.bs-dark .navbar-default .navbar-nav > li > a:hover,
+body.bs-dark .navbar-default .navbar-nav > li > a:focus {
+    color: #4fc3f7;
+    background-color: #232830;
+}
+body.bs-dark .navbar-default .navbar-nav > .active > a,
+body.bs-dark .navbar-default .navbar-nav > .active > a:hover,
+body.bs-dark .navbar-default .navbar-nav > .active > a:focus {
+    color: #4fc3f7;
+    background-color: #232830;
+    box-shadow: inset 0 -2px 0 #4fc3f7;
+}
+
+body.bs-dark .navbar-default .navbar-text {
+    color: #8b9bb0;
+}
+
+body.bs-dark .navbar-default .navbar-toggle {
+    border-color: #2d3540;
+}
+body.bs-dark .navbar-default .navbar-toggle:hover,
+body.bs-dark .navbar-default .navbar-toggle:focus {
+    background-color: #232830;
+}
+body.bs-dark .navbar-default .navbar-toggle .icon-bar {
+    background-color: #b0c4d4;
+}
+
+/* ========== Tables ========== */
+body.bs-dark .table {
+    color: #e6f3ff;
+    background-color: #1a1d21;
+}
+
+body.bs-dark .table > thead > tr > th,
+body.bs-dark .table > tbody > tr > th,
+body.bs-dark .table > tfoot > tr > th {
+    background-color: #232830;
+    color: #4fc3f7;
+    border-bottom: 2px solid #2d3540;
+    border-color: #2d3540;
+}
+
+body.bs-dark .table > tbody > tr > td,
+body.bs-dark .table > tfoot > tr > td {
+    border-top-color: #2d3540;
+    border-color: #2d3540;
+}
+
+body.bs-dark .table-bordered,
+body.bs-dark .table-bordered > thead > tr > th,
+body.bs-dark .table-bordered > tbody > tr > th,
+body.bs-dark .table-bordered > tbody > tr > td,
+body.bs-dark .table-bordered > tfoot > tr > th,
+body.bs-dark .table-bordered > tfoot > tr > td {
+    border-color: #2d3540;
+}
+
+body.bs-dark .table-hover > tbody > tr:hover {
+    background-color: #232830;
+}
+
+body.bs-dark .table-striped > tbody > tr:nth-of-type(odd) {
+    background-color: #1d2126;
+}
+
+/* Theme.css overrides muted rows with light gray; map to dark equivalent */
+body.bs-dark tr.text-muted,
+body.bs-dark .table tr.text-muted {
+    background-color: #15181c !important;
+    color: #5f6f80 !important;
+}
+
+/* Dark surface for theme.css's .ellipsis:hover (forces #fff in light mode). */
+body.bs-dark .ellipsis:hover,
+body.bs-dark td.ellipsis:hover,
+body.bs-dark .table .ellipsis:hover {
+    background-color: #2d343d !important;
+    color: #e6f3ff !important;
+    box-shadow: 0 0 0 1px #4fc3f7;
+    border-radius: 3px;
+    z-index: 5;
+    position: relative;
+}
+
+/* Status row danger */
+body.bs-dark .table > tbody > tr > td.danger,
+body.bs-dark .table > tbody > tr.danger > td {
+    background-color: #4a1e1e !important;
+    color: #ffb3b3 !important;
+}
+body.bs-dark .table > tbody > tr > td.success,
+body.bs-dark .table > tbody > tr.success > td {
+    background-color: #1e3a22 !important;
+    color: #b3ffc4 !important;
+}
+body.bs-dark .table > tbody > tr > td.warning,
+body.bs-dark .table > tbody > tr.warning > td {
+    background-color: #4a3a0e !important;
+    color: #ffd97a !important;
+}
+
+/* ========== Buttons ========== */
+body.bs-dark .btn-default {
+    background-color: #232830;
+    border-color: #2d3540;
+    color: #e6f3ff;
+}
+body.bs-dark .btn-default:hover,
+body.bs-dark .btn-default:focus {
+    background-color: #2d3540;
+    border-color: #4fc3f7;
+    color: #4fc3f7;
+}
+body.bs-dark .btn-default:active,
+body.bs-dark .btn-default.active {
+    background-color: #4fc3f7;
+    border-color: #4fc3f7;
+    color: #0f1316;
+}
+
+body.bs-dark .btn-primary {
+    background-color: #4fc3f7;
+    border-color: #4fc3f7;
+    color: #0f1316;
+}
+body.bs-dark .btn-primary:hover,
+body.bs-dark .btn-primary:focus {
+    background-color: #29b6f6;
+    border-color: #29b6f6;
+    color: #0f1316;
+}
+
+body.bs-dark .btn-danger {
+    background-color: #ef5350;
+    border-color: #ef5350;
+    color: #ffffff;
+}
+
+body.bs-dark .btn-success {
+    background-color: #66bb6a;
+    border-color: #66bb6a;
+    color: #0f1316;
+}
+
+body.bs-dark .input-group-btn .btn {
+    border-color: #2d3540;
+}
+
+body.bs-dark .input-group-addon {
+    background-color: #232830;
+    border-color: #3a4352;
+    color: #c8d0db;
+}
+
+/* ========== Forms ========== */
+body.bs-dark .form-control,
+body.bs-dark input[type="text"],
+body.bs-dark input[type="password"],
+body.bs-dark input[type="number"],
+body.bs-dark input[type="email"],
+body.bs-dark select,
+body.bs-dark textarea {
+    background-color: #2d343d;
+    border-color: #3a4352;
+    color: #ffffff;
+    box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.25);
+}
+body.bs-dark .form-control:hover,
+body.bs-dark input:hover,
+body.bs-dark select:hover,
+body.bs-dark textarea:hover {
+    background-color: #333b45;
+    border-color: #4a5566;
+}
+body.bs-dark .form-control:focus,
+body.bs-dark input:focus,
+body.bs-dark select:focus,
+body.bs-dark textarea:focus {
+    background-color: #333b45;
+    border-color: #4fc3f7;
+    color: #ffffff;
+    box-shadow: 0 0 0 2px rgba(79, 195, 247, 0.25),
+                inset 0 1px 2px rgba(0, 0, 0, 0.25);
+    outline: none;
+}
+body.bs-dark .form-control::placeholder,
+body.bs-dark input::placeholder,
+body.bs-dark textarea::placeholder {
+    color: #9fb0c2;
+    opacity: 1;
+}
+body.bs-dark .form-control::-webkit-input-placeholder,
+body.bs-dark input::-webkit-input-placeholder {
+    color: #9fb0c2;
+}
+body.bs-dark .form-control::-moz-placeholder,
+body.bs-dark input::-moz-placeholder {
+    color: #9fb0c2;
+    opacity: 1;
+}
+
+body.bs-dark label,
+body.bs-dark .control-label,
+body.bs-dark th {
+    color: #d6e4f0;
+}
+
+/* ========== Alerts (glass morphism) ========== */
+body.bs-dark .alert {
+    background: rgba(255, 255, 255, 0.04);
+    backdrop-filter: blur(10px) saturate(140%);
+    -webkit-backdrop-filter: blur(10px) saturate(140%);
+    border: 1px solid rgba(255, 255, 255, 0.10);
+    border-radius: 6px;
+    box-shadow:
+        0 4px 24px rgba(0, 0, 0, 0.35),
+        inset 0 1px 0 rgba(255, 255, 255, 0.06);
+    color: #e6f3ff;
+}
+
+body.bs-dark .alert-danger {
+    background: linear-gradient(135deg,
+        rgba(239, 83, 80, 0.18) 0%,
+        rgba(239, 83, 80, 0.10) 100%);
+    backdrop-filter: blur(12px) saturate(160%);
+    -webkit-backdrop-filter: blur(12px) saturate(160%);
+    border: 1px solid rgba(239, 83, 80, 0.45);
+    box-shadow:
+        0 4px 24px rgba(239, 83, 80, 0.12),
+        0 0 40px rgba(239, 83, 80, 0.08),
+        inset 0 1px 0 rgba(255, 255, 255, 0.08);
+    color: #ff9b9b;
+    text-shadow: 0 0 12px rgba(239, 83, 80, 0.4);
+}
+
+body.bs-dark .alert-success {
+    background: linear-gradient(135deg,
+        rgba(102, 187, 106, 0.18) 0%,
+        rgba(102, 187, 106, 0.10) 100%);
+    backdrop-filter: blur(12px) saturate(160%);
+    -webkit-backdrop-filter: blur(12px) saturate(160%);
+    border: 1px solid rgba(102, 187, 106, 0.45);
+    box-shadow:
+        0 4px 24px rgba(102, 187, 106, 0.12),
+        0 0 40px rgba(102, 187, 106, 0.08),
+        inset 0 1px 0 rgba(255, 255, 255, 0.08);
+    color: #a8e8ad;
+    text-shadow: 0 0 12px rgba(102, 187, 106, 0.4);
+}
+
+body.bs-dark .alert-warning {
+    background: linear-gradient(135deg,
+        rgba(255, 167, 38, 0.18) 0%,
+        rgba(255, 167, 38, 0.10) 100%);
+    backdrop-filter: blur(12px) saturate(160%);
+    -webkit-backdrop-filter: blur(12px) saturate(160%);
+    border: 1px solid rgba(255, 167, 38, 0.45);
+    box-shadow:
+        0 4px 24px rgba(255, 167, 38, 0.12),
+        0 0 40px rgba(255, 167, 38, 0.08),
+        inset 0 1px 0 rgba(255, 255, 255, 0.08);
+    color: #ffd089;
+    text-shadow: 0 0 12px rgba(255, 167, 38, 0.4);
+}
+
+body.bs-dark .alert-info {
+    background: linear-gradient(135deg,
+        rgba(79, 195, 247, 0.18) 0%,
+        rgba(79, 195, 247, 0.10) 100%);
+    backdrop-filter: blur(12px) saturate(160%);
+    -webkit-backdrop-filter: blur(12px) saturate(160%);
+    border: 1px solid rgba(79, 195, 247, 0.45);
+    box-shadow:
+        0 4px 24px rgba(79, 195, 247, 0.12),
+        0 0 40px rgba(79, 195, 247, 0.08),
+        inset 0 1px 0 rgba(255, 255, 255, 0.08);
+    color: #a5e0ff;
+    text-shadow: 0 0 12px rgba(79, 195, 247, 0.4);
+}
+
+/* ========== Footer ========== */
+body.bs-dark footer {
+    color: #5f6f80;
+}
+body.bs-dark footer a {
+    color: #4fc3f7;
+}
+
+/* ========== Dimmed when miner is down ========== */
+body.bs-dark .container.down {
+    opacity: 0.5;
+}
+
+/* ========== Theme toggle button ========== */
+.bs-theme-toggle {
+    background: transparent;
+    border: 1px solid transparent;
+    padding: 6px 12px;
+    color: inherit;
+    cursor: pointer;
+    line-height: 20px;
+    margin-top: 8px;
+    border-radius: 4px;
+}
+.bs-theme-toggle:hover {
+    background-color: rgba(255, 255, 255, 0.08);
+}
+body.bs-dark .bs-theme-toggle {
+    color: #4fc3f7;
+}
+body.bs-dark .bs-theme-toggle:hover {
+    background-color: #232830;
+    border-color: #4fc3f7;
+}
+
+/* ========== Misc Scripta-specific ========== */
+body.bs-dark .scripta-trigger .scripta-more {
+    color: #4fc3f7;
+}
+
+/* Input validation in dark mode */
+body.bs-dark input:required:invalid {
+    border-color: #ef5350;
+    box-shadow: 0 0 6px rgba(239, 83, 80, 0.4);
+    color: #ffb3b3;
+}
+
+/* Highcharts background — let JS theme handle this if loaded */
+body.bs-dark .highcharts-background {
+    fill: #1a1d21;
+}
+body.bs-dark .highcharts-grid-line {
+    stroke: #2d3540;
+}
+body.bs-dark .highcharts-axis-labels text,
+body.bs-dark .highcharts-yaxis-labels text,
+body.bs-dark .highcharts-xaxis-labels text {
+    fill: #b0c4d4 !important;
+}
+
+/* RRD graph images — invert colors slightly so they don't blind user on dark bg */
+body.bs-dark img[src*="/rrd/"] {
+    filter: invert(0.92) hue-rotate(180deg);
+    background-color: #1a1d21;
+}
+
+/* ========== AdminLTE-specific overrides (skin-blue base) ========== */
+
+/* Override the AdminLTE main-header / navbar */
+body.bs-dark.skin-blue .main-header .navbar,
+body.bs-dark .main-header .navbar {
+    background-color: #0f1316 !important;
+    background-image: linear-gradient(to bottom, #1a1d21, #0f1316);
+    border-color: #2d3540;
+}
+
+body.bs-dark.skin-blue .main-header .logo,
+body.bs-dark .main-header .logo {
+    background-color: #0f1316;
+    color: #4fc3f7;
+    border-color: #2d3540;
+}
+body.bs-dark.skin-blue .main-header .logo:hover,
+body.bs-dark .main-header .logo:hover {
+    background-color: #232830;
+}
+
+body.bs-dark.skin-blue .main-header .navbar .navbar-brand,
+body.bs-dark .main-header .navbar .navbar-brand {
+    color: #4fc3f7 !important;
+}
+body.bs-dark.skin-blue .main-header .navbar .navbar-brand:hover,
+body.bs-dark .main-header .navbar .navbar-brand:hover {
+    color: #ffffff !important;
+}
+
+body.bs-dark.skin-blue .main-header .navbar .nav > li > a,
+body.bs-dark .main-header .navbar .nav > li > a {
+    color: #b0c4d4 !important;
+}
+body.bs-dark.skin-blue .main-header .navbar .nav > li > a:hover,
+body.bs-dark.skin-blue .main-header .navbar .nav > li > a:focus,
+body.bs-dark .main-header .navbar .nav > li > a:hover,
+body.bs-dark .main-header .navbar .nav > li > a:focus {
+    color: #4fc3f7 !important;
+    background: #232830 !important;
+}
+body.bs-dark.skin-blue .main-header .navbar .nav > .active > a,
+body.bs-dark .main-header .navbar .nav > .active > a {
+    color: #4fc3f7 !important;
+    background: #232830 !important;
+    box-shadow: inset 0 -2px 0 #4fc3f7;
+}
+
+body.bs-dark.skin-blue .main-header li.user-header,
+body.bs-dark .main-header li.user-header {
+    background-color: #0f1316;
+}
+
+body.bs-dark.skin-blue .main-header .sidebar-toggle,
+body.bs-dark .main-header .sidebar-toggle,
+body.bs-dark.skin-blue .main-header .navbar-toggle,
+body.bs-dark .main-header .navbar-toggle {
+    color: #b0c4d4;
+}
+body.bs-dark.skin-blue .main-header .sidebar-toggle:hover,
+body.bs-dark .main-header .sidebar-toggle:hover,
+body.bs-dark.skin-blue .main-header .navbar-toggle:hover,
+body.bs-dark .main-header .navbar-toggle:hover {
+    background-color: #232830;
+    color: #4fc3f7;
+}
+
+/* AdminLTE content wrapper */
+body.bs-dark .content-wrapper,
+body.bs-dark .right-side {
+    background-color: #1a1d21 !important;
+    color: #e6f3ff;
+}
+
+/* AdminLTE box / panel */
+body.bs-dark .box {
+    background: #232830;
+    border-top-color: #4fc3f7;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.4);
+}
+body.bs-dark .box-header {
+    color: #e6f3ff;
+}
+body.bs-dark .box-header.with-border {
+    border-bottom-color: #2d3540;
+}
+body.bs-dark .box-title {
+    color: #4fc3f7;
+}
+body.bs-dark .box-body {
+    background: #232830;
+    color: #e6f3ff;
+}
+
+/* AdminLTE info-box / small-box (the colored summary tiles) */
+body.bs-dark .small-box {
+    background: #232830 !important;
+    color: #e6f3ff !important;
+}
+body.bs-dark .small-box > .small-box-footer {
+    background: rgba(79, 195, 247, 0.1);
+    color: #4fc3f7;
+}
+
+/* Custom.css News Cycle font + light colors override */
+body.bs-dark {
+    color: #e6f3ff !important;
+}
+body.bs-dark h1, body.bs-dark h2, body.bs-dark h3,
+body.bs-dark h4, body.bs-dark h5, body.bs-dark h6 {
+    color: #e6f3ff !important;
+}
+body.bs-dark a, body.bs-dark .btn {
+    color: #e6f3ff;
+}
+body.bs-dark a:hover, body.bs-dark a:focus, body.bs-dark .btn:hover {
+    color: #4fc3f7 !important;
+}
+/* custom.css set .btn background to #F4F4F4 — override */
+body.bs-dark .btn {
+    background-color: #232830;
+    border-color: #2d3540;
+}
+
+/* AdminLTE skin-blue specific blue overrides → cyan */
+body.bs-dark.skin-blue .main-header .navbar,
+body.bs-dark.skin-blue .main-header > .logo,
+body.bs-dark.skin-blue .main-sidebar,
+body.bs-dark.skin-blue .left-side,
+body.bs-dark.skin-blue .wrapper {
+    background-color: #1a1d21 !important;
+}
+
+/* btn-flat in dark mode */
+body.bs-dark .btn-flat {
+    border-radius: 0;
+    -webkit-box-shadow: none;
+    box-shadow: none;
+    border-width: 1px;
+}
+
+/* List-group items (AdminLTE / Bootstrap shared) */
+body.bs-dark .list-group-item {
+    background-color: #232830;
+    border-color: #2d3540;
+    color: #e6f3ff;
+}
+body.bs-dark a.list-group-item:hover,
+body.bs-dark a.list-group-item:focus {
+    background-color: #2d3540;
+    color: #4fc3f7;
+}
+body.bs-dark a.list-group-item:hover:after,
+body.bs-dark a.list-group-item:focus:after {
+    color: #4fc3f7;
+}
+
+/* Wrapper / page background — make sure nothing leaks the body bg */
+body.bs-dark .wrapper,
+body.bs-dark .main-header,
+body.bs-dark .main-sidebar {
+    background-color: #1a1d21 !important;
+}
+
+/* AdminLTE container-fluid in nav */
+body.bs-dark .navbar-static-top {
+    background-color: #0f1316 !important;
+}
+
+/* ========== In-page confirm modal ========== */
+.bs-modal-overlay {
+    position: fixed;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background: rgba(0, 0, 0, 0.55);
+    backdrop-filter: blur(3px);
+    -webkit-backdrop-filter: blur(3px);
+    z-index: 9998;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    animation: bs-modal-fade-in 0.15s ease-out;
+}
+@keyframes bs-modal-fade-in {
+    from { opacity: 0; }
+    to { opacity: 1; }
+}
+.bs-modal-box {
+    background: #ffffff;
+    color: #222;
+    border-radius: 6px;
+    box-shadow: 0 12px 48px rgba(0, 0, 0, 0.5);
+    min-width: 320px;
+    max-width: 480px;
+    padding: 22px 24px;
+    border: 1px solid #d0d4d8;
+    animation: bs-modal-scale-in 0.18s ease-out;
+}
+@keyframes bs-modal-scale-in {
+    from { transform: scale(0.92); opacity: 0; }
+    to { transform: scale(1); opacity: 1; }
+}
+.bs-modal-title {
+    font-size: 17px;
+    font-weight: 700;
+    margin-bottom: 10px;
+    line-height: 1.2;
+}
+.bs-modal-msg {
+    margin-bottom: 18px;
+    line-height: 1.45;
+}
+.bs-modal-msg b {
+    color: #1976d2;
+}
+.bs-modal-actions {
+    text-align: right;
+}
+.bs-modal-actions .btn {
+    margin-left: 8px;
+    min-width: 76px;
+}
+
+/* Dark mode overrides for the modal */
+body.bs-dark .bs-modal-box {
+    background: #232830;
+    color: #e6f3ff;
+    border-color: #4fc3f7;
+    box-shadow: 0 12px 48px rgba(0, 0, 0, 0.7),
+                0 0 32px rgba(79, 195, 247, 0.15);
+}
+body.bs-dark .bs-modal-msg b {
+    color: #4fc3f7;
+}
+body.bs-dark .bs-modal-actions .bs-modal-yes {
+    background: #4fc3f7;
+    border-color: #4fc3f7;
+    color: #0f1316;
+}
+body.bs-dark .bs-modal-actions .bs-modal-yes:hover {
+    background: #29b6f6;
+    border-color: #29b6f6;
+}
+body.bs-dark .bs-modal-actions .bs-modal-no {
+    background: #2d343d;
+    border-color: #3a4352;
+    color: #e6f3ff;
+}
+body.bs-dark .bs-modal-actions .bs-modal-no:hover {
+    background: #3a4352;
+    border-color: #4fc3f7;
+}
+
+/* ========== Pending assignment Apply/Cancel buttons in tfoot ========== */
+.bs-devices-wrapper {
+    position: relative;
+}
+.bs-totals-row .bs-apply-cell,
+.bs-totals-row .bs-cancel-cell {
+    padding: 2px 6px !important;
+    vertical-align: middle !important;
+}
+.bs-totals-row .bs-apply-cell .btn,
+.bs-totals-row .bs-cancel-cell .btn {
+    width: 100%;
+    max-width: 160px;
+    padding: 2px 8px;
+    font-size: 12px;
+    line-height: 1.4;
+    border-radius: 3px;
+}
+/* Apply button: green border + green text, brightens on hover but no glow. */
+.bs-totals-row .bs-apply-cell .btn-success {
+    background-color: transparent;
+    color: #5cb85c;
+    border: 1px solid rgba(92, 184, 92, 0.55);
+    box-shadow: none;
+}
+.bs-totals-row .bs-apply-cell .btn-success:hover,
+.bs-totals-row .bs-apply-cell .btn-success:focus {
+    background-color: transparent;
+    color: #8be08b;
+    border-color: #5cb85c;
+    box-shadow: none;
+}
+/* Cancel button: red border + red text, brightens on hover but no glow. */
+.bs-totals-row .bs-cancel-cell .btn-default {
+    background-color: transparent;
+    color: #d9534f;
+    border: 1px solid rgba(217, 83, 79, 0.55);
+    box-shadow: none;
+}
+.bs-totals-row .bs-cancel-cell .btn-default:hover,
+.bs-totals-row .bs-cancel-cell .btn-default:focus {
+    background-color: transparent;
+    color: #ff8b88;
+    border-color: #d9534f;
+    box-shadow: none;
+}
+/* Dark-mode brighter base text colors */
+body.bs-dark .bs-totals-row .bs-apply-cell .btn-success {
+    color: #66bb6a;
+    border-color: rgba(102, 187, 106, 0.6);
+}
+body.bs-dark .bs-totals-row .bs-apply-cell .btn-success:hover {
+    color: #a5e0a5;
+}
+body.bs-dark .bs-totals-row .bs-cancel-cell .btn-default {
+    color: #ef5350;
+    border-color: rgba(239, 83, 80, 0.6);
+}
+body.bs-dark .bs-totals-row .bs-cancel-cell .btn-default:hover {
+    color: #ff9b9b;
+}
+
+/* ========== Teal/cyan outline on table action buttons ========== */
+#statusPools .bs-switch-btn,
+#statusDevs tbody .btn-default {
+    background-color: transparent;
+    border: 1px solid rgba(79, 195, 247, 0.55);
+    color: #4fc3f7;
+}
+#statusPools .bs-switch-btn:hover,
+#statusPools .bs-switch-btn:focus,
+#statusDevs tbody .btn-default:hover,
+#statusDevs tbody .btn-default:focus {
+    background-color: rgba(79, 195, 247, 0.12);
+    border-color: #4fc3f7;
+    color: #4fc3f7;
+}
+body.bs-dark #statusPools .bs-switch-btn,
+body.bs-dark #statusDevs tbody .btn-default {
+    background-color: transparent;
+    border-color: rgba(79, 195, 247, 0.6);
+    color: #4fc3f7;
+}
+body.bs-dark #statusPools .bs-switch-btn:hover,
+body.bs-dark #statusDevs tbody .btn-default:hover {
+    background-color: rgba(79, 195, 247, 0.15);
+    color: #ffffff;
+    border-color: #4fc3f7;
+}
+
+/* ========== Pool history panel ========== */
+.bs-history-section {
+    margin-top: 20px;
+}
+.bs-history-section h3 small a {
+    margin: 0 4px;
+}
+.bs-history-table tbody td:first-child strong {
+    color: #1976d2;
+}
+body.bs-dark .bs-history-table tbody td:first-child strong {
+    color: #4fc3f7;
+}
+
+/* ========== Temp-disabled board row ========== */
+#statusDevs tr.bs-row-disabled td {
+    background-color: rgba(217, 83, 79, 0.18) !important;
+    color: #000 !important;
+    border-color: rgba(217, 83, 79, 0.4) !important;
+}
+#statusDevs tr.bs-row-disabled td:first-child {
+    border-left: 4px solid #d9534f;
+    font-weight: 700;
+}
+
+.bs-disabled-banner {
+    text-align: center !important;
+    font-size: 14px;
+    color: #000 !important;
+    background-color: rgba(217, 83, 79, 0.18) !important;
+    /* Bootstrap default cell padding so the row matches the active rows */
+    padding: 8px 12px !important;
+    letter-spacing: 0.2px;
+    vertical-align: middle !important;
+}
+.bs-disabled-banner strong {
+    color: #c62828;
+    font-weight: 700;
+    margin-right: 4px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    font-size: 15px;
+}
+
+/* Dark mode */
+body.bs-dark #statusDevs tr.bs-row-disabled td {
+    background-color: rgba(239, 83, 80, 0.18) !important;
+    color: #ffffff !important;
+    border-color: rgba(239, 83, 80, 0.5) !important;
+}
+body.bs-dark #statusDevs tr.bs-row-disabled td:first-child {
+    border-left: 4px solid #ff5252;
+}
+body.bs-dark .bs-disabled-banner {
+    color: #ffffff !important;
+    background-color: rgba(239, 83, 80, 0.18) !important;
+}
+body.bs-dark .bs-disabled-banner strong {
+    color: #ff5252;
+}
+
+/* ========== Status table per-board Pool dropdown ========== */
+.bs-pool-select {
+    background-color: transparent;
+    border: 1px solid #ccc;
+    border-radius: 3px;
+    padding: 2px 6px;
+    font-size: inherit;
+    font-family: inherit;
+    line-height: 1.4;
+    color: inherit;
+    max-width: 180px;
+}
+.bs-pool-select:focus {
+    outline: none;
+    border-color: #4fc3f7;
+    box-shadow: 0 0 0 1px rgba(79, 195, 247, 0.4);
+}
+.bs-pool-cell {
+    vertical-align: middle !important;
+    min-width: 160px;
+}
+.bs-pool-cell .bs-pool-select {
+    display: block;
+    margin: 0 auto 4px auto;
+    width: 100%;
+    max-width: 160px;
+}
+.bs-pool-cell .bs-pool-select:last-child {
+    margin-bottom: 0;
+}
+
+/* SWITCH TO column buttons: small gap between, consistent padding around. */
+.bs-switch-cell {
+    padding: 6px !important;
+    vertical-align: middle !important;
+    white-space: nowrap;
+}
+.bs-switch-cell .bs-switch-btn {
+    margin: 0 3px;
+}
+.bs-switch-cell .bs-switch-btn:first-child {
+    margin-left: 0;
+}
+.bs-switch-cell .bs-switch-btn:last-child {
+    margin-right: 0;
+}
+
+/* ========== Custom CSS-only tooltip (.bs-tip + data-tip) ========== */
+.bs-tip {
+    position: relative;
+}
+.bs-tip[data-tip]:hover::after,
+.bs-tip[data-tip]:focus::after {
+    content: attr(data-tip);
+    position: absolute;
+    bottom: calc(100% + 8px);
+    left: 50%;
+    transform: translateX(-50%);
+    background: #1a1d21;
+    color: #e6f3ff;
+    border: 1px solid #4fc3f7;
+    border-radius: 4px;
+    padding: 6px 10px;
+    white-space: nowrap;
+    font-size: 12px;
+    line-height: 1.3;
+    z-index: 9999;
+    pointer-events: none;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
+    opacity: 0;
+    animation: bs-tip-fade 0.15s ease-out 0.25s forwards;
+}
+.bs-tip[data-tip]:hover::before,
+.bs-tip[data-tip]:focus::before {
+    content: '';
+    position: absolute;
+    bottom: 100%;
+    left: 50%;
+    transform: translateX(-50%);
+    margin-bottom: 3px;
+    border: 5px solid transparent;
+    border-top-color: #4fc3f7;
+    pointer-events: none;
+    z-index: 9999;
+    opacity: 0;
+    animation: bs-tip-fade 0.15s ease-out 0.25s forwards;
+}
+@keyframes bs-tip-fade {
+    to { opacity: 1; }
+}
+body:not(.bs-dark) .bs-tip[data-tip]:hover::after,
+body:not(.bs-dark) .bs-tip[data-tip]:focus::after {
+    background: #ffffff;
+    color: #1a1d21;
+    border-color: #4fc3f7;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.18);
+}
+body.bs-dark .bs-pool-select {
+    background-color: #2d343d;
+    border-color: #3a4352;
+    color: #e6f3ff;
+}
+body.bs-dark .bs-pool-select option,
+body.bs-dark .bs-pool-select optgroup {
+    background-color: #2d343d;
+    color: #e6f3ff;
+}
+body.bs-dark .bs-pool-select optgroup {
+    color: #4fc3f7;
+    font-style: normal;
+}
+
+/* Vertical-align middle for status tables so the dropdown lines up with text
+ * in adjacent cells. Applies in both modes. */
+#statusDevs td, #statusDevs th,
+#statusPools td, #statusPools th {
+    vertical-align: middle !important;
+}
+
+/* Disable factory list-group-item hover affordance (bleed + '>' pseudo). */
+a.list-group-item,
+a.list-group-item:hover,
+a.list-group-item:focus,
+a.list-group-item.active,
+a.list-group-item.active:hover {
+    margin-right: 0 !important;
+    padding-right: 15px !important;
+}
+a.list-group-item:hover::after,
+a.list-group-item:focus::after,
+a.list-group-item.active::after {
+    content: none !important;
+    display: none !important;
+}
+
+/* Pool column header dropdown — inherits th color so it blends with labels. */
+.bs-pool-header {
+    text-align: center;
+    white-space: nowrap;
+}
+.bs-pool-header-select {
+    background: transparent;
+    border: 1px solid #c9d1da;
+    border-radius: 3px;
+    padding: 1px 6px;
+    font-size: inherit;
+    font-weight: inherit;
+    color: inherit;
+    cursor: pointer;
+}
+body.bs-dark .bs-pool-header-select {
+    background-color: #232830;
+    border-color: #3a4352;
+    color: #4fc3f7;
+}
+body.bs-dark .bs-pool-header-select option {
+    background-color: #232830;
+    color: #4fc3f7;
+}
+.bs-set-primary-first {
+    display: inline-block;
+    margin-left: 6px;
+    font-size: 11px;
+    font-style: italic;
+    color: #8a8f96;
+    vertical-align: middle;
+}
+
+/* ========== Per-board hashrate cards ========== */
+.bs-hashrate-cards {
+    margin-bottom: 18px;
+}
+.bs-board-card {
+    border-radius: 4px;
+    transition: opacity 0.2s ease;
+}
+.bs-board-card.bs-board-idle {
+    opacity: 0.65;
+}
+.bs-board-card .box-header {
+    padding: 8px 12px;
+}
+.bs-board-card .box-title {
+    font-size: 14px;
+    font-weight: 600;
+    margin: 0;
+}
+.bs-board-card .box-body {
+    padding: 8px 12px 12px;
+}
+.bs-hashrate-current {
+    font-size: 22px;
+    font-weight: 600;
+    color: #4fc3f7;
+    line-height: 1.1;
+    margin-bottom: 6px;
+}
+.bs-hashrate-unit {
+    font-size: 12px;
+    color: #8a8f96;
+    margin-left: 4px;
+    font-weight: 400;
+}
+.bs-range-tabs {
+    margin-bottom: 6px;
+}
+.bs-range-tabs li > a {
+    padding: 3px 10px;
+    font-size: 12px;
+}
+.bs-range-tabs li.active > a {
+    background-color: #4fc3f7;
+    color: #1a1d21;
+}
+.bs-hashrate-graph {
+    width: 100%;
+    height: 180px;
+}
+.bs-failover-tag {
+    display: inline-block;
+    background-color: #f5a623;
+    color: #1a1d21;
+    font-size: 10px;
+    font-weight: 600;
+    padding: 2px 8px;
+    border-radius: 3px;
+    letter-spacing: 0.5px;
+    vertical-align: middle;
+    margin-top: 6px;
+}
+
+/* Pools table — Status + Active cells keep their solid state-color on hover. */
+#statusPools.table-hover > tbody > tr:hover > td.success,
+#statusPools.table-hover > tbody > tr.success:hover > td.success {
+    background-color: #dff0d8 !important;
+}
+#statusPools.table-hover > tbody > tr:hover > td.danger,
+#statusPools.table-hover > tbody > tr.danger:hover > td.danger {
+    background-color: #f2dede !important;
+}
+body.bs-dark #statusPools.table-hover > tbody > tr:hover > td.success,
+body.bs-dark #statusPools.table-hover > tbody > tr.success:hover > td.success {
+    background-color: #1e3a22 !important;
+}
+body.bs-dark #statusPools.table-hover > tbody > tr:hover > td.danger,
+body.bs-dark #statusPools.table-hover > tbody > tr.danger:hover > td.danger {
+    background-color: #4a1e1e !important;
+}
+
+/* Pools-table cell tint for active failover pools. */
+#statusPools td.bs-failover-row {
+    background-color: rgba(245, 166, 35, 0.18) !important;
+    color: #b8860b;
+}
+body.bs-dark #statusPools td.bs-failover-row {
+    background-color: rgba(245, 166, 35, 0.18) !important;
+    color: #f5a623;
+}
+#statusPools.table-hover > tbody > tr:hover > td.bs-failover-row {
+    background-color: rgba(245, 166, 35, 0.28) !important;
+}
+
+.bs-charts-toggle {
+    display: inline-block;
+    line-height: 32px;
+}
+.bs-charts-toggle input[type="checkbox"] {
+    vertical-align: middle;
+    margin: 0 8px 0 0;
+}
+.bs-charts-toggle-label {
+    vertical-align: middle;
+    cursor: default;
+    user-select: none;
+}
+
+body:not(.bs-dark) .bs-board-card {
+    background-color: #f5f7fa;
+    border: 1px solid #d3dae3;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+}
+body:not(.bs-dark) .bs-board-card .box-header {
+    background-color: #eef2f7;
+    border-bottom: 1px solid #d3dae3;
+}
+body:not(.bs-dark) .bs-range-tabs li > a {
+    background-color: #e4e9f0;
+    color: #4a5160;
+}
+body:not(.bs-dark) .bs-range-tabs li > a:hover {
+    background-color: #d3dae3;
+    color: #1a1d21;
+}
+body:not(.bs-dark) .bs-range-tabs li.active > a {
+    background-color: #4fc3f7;
+    color: #0f1316;
+}
+
+body.bs-dark .bs-board-card {
+    background-color: #232830;
+    border: 1px solid #2d3540;
+}
+body.bs-dark .bs-board-card .box-header {
+    background-color: #1a1d21;
+    border-bottom: 1px solid #2d3540;
+}
+body.bs-dark .bs-range-tabs li > a {
+    background-color: #2d343d;
+    color: #c8d0db;
+}
+body.bs-dark .bs-range-tabs li > a:hover {
+    background-color: #3a4352;
+}
+body.bs-dark .bs-range-tabs li.active > a {
+    background-color: #4fc3f7;
+    color: #0f1316;
+}

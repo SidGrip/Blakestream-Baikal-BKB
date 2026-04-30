@@ -1,0 +1,6 @@
+# Blakestream-GaintB per-board temperature watchdog.
+# Polls sgminer's API every 30 seconds, disables hot boards above the
+# configured threshold, re-enables when they cool down. See
+# /opt/scripta/bin/temp-watchdog.py and /opt/scripta/etc/temp-config.json.
+* * * * * root /usr/bin/python /opt/scripta/bin/temp-watchdog.py 2>&1 | /usr/bin/logger -t bs-temp
+* * * * * root sleep 30; /usr/bin/python /opt/scripta/bin/temp-watchdog.py 2>&1 | /usr/bin/logger -t bs-temp

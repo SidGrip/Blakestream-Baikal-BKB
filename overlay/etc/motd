@@ -1,0 +1,16 @@
+
+  ____  _       _            _
+ | __ )| | __ _| | _____ ___| |_ _ __ ___  __ _ _ __ ___
+ |  _ \| |/ _` | |/ / _ \ __| __| '__/ _ \/ _` | '_ ` _ \
+ | |_) | | (_| |   <  __\__ \ |_| | |  __/ (_| | | | | | |
+ |____/|_|\__,_|_|\_\___|___/\__|_|  \___|\__,_|_| |_| |_|
+                                                  GaintB v2.0
+
+ Custom controller firmware for the Baikal BK-B Multi ASIC.
+ Mining Blakecoin (BLAKE-256 R8) by default. Per-ASC pool routing.
+
+ Web UI:    http://<this-ip>/
+ SSH user:  root
+ Source:    https://github.com/sidgrip   (forthcoming)
+ License:   GPLv3 (Scripta by Lateral Factory + sgminer-baikal)
+

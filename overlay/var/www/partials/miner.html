@@ -1,0 +1,218 @@
+<!--
+  Blakestream-GaintB Miner tab.
+  Replaces the factory hardcoded "Available pools" sidebar with user-managed
+  categories and a pool form that has Name + Category fields.
+  SGMINER Options form below is unchanged from factory.
+-->
+<style>
+  /* Override custom.css hover affordance that bleeds the highlight bar past
+   * the container and adds a stray '>' pseudo-element. Scoped to the Pools
+   * sidebar via .bs-pools-sidebar to avoid affecting other list-groups. */
+  .bs-pools-sidebar a.list-group-item,
+  .bs-pools-sidebar a.list-group-item:hover,
+  .bs-pools-sidebar a.list-group-item:focus,
+  .bs-pools-sidebar a.list-group-item.active,
+  .bs-pools-sidebar a.list-group-item.active:hover {
+    margin-right: 0 !important;
+    padding-right: 15px !important;
+  }
+  .bs-pools-sidebar a.list-group-item:hover:after,
+  .bs-pools-sidebar a.list-group-item:focus:after,
+  .bs-pools-sidebar a.list-group-item.active:after {
+    content: none !important;
+    display: none !important;
+  }
+  .bs-pools-sidebar a.list-group-item small {
+    margin-left: 8px;
+    opacity: 0.7;
+  }
+  .bs-pools-sidebar a.list-group-item.active small {
+    color: rgba(255,255,255,0.8) !important;
+  }
+</style>
+<div class="row">
+
+  <!-- ==================== LEFT: Categories sidebar ==================== -->
+  <div class="col-sm-3 col-md-3 bs-pools-sidebar">
+    <h3 style="margin-top:20px;">Pools</h3>
+    <p class="help-block" ng-show="settings.userHelp">
+      Saved pools, organised by category. Click a pool to edit it.
+    </p>
+
+    <!-- Add category -->
+    <div class="input-group" style="margin-bottom:8px;">
+      <input type="text" class="form-control input-sm" placeholder="New category name"
+             ng-model="newCategoryName" ng-keyup="$event.keyCode==13 && bsAddCategory()">
+      <span class="input-group-btn">
+        <button class="btn btn-default btn-sm" ng-click="bsAddCategory()" title="Add category">+</button>
+      </span>
+    </div>
+
+    <!-- Categories with their pools -->
+    <div ng-repeat="cat in savedPools.categories track by cat.id" style="margin-bottom:14px;">
+      <h4 style="margin-bottom:6px;">
+        {{cat.name}}
+        <button class="btn btn-default btn-xs pull-right"
+                ng-click="bsRemoveCategory(cat)"
+                ng-show="cat.pools.length === 0"
+                title="Delete empty category">&times;</button>
+      </h4>
+      <div class="list-group">
+        <a href="" ng-repeat="pool in cat.pools track by pool.id"
+           class="list-group-item"
+           ng-class="{active: editingPool && editingPool.id === pool.id, 'bs-pool-dirty': bsPoolHasPendingEdits(pool.id)}"
+           ng-click="bsEditPool(pool, cat)"
+           title="{{bsPoolHasPendingEdits(pool.id) ? 'Has pending changes — click Update Pool to save' : ''}}">
+          <span ng-show="bsPoolHasPendingEdits(pool.id)" style="color:#f0ad4e; font-weight:bold;" title="Pending changes">●</span>
+          {{pool.name || pool.url}}
+          <small class="text-muted">{{pool.algo}}</small>
+        </a>
+        <div class="list-group-item text-muted small" ng-show="cat.pools.length === 0">
+          (empty &mdash; add a pool)
+        </div>
+      </div>
+    </div>
+
+    <div class="alert alert-info" ng-show="!savedPools.categories || savedPools.categories.length === 0">
+      No categories yet. Add one above to get started.
+    </div>
+  </div>
+
+  <!-- ==================== CENTER: Pool form + SGMINER Options ==================== -->
+  <div class="col-sm-9 col-md-9">
+
+    <!-- Top row: Add/Edit Pool heading on the left, Miner commands button on the right.
+         When expanded, the 3 command buttons appear inline LEFT of the "Miner commands"
+         button so the button itself stays anchored to the right edge. -->
+    <div class="clearfix">
+      <div class="pull-right" style="margin-top:20px; white-space:nowrap;">
+        <span ng-show="minerRestart">
+          <button type="button" class="btn btn-default bs-tip"
+                  data-tip="Soft restart sgminer (RPC)"
+                  ng-click="cgminer('restart')">Soft reset (RPC)</button>
+          <button type="button" class="btn btn-default bs-tip"
+                  data-tip="Hard restart sgminer Linux process (~30s)"
+                  ng-click="cgminerHardCtl('0')">Restart linux process (30s)</button>
+          <button type="button" class="btn btn-default bs-tip"
+                  data-tip="Reload Blakestream launcher with current saved pools + assignments"
+                  ng-click="bsRestart()">Reload Blakestream pools</button>
+        </span>
+        <button type="button" ng-click="minerRestart=!minerRestart" class="btn btn-warning">Miner commands</button>
+      </div>
+      <h3 style="margin-top:20px;">{{editingPool ? 'Edit Pool' : 'Add Pool'}}</h3>
+    </div>
+
+    <p class="help-block" ng-show="settings.userHelp">
+      Saved pools live in the catalog on the left. Boards mine according to
+      assignments on the Status page.
+    </p>
+
+    <form name="poolForm">
+      <div class="row">
+        <!-- ===== Left column ===== -->
+        <div class="col-sm-6">
+          <div class="form-group">
+            <label>Category</label>
+            <select class="form-control" ng-model="poolDraft.categoryId"
+                    ng-options="c.id as c.name for c in savedPools.categories" required>
+              <option value="">-- choose category --</option>
+            </select>
+          </div>
+
+          <div class="form-group">
+            <label>URL</label>
+            <input type="text" ng-model="poolDraft.url" class="form-control"
+                   placeholder="stratum+tcp://pool.example.com:3334" required>
+          </div>
+
+          <div class="form-group">
+            <label>User</label>
+            <input type="text" ng-model="poolDraft.user" class="form-control"
+                   placeholder="wallet.worker" required>
+          </div>
+
+          <div class="form-group">
+            <label style="display:inline-block; margin-right:10px;">Extranonce</label>
+            <input type="checkbox" ng-model="poolDraft.extranonce" style="vertical-align:middle; margin:0;">
+            <span style="margin-left:4px; vertical-align:middle;">Yes</span>
+          </div>
+        </div>
+
+        <!-- ===== Right column ===== -->
+        <div class="col-sm-6">
+          <div class="form-group">
+            <label>Algo</label>
+            <select class="form-control" ng-model="poolDraft.algo" required>
+              <option value="blake256r8">Blakecoin (blake256r8)</option>
+              <option value="blake256r14">blake256r14</option>
+              <option value="decred">decred</option>
+              <option value="sia">sia</option>
+              <option value="lbry">lbry</option>
+              <option value="pascal">pascal</option>
+            </select>
+          </div>
+
+          <div class="form-group">
+            <label>Name</label>
+            <input type="text" ng-model="poolDraft.name" class="form-control"
+                   placeholder="e.g. Blakecoin Devnet" required>
+          </div>
+
+          <div class="form-group">
+            <label>Pass</label>
+            <input type="text" ng-model="poolDraft.pass" class="form-control" placeholder="x">
+          </div>
+        </div>
+      </div>
+
+      <!-- Buttons row, full width below the 2 columns -->
+      <div class="row">
+        <div class="col-sm-12">
+          <button type="button" class="btn btn-success"
+                  ng-click="bsSavePoolDraft()"
+                  ng-disabled="!poolDraft.name || !poolDraft.url || !poolDraft.categoryId">
+            {{bsUpdatePoolLabel()}}
+          </button>
+          <button type="button" class="btn btn-danger"
+                  ng-show="editingPool"
+                  ng-click="bsDeletePool()">Delete</button>
+          <button type="button" class="btn btn-default"
+                  ng-click="bsCancelEdit()">Cancel</button>
+        </div>
+      </div>
+    </form>
+
+    <hr />
+
+    <!-- ==================== SGMINER Options (unchanged from factory) ==================== -->
+    <h3>SGMINER Options</h3>
+    <label>Options <a href="https://github.com/sgminer-dev/sgminer" target="_blank" rel="noopener noreferrer">SGMINER's Github page</a> for the following options</label>
+    <form name="optionForm" class="form-horizontal">
+      <div class="row">
+        <label class="col-sm-3">Sgminer options</label>
+        <label class="col-sm-4">Value</label>
+        <label class="col-sm-2">Description</label>
+      </div>
+      <div class="form-group" ng-repeat="option in options">
+        <div class="col-sm-2">
+          <input type="text" ng-model="option.key" class="form-control" required>
+        </div>
+        <div class="col-sm-3">
+          <div class="input-group">
+            <input type="text" ng-model="option.value" class="form-control" required>
+            <div class="input-group-btn">
+              <button type="button" ng-click="optionRemove($index)" title="We suggest you backup before make any changes." class="btn btn-default pull-right">&times;</button>
+            </div>
+          </div>
+        </div>
+        <div class="col-sm-6">
+          <input type="text" class="form-control" ng-model="option.description">
+        </div>
+      </div>
+      <button type="button" class="btn btn-default" ng-click="optionBack()">Reload Options</button>
+      <button type="button" class="btn btn-default" ng-click="optionAdd({'key':'x'})">Add Options</button>
+      <button type="button" ng-show="optionForm.$dirty && optionForm.$valid" class="btn btn-success" ng-click="optionSave()">Save Options</button>
+    </form>
+
+  </div>
+</div>

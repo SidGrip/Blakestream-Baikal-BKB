@@ -1,0 +1,105 @@
+From: Blakestream-GaintB <sid@blakestream.local>
+Subject: [PATCH 3/3] api/driver-baikalu: call SET_IDLE protocol cmd when ascdisable
+
+Part 3 of the per-board disable fix.
+
+With patches 1+2 applied, ascdisable no longer deadlocks the device,
+but the disabled miner's hash boards keep hashing because we never
+told the firmware to stop. They produce no useful work (sgminer ignores
+their results because deven == DEV_DISABLED) but they still draw power
+and produce heat.
+
+Add a generic device_drv vtable hook (disable_device / enable_device)
+called from api.c:ascdisable / ascenable. The baikal driver wires
+disable_device to baikal_setidle (existing function that sends the
+SET_IDLE protocol command to a specific miner via the STM32 firmware)
+and enable_device to baikal_setoption (which re-applies clock/algo/
+fan/temp settings to wake the miner).
+---
+ api.c            |  9 +++++++++
+ driver-baikalu.c | 23 +++++++++++++++++++++++
+ miner.h          |  4 ++++
+ 3 files changed, 36 insertions(+)
+
+diff --git a/miner.h b/miner.h
+--- a/miner.h
++++ b/miner.h
+@@ -468,6 +468,10 @@ struct device_drv {
+   void (*hw_error)(struct thr_info *);
+   void (*thread_shutdown)(struct thr_info *);
+   void (*thread_enable)(struct thr_info *);
+
++  /* Per-device administrative disable / enable, called from
++   * api.c:ascdisable / ascenable. May be NULL. */
++  bool (*disable_device)(struct cgpu_info *);
++  bool (*enable_device)(struct cgpu_info *);
+
+   /* What should be zeroed in this device when global zero stats is sent */
+   void (*zero_stats)(struct cgpu_info *);
+
+diff --git a/api.c b/api.c
+--- a/api.c
++++ b/api.c
+@@ -3434,6 +3434,12 @@ static void ascdisable(struct io_data *io_data, __maybe_unused SOCKETTYPE c, cha
+     }
+
+     cgpu->deven = DEV_DISABLED;
++
++    /* If the driver provides an administrative disable hook, call it so
++     * it can tell the firmware to stop the specific ASC (not just flag
++     * it on the sgminer side). */
++    if (cgpu->drv->disable_device)
++        cgpu->drv->disable_device(cgpu);
+
+     message(io_data, MSG_ASCDIS, id, NULL, isjson);
+ }
+@@ -3389,6 +3395,9 @@ static void ascenable(struct io_data *io_data, __maybe_unused SOCKETTYPE c, char
+         asc = thr->cgpu->sgminer_id;
+         if (asc == dev) {
+             cgpu->deven = DEV_ENABLED;
++            /* Wake the firmware-side miner if the driver supports it. */
++            if (cgpu->drv->enable_device)
++                cgpu->drv->enable_device(cgpu);
+             applog(LOG_DEBUG, "API: Pushing sem post to thread %d", thr->id);
+             cgsem_post(&thr->sem);
+         }
+
+diff --git a/driver-baikalu.c b/driver-baikalu.c
+--- a/driver-baikalu.c
++++ b/driver-baikalu.c
+@@ -283,6 +283,27 @@ static bool baikal_setidle(struct cgpu_info *baikal)
+ }
+
+
++/* Per-device admin disable hook called from api.c:ascdisable.
++ * Sends SET_IDLE protocol command to the specific miner via the
++ * STM32 firmware so the hash board actually stops hashing. */
++static bool baikal_disable_device(struct cgpu_info *baikal)
++{
++    return baikal_setidle(baikal);
++}
++
++
++/* Per-device admin enable hook called from api.c:ascenable.
++ * Re-applies the SET_OPTION (clock/algo/temp/fan) settings to wake
++ * the miner back up. */
++static bool baikal_enable_device(struct cgpu_info *baikal)
++{
++    struct baikal_info *info = baikal->device_data;
++    struct miner_info *miner = &info->miners[baikal->miner_id];
++    return baikal_setoption(baikal, miner->clock,
++                            to_baikal_algorithm(baikal->algorithm.type),
++                            info->cutofftemp, info->fanspeed);
++}
++
++
+ static bool baikal_detect_remains(struct cgpu_info *baikal)
+ {
+     int index;
+@@ -957,5 +978,7 @@ struct device_drv baikalu_drv = {
+     //.flush_work             = baikal_update_work,
+     .scanwork				= baikal_scanhash,
+     .thread_shutdown        = baikal_shutdown,
++    .disable_device         = baikal_disable_device,
++    .enable_device          = baikal_enable_device,
+ };

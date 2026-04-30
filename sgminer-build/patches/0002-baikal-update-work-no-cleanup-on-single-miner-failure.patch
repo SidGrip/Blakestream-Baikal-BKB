@@ -1,0 +1,36 @@
+From: Blakestream-GaintB <sid@blakestream.local>
+Subject: [PATCH 2/3] driver-baikalu: don't nuke whole device on single miner send_work failure
+
+Part 2 of the ascdisable deadlock fix.
+
+baikal_update_work() called baikal_cleanup(baikal) when baikal_send_work
+failed for ANY individual miner. baikal_cleanup() is the nuclear option:
+it iterates over all miners on the device, sets shutdown=true and
+deven=DEV_DISABLED for each, and disconnects USB. Wildly disproportionate
+to a single miner's queue being full.
+
+Replace with a localized log + skip for that miner this round. The next
+block change will try again. If it's a transient queue full, it recovers.
+If it's persistent (e.g. miner physically disconnected), the existing
+sgminer health-monitoring loop will detect it via missing scanhash
+results and mark just that one miner unhealthy.
+---
+ driver-baikalu.c | 6 ++++--
+ 1 file changed, 4 insertions(+), 2 deletions(-)
+
+diff --git a/driver-baikalu.c b/driver-baikalu.c
+--- a/driver-baikalu.c
++++ b/driver-baikalu.c
+@@ -897,8 +897,10 @@ static void baikal_update_work(struct cgpu_info *baikal)
+
+             for (j = 0; j < count; j++) {
+                 if (baikal_send_work(baikal, i) != true) {
+-                    baikal_cleanup(baikal);
+-                    break;
++                    applog(LOG_WARNING,
++                           "baikal_send_work failed for miner %d, skipping this round (was: full device cleanup)",
++                           i);
++                    break;  /* skip remaining sends to this miner this round, don't nuke other miners */
+                 }
+             }
+         }

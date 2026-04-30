@@ -1,0 +1,80 @@
+<h3>Backup</h3>
+
+<form class="form-horizontal">
+  <fieldset>
+    <div class="form-group">
+      <label class="col-sm-3 col-md-2 control-label" for="bsBackupName">Backup name</label>
+      <div class="col-sm-9 col-md-10">
+        <input type="text" id="bsBackupName" ng-model="backupName" class="form-control"
+               placeholder="my-backup">
+        <p class="help-block">
+          Pick a name for this backup. Defaults to the current date/time
+          (e.g. {{backupName}}).
+        </p>
+      </div>
+    </div>
+
+    <div class="form-group">
+      <div class="col-sm-9 col-md-10 col-sm-offset-3 col-md-offset-2">
+        <p class="help-block" ng-show="settings.userHelp">
+          <b>Backup</b> copies the selected items to the backup folder under the chosen name.<br />
+          <b>Export</b> makes a backup on device and serves it as a download.
+        </p>
+        <button type="button" class="btn btn-default"
+                ng-click="bsBackupNow()"
+                ng-disabled="selItem()==0">Backup</button>
+        <button type="button" class="btn btn-default"
+                ng-click="bsBackupExportNow()"
+                ng-disabled="selItem()==0">Export current configuration</button>
+      </div>
+    </div>
+  </fieldset>
+</form>
+
+<h3>Restore</h3>
+<div class="row">
+  <div class="col-sm-3 col-md-2">
+    <div class="list-group">
+      <a href="" ng-repeat="b in backups" ng-click="choose($index)" class="list-group-item" ng-class="{active:restoring==$index}">{{b.dir}}</a>
+      <div class="list-group-item text-muted small" ng-show="!backups || backups.length === 0">
+        (no backups yet)
+      </div>
+    </div>
+  </div>
+  <div class="col-sm-9 col-md-10">
+    <div ng-show="backups && backups.length > 0 && backups[restoring] && !backups[restoring].items" class="alert alert-warning">
+      There seems to be no files in this backup, this can happen if permission was denied.
+    </div>
+    <p class="help-block" ng-show="settings.userHelp">
+      <b>Reload list</b> will scan the backup folder for saved backups.<br />
+      <b>Restore</b> will copy the items in the currently selected backup to the active Scripta folder. Restart the miner to let it use the restored settings.<br />
+      <b>Export ...</b> will make a zipfile of the items in the currently selected backup and serve it as a download.<br />
+      <b>Import file...</b> lets you upload a zip file and will add it to the list of backups. If it does not show up, try to reload the list.
+    </p>
+    <button type="button" class="btn btn-default" ng-click="reload()">Reload list</button>
+    <button type="button" class="btn btn-default" ng-click="restore()" ng-disabled="!backups || backups.length === 0">Restore</button>
+    <button type="button" class="btn btn-default" ng-click="exportZip()" ng-disabled="!backups || backups.length === 0">Export archived backup</button>
+    <label for="file" class="btn btn-default">Import file...</label>
+    <button type="button" class="btn btn-danger" ng-click="bsDeleteBackup()" ng-disabled="!backups || backups.length === 0">Delete</button>
+
+    <div class="form-inline" style="margin-top:12px;" ng-show="backups && backups.length > 0">
+      <div class="form-group">
+        <label for="bsRenameInput" class="control-label" style="margin-right:8px;">Rename to:</label>
+        <input type="text" id="bsRenameInput" ng-model="renameInput" class="form-control"
+               style="width:240px;" placeholder="new-backup-name">
+        <button type="button" class="btn btn-default" ng-click="bsRenameBackup()">Rename</button>
+      </div>
+      <p class="help-block" ng-show="settings.userHelp" style="margin-top:6px;">
+        Letters, numbers, dot, dash, underscore. Max 64 chars.
+      </p>
+    </div>
+  </div>
+</div>
+
+<div class="hide">
+  <form action="f_backup.php" method="post" enctype="multipart/form-data" target="norefresh">
+    <input type="file" name="file" id="file" onchange="document.getElementById('fileSubmit').click();" >
+    <input type="submit" name="submit" id="fileSubmit" value="Submit" id="importSubmit" ng-click="reload(500)">
+  </form>
+  <iframe id="norefresh" name="norefresh"></iframe>
+</div>

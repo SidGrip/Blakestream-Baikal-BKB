@@ -1,0 +1,58 @@
+<!--
+  Blakestream-GaintB Pool History tab.
+  Aggregated stats per pool over a configurable window. Data sourced from
+  /opt/scripta/var/pool-history.json (recorded every 5 min by cron).
+-->
+<h3>
+  Pool History
+  <small>
+    <a href ng-click="bsLoadPoolHistory(1)">1h</a> -
+    <a href ng-click="bsLoadPoolHistory(24)">24h</a> -
+    <a href ng-click="bsLoadPoolHistory(168)">7d</a>
+    -
+    <a href ng-click="bsLoadPoolHistory(bsHistoryWindow || 24)">refresh</a>
+    <span ng-show="bsHistoryWindow"> &mdash; window: {{bsHistoryWindow}}h</span>
+    <span ng-show="bsHistoryUpdated"> &mdash; updated {{1000*bsHistoryUpdated|bsTzDate:'HH:mm:ss'}}</span>
+  </small>
+</h3>
+
+<p class="help-block" ng-show="settings.userHelp">
+  Per-pool aggregate accepted/rejected shares over the selected window.
+  History is recorded every 5 minutes by a background cron job and kept
+  for 7 days. New pools begin appearing after the first sample.
+</p>
+
+<div ng-show="!bsPoolHistory || bsPoolHistory.length === 0" class="alert alert-info">
+  No pool history yet. The recorder runs every 5 minutes &mdash; check back shortly.
+</div>
+
+<table ng-show="bsPoolHistory.length > 0" class="table table-bordered table-right table-hover bs-history-table">
+  <thead>
+    <tr>
+      <th class="text-left">Pool</th>
+      <th class="text-left">Category</th>
+      <th class="text-left">Algo</th>
+      <th>Accepted</th>
+      <th>Rejected</th>
+      <th>Diff Accepted</th>
+      <th>Diff Rejected</th>
+      <th>Best</th>
+      <th>Status</th>
+      <th>Samples</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr ng-repeat="p in bsPoolHistory">
+      <td class="text-left"><strong>{{p.name}}</strong></td>
+      <td class="text-left">{{p.category}}</td>
+      <td class="text-left">{{p.algo}}</td>
+      <td>{{p.accepted}}</td>
+      <td>{{p.rejected}}</td>
+      <td>{{p.diff_accepted|number:2}}</td>
+      <td>{{p.diff_rejected|number:2}}</td>
+      <td>{{p.last_best|number:2}}</td>
+      <td ng-class="{success:p.last_status=='Alive', danger:p.last_status!='Alive'}">{{p.last_status}}</td>
+      <td>{{p.sample_count}}</td>
+    </tr>
+  </tbody>
+</table>

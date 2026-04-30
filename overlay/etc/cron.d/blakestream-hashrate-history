@@ -1,0 +1,4 @@
+# Blakestream-GaintB per-board hashrate recorder.
+# Polls sgminer's devs API every minute and appends per-ASC samples to
+# /opt/scripta/var/hashrate-history.json (rolling 7-day window, 60-sec step).
+* * * * * root /usr/bin/python /opt/scripta/bin/hashrate-history-recorder.py 2>&1 | /usr/bin/logger -t bs-hashrate

@@ -1,0 +1,4 @@
+# Blakestream-GaintB pool history snapshot recorder.
+# Polls sgminer's pools API every 5 minutes and appends to
+# /opt/scripta/var/pool-history.json (rolling 7-day window).
+*/5 * * * * root /usr/bin/python /opt/scripta/bin/pool-history-recorder.py 2>&1 | /usr/bin/logger -t bs-history

@@ -1,0 +1,5 @@
+{
+  "enabled": true,
+  "disable_at": 80,
+  "recover_at": 70
+}

@@ -1,0 +1,16 @@
+# firmware-original is a symlink to the master workspace's copy on dev boxes
+firmware-original
+firmware-original/PiZero_GB_180105_V1.0.img
+firmware-original/PiZero_GB_180105_V1.0.img.sha256
+firmware-original/rootfs-snapshot/
+firmware-modified/rootfs/
+build/*.img
+build/*.img.xz
+build/*.sha256
+
+# sgminer-build: cloned sources and build artifacts
+sgminer-build/src/
+sgminer-build/build/
+
+__pycache__/
+.ssh-known_hosts
