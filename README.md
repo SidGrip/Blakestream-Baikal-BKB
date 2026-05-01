@@ -15,7 +15,7 @@ Specifically, you should understand and accept that:
 - **The Baikal BK-B Multi is end-of-life.** Baikal Miner shut down in 2018. Replacement parts, official support, and original firmware downloads are no longer available from the manufacturer.
 - **You will void any remaining warranty** by flashing third-party firmware. There almost certainly isn't one on a 2018 ASIC, but be explicit: this firmware is not endorsed, signed, or supported by Baikal Miner or any successor.
 - **Bricking is possible.** A bad flash, a power cut mid-write, or an unforeseen bug can leave the controller unbootable. Recovery means writing the factory `.img` back to the SD card. **Keep a known-good copy of the original `PiZero_GB_180105_V1.0.img` before you start.**
-- **Hashing hardware can fail.** The BKLU boards are 8 years old. Heat, capacitor wear, and PSU stress are real. The temperature watchdog included here helps, but it is no substitute for monitoring your rig and a smoke/fire-safe deployment environment.
+- **Hashing hardware can fail.** The BKLU boards are 8 years old. Heat, capacitor wear, and PSU stress are real. The temperature watchdog included here helps, but it is no substitute for monitoring your rig.
 - **Mining is financially risky.** Pool downtime, network forks, electricity costs, coin price moves, and pool-side disputes can all reduce or wipe out earnings. None of the changes in this firmware mitigate those risks — they only change *how* the miner is configured.
 - **The new code paths in v2 are recent.** Per-ASC routing, the v2 applier, and the failover policy have been validated on a single live device but have not had months of production soak time. You may hit edge cases. If anything feels wrong, roll back to factory firmware and report what you saw.
 - **No telemetry, no auto-update.** This firmware does not phone home and does not pull updates. You are responsible for tracking releases manually if you want fixes.
@@ -91,7 +91,7 @@ Direct download (~900 MB compressed):
 https://bootstrap.blakestream.io/firmware/Blakestream-GaintB-v2.0.img.xz
 ```
 
-Most flashing tools (BalenaEtcher, Raspberry Pi Imager) accept the `.xz` directly without manual decompression. If you want to verify before flashing:
+Most flashing tools ([BalenaEtcher](https://etcher.balena.io/), [Raspberry Pi Imager](https://www.raspberrypi.com/software/)) accept the `.xz` directly without manual decompression. If you want to verify before flashing:
 
 ```
 sha256sum Blakestream-GaintB-v2.0.img.xz
@@ -102,7 +102,7 @@ sha256sum Blakestream-GaintB-v2.0.img.xz
 
 You need an SD card **≥ 8 GB** and a card reader.
 
-**Option A — BalenaEtcher / Raspberry Pi Imager (graphical, easiest)**
+**Option A — [BalenaEtcher](https://etcher.balena.io/) / [Raspberry Pi Imager](https://www.raspberrypi.com/software/) (graphical, easiest)**
 - Open Etcher → "Flash from file" → pick `Blakestream-GaintB-v2.0.img.xz` → select SD card → Flash. Etcher handles `.xz` decompression automatically.
 
 **Option B — `dd` on Linux/macOS (command line)**
@@ -111,7 +111,10 @@ xz -d Blakestream-GaintB-v2.0.img.xz
 sudo dd if=Blakestream-GaintB-v2.0.img of=/dev/sdX bs=4M status=progress conv=fsync
 sync
 ```
-Replace `/dev/sdX` with your actual SD card device (`lsblk` to find it). Triple-check the device path before running — `dd` will silently overwrite anything you point it at.
+Replace `/dev/sdX` with your actual SD card device (`lsblk` to find it).
+
+> ### ⚠️ STOP — TRIPLE-CHECK YOUR DEVICE PATH
+> **`dd` will silently and permanently overwrite anything you point it at.** Pointing it at the wrong drive will destroy your system disk, an external backup, or any other connected media — with no confirmation prompt and no recovery. Run `lsblk` immediately before and after inserting the SD card so you can see exactly which device appeared.
 
 ### 3. Boot
 
@@ -131,13 +134,23 @@ Replace `/dev/sdX` with your actual SD card device (`lsblk` to find it). Triple-
 7. Assign **boards to the pool** — Status tab → for each board (0/1/2), pick the pool from the dropdown → Apply. You can pin all three to the same pool, or mix-and-match across multiple pools you've added.
 8. Watch the per-board hashrate cards on the Status tab — within a couple of minutes you should see ~60 GH/s per active board.
 
-### 5. (Optional) Failover
+### 5. (Optional) Failover — give each board a backup pool
 
-To enable same-algo automatic failover: add at least 2 pools in the same algorithm category. If a pinned pool dies, the affected board reroutes to the least-loaded same-algo pool with the lowest priority. When the primary recovers, the board auto-restores. The dashboard's `Failover Active` column shows you when a board is on a backup.
+Failover is per-board and explicit: for each board you pick **one** primary pool and (optionally) **one** backup pool. If the primary stops responding, that board switches to its backup within seconds; when the primary recovers, the board switches back automatically. You don't have to do anything.
+
+To set it up:
+
+1. **Add at least two pools** on the Miner tab — one to use as the primary, one as the backup. Both must use the same algorithm (e.g. two `blake256r8` pools for Blakecoin).
+2. On the **Status tab**, the pool column header is a dropdown. Switch it from **MAIN POOL** to **FAILOVER**.
+3. For each board, pick which pool should be its backup, then click **Apply & Restart**.
+
+The dropdown only shows pools that match that board's primary algorithm, so you can't accidentally pair a Blakecoin primary with a Decred backup. Leave a board's backup as `— none —` if you don't want one.
+
+When a board is running on its backup, you'll see a yellow **FAILOVER** chip on its hashrate card and the **Active** column flips to **True**. If both the primary and the backup are dead at the same time, that board stops hashing.
 
 ### 6. Rolling back
 
-If anything breaks, write the original `PiZero_GB_180105_V1.0.img` factory image back to the SD card with the same `dd`/Etcher steps. Power-cycle the BK-B. You're back to stock.
+If anything breaks, write the original `PiZero_GB_180105_V1.0.img` factory image back to the SD card with the same `dd`/Etcher steps. Power-cycle the BK-B.
 
 ---
 
