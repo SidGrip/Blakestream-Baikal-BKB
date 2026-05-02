@@ -1,4 +1,4 @@
-# Blakestream-GaintB v2.0
+# Blakestream-GaintB v2.1
 
 Custom controller firmware for the **Baikal BK-B Multi** ("Giant B") ASIC miner — a fork of Baikal's factory image, rebranded for Blakestream and substantially extended with a patched mining client, true per-board pool routing, automatic same-algo failover, hardened launcher, and a security-audited Scripta UI.
 
@@ -30,6 +30,14 @@ This project is licensed under **GPLv3**. The licence ([full text](https://www.g
 
 ---
 
+## What's new in v2.1
+
+- **Memory leak fix.** A long-standing bug in the upstream sgminer-baikal algorithm code leaked roughly 1.5 MB per minute in production, eventually filling the Pi Zero's 198 MB of RAM and triggering the Linux out-of-memory killer about every 85 minutes. v2.0's factory cron watchdog masked this — it respawned the miner within 30 seconds — so mining kept going, but every cycle was a brief hashrate dip and the dashboard's "Miner DOWN" banner flickered. v2.1 patches the leak. The miner now runs indefinitely with stable memory use (RSS ~5 MB).
+- All v2.0 features unchanged: per-board pool routing, explicit per-board failover, per-board hashrate graphs, pool history, dark/light themes, temperature watchdog, auto-updater removed.
+- Recommended upgrade for everyone running v2.0.
+
+---
+
 ## 🔑 Default credentials (CHANGE IMMEDIATELY)
 
 This image keeps the **factory Baikal default credentials** unchanged. They are well-known and trivially scannable on any network. Anyone with LAN access to a freshly-flashed device can log in as root.
@@ -50,7 +58,7 @@ We chose to keep the factory defaults rather than rotate them so:
 
 ## What's different vs the original Baikal firmware
 
-|  | Original Baikal firmware | Blakestream-GaintB v2.0 |
+|  | Original Baikal firmware | Blakestream-GaintB v2.1 |
 |---|---|---|
 | **Out of the box** | Pre-set for old Baikal default pools (Decred, Sia, LBRY, Pascal, Vcash) | Starts empty — you add your own Blakecoin pool and worker name on first login |
 | **Mine each of the 3 boards to a different pool** | No — all 3 boards share one pool | Yes — pick any pool per board |
@@ -88,13 +96,13 @@ Project info & download links: **https://explorer.blakestream.io/baikal-bkb**
 Direct download (~900 MB compressed):
 
 ```
-https://bootstrap.blakestream.io/firmware/Blakestream-GaintB-v2.0.img.xz
+https://bootstrap.blakestream.io/firmware/Blakestream-GaintB-v2.1.img.xz
 ```
 
 Most flashing tools ([BalenaEtcher](https://etcher.balena.io/), [Raspberry Pi Imager](https://www.raspberrypi.com/software/)) accept the `.xz` directly without manual decompression. If you want to verify before flashing:
 
 ```
-sha256sum Blakestream-GaintB-v2.0.img.xz
+sha256sum Blakestream-GaintB-v2.1.img.xz
 # compare against the published sha listed on explorer.blakestream.io/baikal-bkb
 ```
 
@@ -103,12 +111,12 @@ sha256sum Blakestream-GaintB-v2.0.img.xz
 You need an SD card **≥ 8 GB** and a card reader.
 
 **Option A — [BalenaEtcher](https://etcher.balena.io/) / [Raspberry Pi Imager](https://www.raspberrypi.com/software/) (graphical, easiest)**
-- Open Etcher → "Flash from file" → pick `Blakestream-GaintB-v2.0.img.xz` → select SD card → Flash. Etcher handles `.xz` decompression automatically.
+- Open Etcher → "Flash from file" → pick `Blakestream-GaintB-v2.1.img.xz` → select SD card → Flash. Etcher handles `.xz` decompression automatically.
 
 **Option B — `dd` on Linux/macOS (command line)**
 ```
-xz -d Blakestream-GaintB-v2.0.img.xz
-sudo dd if=Blakestream-GaintB-v2.0.img of=/dev/sdX bs=4M status=progress conv=fsync
+xz -d Blakestream-GaintB-v2.1.img.xz
+sudo dd if=Blakestream-GaintB-v2.1.img of=/dev/sdX bs=4M status=progress conv=fsync
 sync
 ```
 Replace `/dev/sdX` with your actual SD card device (`lsblk` to find it).

@@ -649,14 +649,22 @@ body.bs-dark .bs-modal-box {
 body.bs-dark .bs-modal-msg b {
     color: #4fc3f7;
 }
+body.bs-dark .bs-modal-actions .bs-modal-yes,
+body.bs-dark .bs-modal-actions .bs-modal-yes:hover,
+body.bs-dark .bs-modal-actions .bs-modal-yes:focus,
+body.bs-dark .bs-modal-actions .bs-modal-yes:active {
+    color: #0f1316 !important;
+}
 body.bs-dark .bs-modal-actions .bs-modal-yes {
     background: #4fc3f7;
     border-color: #4fc3f7;
-    color: #0f1316;
 }
-body.bs-dark .bs-modal-actions .bs-modal-yes:hover {
+body.bs-dark .bs-modal-actions .bs-modal-yes:hover,
+body.bs-dark .bs-modal-actions .bs-modal-yes:focus {
     background: #29b6f6;
     border-color: #29b6f6;
+    outline: 2px solid #d9534f;
+    outline-offset: 1px;
 }
 body.bs-dark .bs-modal-actions .bs-modal-no {
     background: #2d343d;
@@ -931,8 +939,7 @@ body.bs-dark .bs-pool-select optgroup {
     font-style: normal;
 }
 
-/* Vertical-align middle for status tables so the dropdown lines up with text
- * in adjacent cells. Applies in both modes. */
+/* Vertical-align middle so status-table dropdowns line up with text. */
 #statusDevs td, #statusDevs th,
 #statusPools td, #statusPools th {
     vertical-align: middle !important;
@@ -1029,9 +1036,11 @@ body.bs-dark .bs-pool-header-select option {
     padding: 3px 10px;
     font-size: 12px;
 }
-.bs-range-tabs li.active > a {
-    background-color: #4fc3f7;
-    color: #1a1d21;
+.bs-range-tabs li.active > a,
+.bs-range-tabs li.active > a:focus,
+.bs-range-tabs li.active > a:hover {
+    background-color: #4fc3f7 !important;
+    color: #1a1d21 !important;
 }
 .bs-hashrate-graph {
     width: 100%;
@@ -1112,9 +1121,11 @@ body:not(.bs-dark) .bs-range-tabs li > a:hover {
     background-color: #d3dae3;
     color: #1a1d21;
 }
-body:not(.bs-dark) .bs-range-tabs li.active > a {
-    background-color: #4fc3f7;
-    color: #0f1316;
+body:not(.bs-dark) .bs-range-tabs li.active > a,
+body:not(.bs-dark) .bs-range-tabs li.active > a:focus,
+body:not(.bs-dark) .bs-range-tabs li.active > a:hover {
+    background-color: #4fc3f7 !important;
+    color: #0f1316 !important;
 }
 
 body.bs-dark .bs-board-card {
@@ -1132,7 +1143,9 @@ body.bs-dark .bs-range-tabs li > a {
 body.bs-dark .bs-range-tabs li > a:hover {
     background-color: #3a4352;
 }
-body.bs-dark .bs-range-tabs li.active > a {
-    background-color: #4fc3f7;
-    color: #0f1316;
+body.bs-dark .bs-range-tabs li.active > a,
+body.bs-dark .bs-range-tabs li.active > a:focus,
+body.bs-dark .bs-range-tabs li.active > a:hover {
+    background-color: #4fc3f7 !important;
+    color: #0f1316 !important;
 }

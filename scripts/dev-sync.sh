@@ -3,7 +3,7 @@
 #
 # Workflow:
 #   1. Flash a "dev seed" SD card with the original PiZero_GB_180105_V1.0.img once
-#      (or with our build/Blakestream-BKB-v2.0.img after it exists)
+#      (or with our build/Blakestream-BKB-v2.1.img after it exists)
 #   2. Boot the BK-B, find its IP (e.g. via DHCP / arp / Scripta default mDNS)
 #   3. Set up SSH key once: ssh-copy-id root@<baikal-ip>
 #   4. Edit files in firmware-modified/rootfs/ or overlay/ on this dev machine

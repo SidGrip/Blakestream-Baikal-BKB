@@ -1,23 +1,35 @@
-From: sid <sidgrip@gmail.com>
-Subject: [PATCH 0008] fix unguarded bin2hex() leaks in algorithm/{blakecoin,blake256,decred}.c
+diff --git a/algorithm/blake256.c b/algorithm/blake256.c
+index b81b1fb..283c666 100644
+--- a/algorithm/blake256.c
++++ b/algorithm/blake256.c
+@@ -62,10 +62,18 @@ void blake256_midstate(struct work *work)
+   memcpy(work->midstate, ctx_blake.H, 32);
+   endian_flip32(work->midstate, work->midstate);
 
-Three algorithm files call bin2hex() twice (data + midstate) for a
-LOG_DEBUG message but neither guard with `if (opt_debug)` nor free
-the returned pointers. In production (opt_debug=false) the applog is
-a no-op but the bin2hex calls still allocate ~232 bytes per
-work-generation. On the BK-B's 198 MB Pi Zero this leaks ~1.5 MB/min
-and the kernel OOM-kills sgminer every ~85 min. The factory cron
-watchdog respawned sgminer within 30 sec each time, so v2.0 still
-mined — but every cycle was a brief hashrate dip.
+-  char *strdata, *strmidstate;
+-  strdata = bin2hex(work->data, 80);
+-  strmidstate = bin2hex(work->midstate, 32);
+-  applog(LOG_DEBUG, "data %s midstate %s", strdata, strmidstate);
++  /* Blakestream-GaintB v2.1 leak fix: upstream calls bin2hex() unconditionally
++   * for a LOG_DEBUG message but never frees the result. In production
++   * (opt_debug=false) the applog is a no-op but the allocations still happen,
++   * leaking ~232 bytes per work-generation. Guard with opt_debug + free both
++   * buffers. Same bug fixed in blakecoin.c and decred.c. */
++  if (opt_debug) {
++    char *strdata = bin2hex(work->data, 80);
++    char *strmidstate = bin2hex(work->midstate, 32);
++    applog(LOG_DEBUG, "data %s midstate %s", strdata, strmidstate);
++    free(strdata);
++    free(strmidstate);
++  }
+ }
 
-Wrap each pair in `if (opt_debug)` and free both buffers, matching
-the pattern already used elsewhere in the codebase (cryptonight.c
-calls free(), set_target() in sgminer.c uses opt_debug guard, etc.).
-
----
---- a/src/algorithm/blakecoin.c
-+++ b/src/algorithm/blakecoin.c
-@@ -62,8 +62,17 @@
+ void blake256_prepare_work(dev_blk_ctx *blk, uint32_t *state, uint32_t *pdata)
+diff --git a/algorithm/blakecoin.c b/algorithm/blakecoin.c
+index e0949cf..f468976 100644
+--- a/algorithm/blakecoin.c
++++ b/algorithm/blakecoin.c
+@@ -62,10 +62,19 @@ void blakecoin_midstate(struct work *work)
    memcpy(work->midstate, ctx_blake.H, 32);
    endian_flip32(work->midstate, work->midstate);
 
@@ -39,32 +51,13 @@ calls free(), set_target() in sgminer.c uses opt_debug guard, etc.).
 +    free(strmidstate);
 +  }
  }
---- a/src/algorithm/blake256.c
-+++ b/src/algorithm/blake256.c
-@@ -62,8 +62,16 @@
-   memcpy(work->midstate, ctx_blake.H, 32);
-   endian_flip32(work->midstate, work->midstate);
 
--  char *strdata, *strmidstate;
--  strdata = bin2hex(work->data, 80);
--  strmidstate = bin2hex(work->midstate, 32);
--  applog(LOG_DEBUG, "data %s midstate %s", strdata, strmidstate);
-+  /* Blakestream-GaintB v2.1 leak fix: upstream calls bin2hex() unconditionally
-+   * for a LOG_DEBUG message but never frees the result. In production
-+   * (opt_debug=false) the applog is a no-op but the allocations still happen,
-+   * leaking ~232 bytes per work-generation. Guard with opt_debug + free both
-+   * buffers. Same bug fixed in blakecoin.c and decred.c. */
-+  if (opt_debug) {
-+    char *strdata = bin2hex(work->data, 80);
-+    char *strmidstate = bin2hex(work->midstate, 32);
-+    applog(LOG_DEBUG, "data %s midstate %s", strdata, strmidstate);
-+    free(strdata);
-+    free(strmidstate);
-+  }
- }
---- a/src/algorithm/decred.c
-+++ b/src/algorithm/decred.c
-@@ -58,8 +58,16 @@
+ void blakecoin_prepare_work(dev_blk_ctx *blk, uint32_t *state, uint32_t *pdata)
+diff --git a/algorithm/decred.c b/algorithm/decred.c
+index dd1654a..fa0e31a 100644
+--- a/algorithm/decred.c
++++ b/algorithm/decred.c
+@@ -58,10 +58,18 @@ void decred_midstate(struct work *work)
    memcpy(work->midstate, ctx_blake.H, 32);
    endian_flip32(work->midstate, work->midstate);
 
@@ -85,3 +78,5 @@ calls free(), set_target() in sgminer.c uses opt_debug guard, etc.).
 +    free(strmidstate);
 +  }
  }
+
+ void decred_prepare_work(dev_blk_ctx *blk, uint32_t *state, uint32_t *pdata)

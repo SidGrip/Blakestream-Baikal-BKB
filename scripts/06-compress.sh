@@ -6,7 +6,7 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
-IMG="${HERE}/build/Blakestream-BKB-v2.0.img"
+IMG="${HERE}/build/Blakestream-BKB-v2.1.img"
 
 if [[ ! -f "${IMG}" ]]; then
     echo "[06-compress] ERROR: ${IMG} missing. Run 05-repack.sh first." >&2

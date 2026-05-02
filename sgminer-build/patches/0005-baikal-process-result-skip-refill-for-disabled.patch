@@ -1,75 +1,22 @@
+From c27eed108b331e3d64fc281b341b04cead65b42f Mon Sep 17 00:00:00 2001
 From: Blakestream-GaintB <sid@blakestream.local>
-Subject: [PATCH 5/5] driver-baikalu: skip baikal_send_work auto-refill for disabled miners
+Date: Wed, 8 Apr 2026 23:31:37 -0500
+Subject: [PATCH] driver-baikalu: skip baikal_send_work auto-refill for
+ disabled miners
 
-Found while validating the 2-boards-idle case in production:
-
-  With patches 1+2+4 applied, ascdisable correctly idles a board from
-  sgminer's per-thread perspective: Enabled=N, MHS 5s=0, sgminer's
-  per-thread Total MH counter freezes (the thread is suspended).
-
-  BUT — looking at the device-level behaviour over time, the *firmware
-  side* of the disabled board kept hashing forever. Symptom: the
-  disabled board's Accepted counter slowly incremented and the pool
-  showed shares being submitted on its behalf, even though sgminer's
-  Total MH was frozen.
-
-Root cause: baikal_process_result() has a SECOND work-push path that
-patch 1 doesn't cover. When the firmware sets the 0x02 bit on a
-result message ("I need more work"), the function unconditionally
-calls baikal_send_work(baikal, i) to refill that miner's queue:
-
-  if (msg.param & 0x02) {
-      baikal_send_work(baikal, i);
-  }
-
-This auto-refill ignores cgpu->deven completely. The result is a
-self-sustaining loop:
-
-  1. Disabled miner's FIFO has work in it at the moment of disable
-  2. Firmware hashes it, finds nonces, returns them via the result poll
-  3. Result message also signals "queue is getting low, send more"
-  4. baikal_process_result calls baikal_send_work for the disabled miner
-  5. Firmware FIFO refills, miner keeps hashing
-  6. Loop forever
-
-Fix: gate the auto-refill on cgpu->deven, mirroring patch 1's check
-in baikal_update_work. With this gate, the firmware never gets new
-work after a disable, the FIFO drains in ~7 seconds (one queue worth),
-and then the board sits truly idle.
-
-Validation on the live device after patch 5: configured boards 0+1
-to idle, board 2 to mining. Sampled devs API at T+0 and T+60:
-
-  ASC0 (idle):  Total MH=420741 → 420741 (frozen, +0)
-                Accepted=0 → 0 (frozen)
-                Last Valid Work=startup time (frozen)
-  ASC1 (idle):  Total MH=422031 → 422031 (frozen, +0)
-                Accepted=1 → 1 (frozen, the lone FIFO drain share)
-                Last Valid Work=startup time (frozen)
-  ASC2 (mine):  Total MH=7.7TH → 12.2TH (+4.5TH = 74 GH/s × 60s)
-                Accepted=2 → 3
-                Last Valid Work=updates every poll cycle
-
-Both disabled boards are now genuinely silent at the firmware level,
-not just at the sgminer-accounting level. The Accepted=1 on each
-disabled board is the FIFO drain — the ~7 seconds of work that was
-already queued at startup before the disable command went through.
-After that, zero hashing.
 ---
- driver-baikalu.c | 12 +++++++++++-
- 1 file changed, 11 insertions(+), 1 deletion(-)
+ driver-baikalu.c | 13 ++++++++++++-
+ 1 file changed, 12 insertions(+), 1 deletion(-)
 
 diff --git a/driver-baikalu.c b/driver-baikalu.c
+index 4ca7e18..7ec5570 100644
 --- a/driver-baikalu.c
 +++ b/driver-baikalu.c
-@@ -768,9 +768,19 @@ static bool baikal_process_result(struct cgpu_info *baikal)
-                 baikal_checknonce(baikal, &msg);
+@@ -750,7 +750,18 @@ static bool baikal_process_result(struct cgpu_info *baikal)
              }
 
--            if (msg.param & 0x02) {
+             if (msg.param & 0x02) {
 -                baikal_send_work(baikal, i);
--            }
-+            if (msg.param & 0x02) {
 +                /* PATCH 5: skip auto-refill for administratively disabled
 +                 * miners. Patch 1 only covered baikal_update_work; this is
 +                 * the OTHER work-push path. Without this skip, the firmware
@@ -82,7 +29,8 @@ diff --git a/driver-baikalu.c b/driver-baikalu.c
 +                        baikal_send_work(baikal, i);
 +                    }
 +                }
-+            }
+             }
 
              if (msg.param & 0x04) {
-                 return false;
+--
+2.43.0

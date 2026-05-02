@@ -16,7 +16,7 @@ if ( isset($_SESSION['_logged_']) and ($_SESSION['_logged_'] === true) )  {
 <html lang="en" ng-app="Scripta">
 <head>
   <meta charset="utf-8">
-  <title>Blakestream-GaintB v2.0 &mdash; Sign In</title>
+  <title>Blakestream-GaintB v2.1 &mdash; Sign In</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="description" content="Blakestream miner controller">
   <meta name="author" content="Blakestream">
@@ -169,7 +169,7 @@ if ( isset($_SESSION['_logged_']) and ($_SESSION['_logged_'] === true) )  {
     <div class="container text-center">
       <hr />
       <p>
-        <a href='http://www.lateralfactory.com/scripta/' target='_blank' rel='noopener noreferrer'>Scripta</a> by <a href='http://www.lateralfactory.com' target='_blank' rel='noopener noreferrer'>Lateral Factory</a>, modified by Baikal Miner, rebranded as <a href='https://github.com/SidGrip/Blakestream-Baikal-BKB' target='_blank' rel='noopener noreferrer'>Blakestream-GaintB v2.0</a> &mdash; GPLv3
+        <a href='http://www.lateralfactory.com/scripta/' target='_blank' rel='noopener noreferrer'>Scripta</a> by <a href='http://www.lateralfactory.com' target='_blank' rel='noopener noreferrer'>Lateral Factory</a>, modified by Baikal Miner, rebranded as <a href='https://github.com/SidGrip/Blakestream-Baikal-BKB' target='_blank' rel='noopener noreferrer'>Blakestream-GaintB v2.1</a> &mdash; GPLv3
       </p>
     </div>
   </footer>
@@ -186,6 +186,7 @@ if ( isset($_SESSION['_logged_']) and ($_SESSION['_logged_'] === true) )  {
 
 			if(e.which == 13) {
 				e.preventDefault();
+				$('#loginbutton').click();
 			}
 		});
 

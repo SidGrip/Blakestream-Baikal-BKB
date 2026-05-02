@@ -1,8 +1,10 @@
-# Blakestream-GaintB: allow lighttpd's www-data user to run the miner launcher
-# without a password. This lets the Scripta web UI restart sgminer when the
-# user changes pool assignments via f_blakestream.php.
+# Blakestream-GaintB: allow lighttpd's www-data user to run only the narrow
+# root helpers needed by the web UI: miner launch/restart and timezone update.
 #
-# Scope: ONLY the launcher script. Nothing else.
+# Scope: explicit commands below only. Nothing else.
 
 www-data ALL=(root) NOPASSWD: /opt/scripta/startup/miner-start.sh
 www-data ALL=(root) NOPASSWD: /opt/scripta/startup/miner-restart.sh
+# Settings tab → Timezone → Update needs to write /etc/localtime.
+# The helper validates input is a real file under /usr/share/zoneinfo.
+www-data ALL=(root) NOPASSWD: /opt/scripta/bin/set-timezone.sh *

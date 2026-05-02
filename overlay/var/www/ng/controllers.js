@@ -1345,7 +1345,7 @@ angular.module('Scripta.controllers', [])
     var sel = $scope.backups[$scope.restoring];
     if (!sel) return;
     $scope.bsConfirm(
-      'Delete the backup <b>' + sel.dir + '</b> permanently? This cannot be undone.',
+      'This cannot be undone.',
       function() {
         $http.get('f_blakestream.php?action=delete_backup&name=' + encodeURIComponent(sel.dir))
           .success(function(d) {
@@ -1360,7 +1360,7 @@ angular.module('Scripta.controllers', [])
               (d && d.error) ? d.error : 'Failed to delete backup');
           });
       },
-      {title: 'Delete backup', yesLabel: 'Delete', noLabel: 'Cancel'}
+      {title: 'Delete backup "' + sel.dir + '"', yesLabel: 'Delete', noLabel: 'Cancel'}
     );
   };
 

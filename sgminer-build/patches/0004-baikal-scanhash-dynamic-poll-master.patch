@@ -1,41 +1,18 @@
+From 27cfb6b6ca32a96c61f13d464750ba25ca40354c Mon Sep 17 00:00:00 2001
 From: Blakestream-GaintB <sid@blakestream.local>
-Subject: [PATCH 4/4] driver-baikalu: dynamic poll-master so disabling miner 0 doesn't break USB polling
+Date: Wed, 8 Apr 2026 23:31:01 -0500
+Subject: [PATCH] driver-baikalu: dynamic poll-master so disabling miner 0
+ doesn't break USB polling
 
-Part 4 of the per-board ascdisable fix.
-
-Architectural problem found while testing patches 1+2:
-
-  baikal_scanhash() does the USB result polling for ALL miners on the
-  device, but the poll is gated by `if (baikal->miner_id == 0)`. When
-  ascdisable|0 is issued, sgminer's main loop suspends miner 0's thread
-  (deven=DEV_DISABLED). That thread is the only one that calls
-  baikal_process_result(), so USB result polling stops entirely. The
-  other miners (1, 2) keep hashing but their results never get read off
-  the STM32 bridge — no shares come back.
-
-Symptom on the live device: ascdisable|0 → ASC 0 idles correctly,
-but ASC 1 + 2 continue hashing at full rate with zero new Accepted
-shares. Stats showed BKLU0 was the only board accumulating USB read
-timeouts, confirming nothing else was driving the bus.
-
-Fix: at the top of baikal_scanhash, scan info->miners[] and find the
-LOWEST currently-enabled miner_id. That miner becomes the poll master
-for this round. With miner 0 disabled, miner 1 takes over polling
-naturally; with all 3 enabled, miner 0 polls (same as before).
-
-Also collapse the broken cleanup-on-failure path inside scanhash:
-the old code called baikal_cleanup() when baikal_process_result()
-returned false, which is the same nuclear-option problem patch 2 fixed
-in update_work. Replace with a warning + skip-this-cycle.
 ---
- driver-baikalu.c | 32 ++++++++++++++++++++++++++------
- 1 file changed, 26 insertions(+), 6 deletions(-)
+ driver-baikalu.c | 31 ++++++++++++++++++++++++-------
+ 1 file changed, 24 insertions(+), 7 deletions(-)
 
 diff --git a/driver-baikalu.c b/driver-baikalu.c
+index d0d402d..4ca7e18 100644
 --- a/driver-baikalu.c
 +++ b/driver-baikalu.c
-@@ -858,14 +858,34 @@ static int64_t baikal_scanhash(struct thr_info *thr)
-     if (baikal->usbinfo.nodev) {
+@@ -839,14 +839,31 @@ static int64_t baikal_scanhash(struct thr_info *thr)
          return (-1);
      }
 
@@ -43,10 +20,6 @@ diff --git a/driver-baikalu.c b/driver-baikalu.c
 -        if (baikal_process_result(baikal) != true) {
 -            baikal_cleanup(baikal);
 -            return (-1);
--        }
--    }
--    else {
--        cgsleep_ms(50);
 +    /* PATCH 4: Determine which miner_id should poll USB results.
 +     * Originally hardcoded to 0, but if miner 0 is administratively
 +     * disabled (ascdisable), sgminer suspends its thread, which would
@@ -71,5 +44,12 @@ diff --git a/driver-baikalu.c b/driver-baikalu.c
 +            }
 +        } else {
 +            cgsleep_ms(50);
-+        }
+         }
+-    }
+-    else {
+-        cgsleep_ms(50);
      }
+
+     baikal->temp = miner->temp;
+--
+2.43.0

@@ -9,7 +9,7 @@ if (!isset($_SESSION['_logged_']) || $_SESSION['_logged_'] === false) {
 <html lang="en" ng-app="Scripta">
 <head>
     <meta charset="utf-8">
-    <title>Blakestream-GaintB v2.0</title>
+    <title>Blakestream-GaintB v2.1</title>
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="description" content="Blakestream miner controller">
     <meta name="author" content="Blakestream">
@@ -101,7 +101,7 @@ if (!isset($_SESSION['_logged_']) || $_SESSION['_logged_'] === false) {
 <div class="bs-modal-overlay ng-cloak" ng-show="bsConfirmShow" ng-click="bsConfirmCancel()">
     <div class="bs-modal-box" ng-click="$event.stopPropagation()">
         <div class="bs-modal-title" ng-show="bsConfirmTitle">{{bsConfirmTitle}}</div>
-        <div class="bs-modal-msg" ng-bind-html="bsConfirmMsg"></div>
+        <div class="bs-modal-msg" ng-bind-html-unsafe="bsConfirmMsg"></div>
         <div class="bs-modal-actions">
             <button type="button" class="btn btn-primary bs-modal-yes" ng-click="bsConfirmOk()">{{bsConfirmYesLabel || 'OK'}}</button>
             <button type="button" class="btn btn-default bs-modal-no" ng-click="bsConfirmCancel()" ng-show="bsConfirmShowCancel !== false">{{bsConfirmNoLabel || 'Cancel'}}</button>
@@ -120,7 +120,7 @@ if (!isset($_SESSION['_logged_']) || $_SESSION['_logged_'] === false) {
         &nbsp;-&nbsp;
         <span class="bs-tip" data-tip="{{bsSysStats.mem_used_mb}}M used of {{bsSysStats.mem_total_mb}}M total">Mem {{bsSysStats.mem_pct}}%</span>
         </span>
-        <a href='http://www.lateralfactory.com/scripta/' target='_blank' rel='noopener noreferrer'>Scripta</a> by <a href='http://www.lateralfactory.com' target='_blank' rel='noopener noreferrer'>Lateral Factory</a>, modified by Baikal Miner, rebranded as <a href='https://github.com/SidGrip/Blakestream-Baikal-BKB' target='_blank' rel='noopener noreferrer'>Blakestream-GaintB v2.0</a> &mdash; GPLv3
+        <a href='http://www.lateralfactory.com/scripta/' target='_blank' rel='noopener noreferrer'>Scripta</a> by <a href='http://www.lateralfactory.com' target='_blank' rel='noopener noreferrer'>Lateral Factory</a>, modified by Baikal Miner, rebranded as <a href='https://github.com/SidGrip/Blakestream-Baikal-BKB' target='_blank' rel='noopener noreferrer'>Blakestream-GaintB v2.1</a> &mdash; GPLv3
         </p>
     </div>
 </footer>

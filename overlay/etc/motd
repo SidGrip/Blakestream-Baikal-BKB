@@ -4,7 +4,7 @@
  |  _ \| |/ _` | |/ / _ \ __| __| '__/ _ \/ _` | '_ ` _ \
  | |_) | | (_| |   <  __\__ \ |_| | |  __/ (_| | | | | | |
  |____/|_|\__,_|_|\_\___|___/\__|_|  \___|\__,_|_| |_| |_|
-                                                  GaintB v2.0
+                                                  GaintB v2.1
 
  Custom controller firmware for the Baikal BK-B Multi ASIC.
  Mining Blakecoin (BLAKE-256 R8) by default. Per-ASC pool routing.

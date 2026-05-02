@@ -110,65 +110,6 @@ driver-baikalu.c, mirroring the existing primary pin storage.
  }
  
  void baikal_set_effective_pool(struct cgpu_info *cgpu, int pool_no, bool failover_active)
-@@ -881,7 +921,18 @@
-             }
- 
-             if (msg.param & 0x02) {
--                baikal_send_work(baikal, i);
-+                /* PATCH 5: skip auto-refill for administratively disabled
-+                 * miners. Patch 1 only covered baikal_update_work; this is
-+                 * the OTHER work-push path. Without this skip, the firmware
-+                 * keeps requesting more work via the result-poll bit and
-+                 * the disabled board hashes forever. With this skip the
-+                 * FIFO drains naturally and the board goes truly idle. */
-+                {
-+                    struct thr_info *_t = mining_thr[miner->thr_id];
-+                    if (!_t || !_t->cgpu || _t->cgpu->deven != DEV_DISABLED) {
-+                        baikal_send_work(baikal, i);
-+                    }
-+                }
-             }
- 
-             if (msg.param & 0x04) {
-@@ -970,14 +1021,31 @@
-         return (-1);
-     }
- 
--    if (baikal->miner_id == 0) {
--        if (baikal_process_result(baikal) != true) {
--            baikal_cleanup(baikal);
--            return (-1);
-+    /* PATCH 4: Determine which miner_id should poll USB results.
-+     * Originally hardcoded to 0, but if miner 0 is administratively
-+     * disabled (ascdisable), sgminer suspends its thread, which would
-+     * stop USB polling for everyone. Instead, the LOWEST currently-
-+     * enabled miner_id polls. Also: do NOT cleanup the device on a
-+     * transient process_result failure -- that nukes ALL miners. */
-+    {
-+        int _pm = 0, _i;
-+        for (_i = 0; _i < info->miner_count; _i++) {
-+            struct thr_info *_t = mining_thr[info->miners[_i].thr_id];
-+            if (_t && _t->cgpu && _t->cgpu->deven != DEV_DISABLED) {
-+                _pm = _i;
-+                break;
-+            }
-+        }
-+        if (baikal->miner_id == _pm) {
-+            if (baikal_process_result(baikal) != true) {
-+                applog(LOG_WARNING,
-+                    "baikal_process_result transient failure miner %d, skipping (was: full cleanup)",
-+                    baikal->miner_id);
-+                return 0;
-+            }
-+        } else {
-+            cgsleep_ms(50);
-         }
--    }
--    else {
--        cgsleep_ms(50);
-     }
- 
-     baikal->temp = miner->temp;
 --- a/api.h
 +++ b/api.h
 @@ -196,6 +196,9 @@
@@ -248,8 +189,8 @@ driver-baikalu.c, mirroring the existing primary pin storage.
   * Why a filter on the GLOBAL queue rather than per-pool queues: the per-pool
 - * queue rewrite (the abandoned Path A branch) caused a generator-thread
 - * starvation deadlock — Path A is therefore abandoned. The filter
-+ * queue rewrite (codex's v2-perasc-routing branch) caused a generator-thread
-+ * starvation deadlock — see docs/v2-routing-paths.md Path A. The filter
++ * queue rewrite (an earlier development branch) caused a generator-thread
++ * starvation deadlock — Path A is therefore abandoned. The filter
   * approach is O(N) per pop where N is total staged items, but N is typically
   * 5-10 on a BK-B so the cost is microseconds. The starvation class is gone:
   * gen_thread checks pool_with_routed_deficit() before sleeping, so it won't
@@ -259,8 +200,8 @@ driver-baikalu.c, mirroring the existing primary pin storage.
   *
 - * These are lifted nearly verbatim from the earlier Path A development
 - * branch. The only difference: select_baikal_failover_pool_locked
-+ * These are lifted nearly verbatim from codex's v2-perasc-routing branch
-+ * (commit 0e0b60e). The only difference: select_baikal_failover_pool_locked
++ * These are lifted nearly verbatim from an earlier development branch
++ * (historical reference). The only difference: select_baikal_failover_pool_locked
   * does NOT use the staged_work_count tiebreaker, because Path B doesn't add
   * staged_work_count to struct pool. Tiebreaker order is: same-algo,
   * lowest effective ASC count, then lowest pool prio.

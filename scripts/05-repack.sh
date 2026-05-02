@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 05-repack.sh — Build the output Blakestream-BKB-v2.0.img by:
+# 05-repack.sh — Build the output Blakestream-BKB-v2.1.img by:
 #   1. Copying the original .img to build/
 #   2. Mounting the copy's rootfs partition read-write via loop device
 #   3. rsync'ing firmware-modified/rootfs/ over the mounted rootfs
@@ -19,7 +19,7 @@ fi
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
 SRC_IMG="${HERE}/firmware-original/PiZero_GB_180105_V1.0.img"
 OUT_DIR="${HERE}/build"
-OUT_IMG="${OUT_DIR}/Blakestream-BKB-v2.0.img"
+OUT_IMG="${OUT_DIR}/Blakestream-BKB-v2.1.img"
 ROOTFS_SRC="${HERE}/firmware-modified/rootfs"
 MNT="/mnt/baikal-rw"
 
@@ -109,7 +109,12 @@ fi
 if [[ -d "${ROOTFS_SRC}/opt/scripta/etc" ]]; then
     chgrp 33 "${ROOTFS_SRC}/opt/scripta/etc"
     chmod 775 "${ROOTFS_SRC}/opt/scripta/etc"
-    for f in saved-pools.json board-assignments.json temp-config.json temp-state.json failover-config.json; do
+    # Blakestream-managed JSONs + factory files PHP needs to write (settings,
+    # web password, sgminer options). Without these the Settings tab silently
+    # fails to save — file_put_contents() returns false and the toast says
+    # "Configuration saved" but nothing actually persists.
+    for f in saved-pools.json board-assignments.json temp-config.json temp-state.json failover-config.json \
+             scripta.conf uipasswd miner.options.json miner.pools.json miner.conf; do
         if [[ -f "${ROOTFS_SRC}/opt/scripta/etc/${f}" ]]; then
             chown 33:33 "${ROOTFS_SRC}/opt/scripta/etc/${f}"
         fi
