@@ -1,0 +1,87 @@
+From: sid <sidgrip@gmail.com>
+Subject: [PATCH 0008] fix unguarded bin2hex() leaks in algorithm/{blakecoin,blake256,decred}.c
+
+Three algorithm files call bin2hex() twice (data + midstate) for a
+LOG_DEBUG message but neither guard with `if (opt_debug)` nor free
+the returned pointers. In production (opt_debug=false) the applog is
+a no-op but the bin2hex calls still allocate ~232 bytes per
+work-generation. On the BK-B's 198 MB Pi Zero this leaks ~1.5 MB/min
+and the kernel OOM-kills sgminer every ~85 min. The factory cron
+watchdog respawned sgminer within 30 sec each time, so v2.0 still
+mined — but every cycle was a brief hashrate dip.
+
+Wrap each pair in `if (opt_debug)` and free both buffers, matching
+the pattern already used elsewhere in the codebase (cryptonight.c
+calls free(), set_target() in sgminer.c uses opt_debug guard, etc.).
+
+---
+--- a/src/algorithm/blakecoin.c
++++ b/src/algorithm/blakecoin.c
+@@ -62,8 +62,17 @@
+   memcpy(work->midstate, ctx_blake.H, 32);
+   endian_flip32(work->midstate, work->midstate);
+
+-  char *strdata, *strmidstate;
+-  strdata = bin2hex(work->data, 80);
+-  strmidstate = bin2hex(work->midstate, 32);
+-  applog(LOG_DEBUG, "data %s midstate %s", strdata, strmidstate);
++  /* Blakestream-GaintB v2.1 leak fix: upstream calls bin2hex() unconditionally
++   * for a LOG_DEBUG message but never frees the result. In production
++   * (opt_debug=false) the applog is a no-op but the allocations still happen,
++   * leaking ~232 bytes per work-generation (~1.5 MB/min, OOM ~85 min on Pi
++   * Zero). Guard with opt_debug + free both buffers. Same bug fixed in
++   * blake256.c and decred.c. */
++  if (opt_debug) {
++    char *strdata = bin2hex(work->data, 80);
++    char *strmidstate = bin2hex(work->midstate, 32);
++    applog(LOG_DEBUG, "data %s midstate %s", strdata, strmidstate);
++    free(strdata);
++    free(strmidstate);
++  }
+ }
+--- a/src/algorithm/blake256.c
++++ b/src/algorithm/blake256.c
+@@ -62,8 +62,16 @@
+   memcpy(work->midstate, ctx_blake.H, 32);
+   endian_flip32(work->midstate, work->midstate);
+
+-  char *strdata, *strmidstate;
+-  strdata = bin2hex(work->data, 80);
+-  strmidstate = bin2hex(work->midstate, 32);
+-  applog(LOG_DEBUG, "data %s midstate %s", strdata, strmidstate);
++  /* Blakestream-GaintB v2.1 leak fix: upstream calls bin2hex() unconditionally
++   * for a LOG_DEBUG message but never frees the result. In production
++   * (opt_debug=false) the applog is a no-op but the allocations still happen,
++   * leaking ~232 bytes per work-generation. Guard with opt_debug + free both
++   * buffers. Same bug fixed in blakecoin.c and decred.c. */
++  if (opt_debug) {
++    char *strdata = bin2hex(work->data, 80);
++    char *strmidstate = bin2hex(work->midstate, 32);
++    applog(LOG_DEBUG, "data %s midstate %s", strdata, strmidstate);
++    free(strdata);
++    free(strmidstate);
++  }
+ }
+--- a/src/algorithm/decred.c
++++ b/src/algorithm/decred.c
+@@ -58,8 +58,16 @@
+   memcpy(work->midstate, ctx_blake.H, 32);
+   endian_flip32(work->midstate, work->midstate);
+
+-  char *strdata, *strmidstate;
+-  strdata = bin2hex(work->data, 128);
+-  strmidstate = bin2hex(work->midstate, 32);
+-  applog(LOG_DEBUG, "data %s midstate %s", strdata, strmidstate);
++  /* Blakestream-GaintB v2.1 leak fix: upstream calls bin2hex() unconditionally
++   * for a LOG_DEBUG message but never frees the result. In production
++   * (opt_debug=false) the applog is a no-op but the allocations still happen,
++   * leaking ~232 bytes per work-generation. Guard with opt_debug + free both
++   * buffers. Same bug fixed in blakecoin.c and blake256.c. */
++  if (opt_debug) {
++    char *strdata = bin2hex(work->data, 128);
++    char *strmidstate = bin2hex(work->midstate, 32);
++    applog(LOG_DEBUG, "data %s midstate %s", strdata, strmidstate);
++    free(strdata);
++    free(strmidstate);
++  }
+ }
