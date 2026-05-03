@@ -1,0 +1,31 @@
+Default the unselected-variant `BAIKAL_CLK_DEF` to 400 (BK-B / Giant B).
+
+Upstream sgminer-baikal builds with `BAIKAL_TYPE = BAIKAL_ALL`, which causes
+the variant-specific `#if/#elif` chain to fall through to the `#else` branch
+that defaults `BAIKAL_CLK_DEF` to 200 (Giant N stock). The BK-B operates at
+400 stock, so this patch flips the fallback to 400 to match the hardware
+this firmware targets.
+
+The actual ASIC PLL on BK-B comes up at ~480 regardless of what sgminer
+sends, so this is mostly cosmetic (settings slider default + initial
+ascclock value), but it keeps the in-tree default consistent with the
+hardware.
+
+--- a/driver-baikal.h
++++ b/driver-baikal.h
+@@ -18,12 +18,12 @@
+ #define BAIKAL_CLK_MIN  		(150)
+ #define BAIKAL_CLK_MAX		    (400)
+
+-#if BAIKAL_TYPE == BAIKAL_1751 // Really?
++#if BAIKAL_TYPE == BAIKAL_1751
+ #define BAIKAL_CLK_DEF  		(200)
+-#elif BAIKAL_TYPE == BAIKAL_1791 // Really?
++#elif BAIKAL_TYPE == BAIKAL_1791
+ #define BAIKAL_CLK_DEF  		(400)
+ #else
+-#define BAIKAL_CLK_DEF  		(200) // This must be changed depending on your miner type. If you have Giant N set to 200, If you have X10 set to 300 and if you have B set to 400. Its left at 200 intentionally because Giant N is stock at 200.
++#define BAIKAL_CLK_DEF  		(400) // BK-B (Giant B) stock clock.
+ #endif
+
+ #define BAIKAL_CUTOFF_TEMP      (55)
