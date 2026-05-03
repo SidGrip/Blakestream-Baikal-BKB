@@ -38,7 +38,32 @@ if(!empty($devs['data']['DEVS'])){
   }
 }
 else{
+  // Blakestream-GaintB: when sgminer isn't running we still need to render
+  // 3 placeholder rows in the Status page Devices table so the user can
+  // pick a pool for each board and click Apply & Restart. Without these,
+  // status.html hides the entire table (chicken-and-egg: no devices means
+  // no assignment dropdowns means no way to bootstrap a fresh miner from
+  // the UI). The BK-B always has 3 ASCs (IDs 0, 1, 2).
   $r['status']['devs'] = array();
+  for ($id = 0; $id < 3; $id++) {
+    $r['status']['devs'][$id] = array(
+      'Name'           => 'BKLU',
+      'ID'             => $id,
+      'Enabled'        => 'N',
+      'Status'         => 'Idle',
+      'Temperature'    => 0,
+      'MHS5s'          => 0,
+      'MHSav'          => 0,
+      'Accepted'       => 0,
+      'Rejected'       => 0,
+      'HardwareErrors' => 0,
+      'Utility'        => 0,
+      'LastShareTime'  => 0,
+      'Chips'          => 0,
+      'Clock'          => 0,
+      'Algo'           => '-',
+    );
+  }
 }
 
 if(!empty($pools['data']['POOLS'])){
