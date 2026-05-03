@@ -36,19 +36,14 @@
     </div>
     <div class="form-group">
       <label for="userTimezone" class="control-label col-sm-3 col-md-2">Timezone</label>
-      <div class="col-sm-3 col-md-4">
+      <div class="col-sm-9 col-md-10">
         <div ng-model="settings.userTimezone" ng-include="'partials/timezone.html'">x</div>
-      </div>
-      <label for="userTimezone" class="control-label col-sm-3 col-md-2">System time</label>
-      <div class="col-sm-3 col-md-4">
-        <button type="button" class="btn btn-default pull-right" ng-click="sync('timezone',settings.userTimezone,1)">Update</button>
-        <p class="form-control-static">{{settings.date}}</p>
       </div>
       <div class="col-sm-9 col-md-10 col-sm-offset-3 col-md-offset-2">
         <p class="help-block" ng-show="settings.userHelp">
-          Timezone applies to BOTH the device's system clock AND the dashboard
-          display (charts, last-share times, history timestamps). Stored data
-          stays UTC; this only affects rendering.
+          Timezone affects how the dashboard renders dates and times (charts,
+          last-share times, history). The device's system clock stays in UTC,
+          so log files, cron, and stored data are UTC.
         </p>
       </div>
     </div>

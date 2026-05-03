@@ -42,6 +42,9 @@ DELETE_PATHS=(
     "var/www/f_graphReset.php"
     "opt/scripta/etc/cron.d/5min/hashrate"
     "opt/scripta/etc/cron.d/5min/ALERThashrate"
+    # No longer shipped: system clock stays UTC; per-user TZ is display-only
+    # (rendered in PHP/JS). Drop the helper from rootfs if a prior build left it.
+    "opt/scripta/bin/set-timezone.sh"
 )
 echo "[04-apply-overlay] Cleanup: removing legacy paths from rootfs"
 for p in "${DELETE_PATHS[@]}"; do

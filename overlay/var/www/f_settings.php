@@ -53,7 +53,6 @@ elseif (!empty($_REQUEST['settings'])) {
   if(isset($r['data']['userTimezone'])){
     date_default_timezone_set($r['data']['userTimezone']);
     $r['data']['date'] = date('Y-m-d H:i:s');
-    exec('sudo /opt/scripta/bin/set-timezone.sh ' . escapeshellarg($r['data']['userTimezone']));
   }
 }
 
@@ -146,7 +145,9 @@ elseif (!empty($_REQUEST['options'])) {
   }
 }
 
-// Set system timezone to what is stored in settings
+// Persist user-selected timezone (display-only — system clock stays UTC).
+// The dashboard renders timestamps in this zone via PHP
+// date_default_timezone_set and Intl.DateTimeFormat on the JS side.
 elseif (!empty($_REQUEST['timezone'])) {
   $timezone = json_decode($_REQUEST['timezone']);
   ini_set( 'date.timezone', $timezone );
@@ -156,7 +157,6 @@ elseif (!empty($_REQUEST['timezone'])) {
   if (!is_array($settings)) $settings = array();
   $settings['userTimezone'] = $timezone;
   file_put_contents($configScripta, json_encode($settings, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
-  exec('sudo /opt/scripta/bin/set-timezone.sh ' . escapeshellarg($timezone));
   $r['data']['date'] = date('Y-m-d H:i:s');
   $r['info'][]=array('type' => 'info', 'text' => 'Timezone is '.$timezone );
 }
