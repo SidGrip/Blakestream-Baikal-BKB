@@ -986,12 +986,11 @@ body.bs-dark .bs-pool-header-select option {
     color: #4fc3f7;
 }
 .bs-set-primary-first {
-    display: inline-block;
-    margin-left: 6px;
-    font-size: 11px;
+    display: block;
+    text-align: center;
+    font-size: 14px;
     font-style: italic;
     color: #8a8f96;
-    vertical-align: middle;
 }
 
 /* ========== Per-board hashrate cards ========== */

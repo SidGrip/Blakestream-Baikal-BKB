@@ -112,22 +112,23 @@
         </span>
         <!-- FAILOVER view -->
         <span ng-switch-when="failover">
-          <select class="bs-pool-select bs-pool-cat"
-                  ng-show="savedPools.categories.length > 1"
-                  ng-model="boardCategories.failover[d.ID]"
-                  ng-change="bsCategoryChanged(d.ID, 'failover')"
-                  ng-options="c.id as c.name for c in savedPools.categories"
-                  ng-disabled="!bsHasPrimary(d.ID)">
-            <option value="">— category —</option>
-          </select>
-          <select class="bs-pool-select bs-pool-pool"
-                  ng-model="assignments[d.ID].failover"
-                  ng-change="bsAssignBoard(d.ID, 'failover')"
-                  ng-options="p.id as p.name for p in bsFailoverPoolsForBoard(d.ID)"
-                  ng-disabled="!bsHasPrimary(d.ID) || (savedPools.categories.length > 1 && !boardCategories.failover[d.ID])">
-            <option value="">— none —</option>
-          </select>
-          <span class="bs-set-primary-first" ng-show="!bsHasPrimary(d.ID)">set primary first</span>
+          <span ng-if="bsHasPrimary(d.ID)">
+            <select class="bs-pool-select bs-pool-cat"
+                    ng-show="savedPools.categories.length > 1"
+                    ng-model="boardCategories.failover[d.ID]"
+                    ng-change="bsCategoryChanged(d.ID, 'failover')"
+                    ng-options="c.id as c.name for c in savedPools.categories">
+              <option value="">— category —</option>
+            </select>
+            <select class="bs-pool-select bs-pool-pool"
+                    ng-model="assignments[d.ID].failover"
+                    ng-change="bsAssignBoard(d.ID, 'failover')"
+                    ng-options="p.id as p.name for p in bsFailoverPoolsForBoard(d.ID)"
+                    ng-disabled="savedPools.categories.length > 1 && !boardCategories.failover[d.ID]">
+              <option value="">— none —</option>
+            </select>
+          </span>
+          <span class="bs-set-primary-first" ng-if="!bsHasPrimary(d.ID)">Set Primary First</span>
         </span>
       </td>
       <td ng-if="!bsBoardDisabled(d.ID)">{{d.Algo}}</td>
