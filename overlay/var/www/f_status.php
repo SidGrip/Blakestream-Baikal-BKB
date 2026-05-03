@@ -71,6 +71,19 @@ if(!empty($r['status']['devs'])){
     // Compute TotalShares for ALL devices so the UI can render them.
     // Only count enabled+hashing devices in the totals.
     $r['status']['devs'][$id]['TotalShares']=$dev['Accepted']+$dev['Rejected']+$dev['HardwareErrors'];
+
+    // Blakestream-GaintB: zero out MHSav for boards that are administratively
+    // disabled AND not currently hashing. sgminer's API returns the cumulative
+    // average since startup, which keeps showing a non-zero value (slowly
+    // decaying) for a board that was hashing earlier in the session and has
+    // since been idled. That's mathematically correct but visually misleading
+    // ("idle board doing 200 Mh/s?"). For UI display purposes, treat
+    // MHS5s == 0 AND Enabled == 'N' as truly idle and report Hashrate av = 0.
+    // Underlying sgminer counters are unchanged (Total MH, Diff1 Work, etc).
+    if ($dev['Enabled'] == 'N' && $dev['MHS5s'] == 0) {
+      $r['status']['devs'][$id]['MHSav'] = 0;
+    }
+
     if(($dev['Enabled'] == 'Y')) {
         $devices += $dev['MHS5s']>0?1:0; // Only count hashing devices
         $MHS5s += $dev['MHS5s'];
