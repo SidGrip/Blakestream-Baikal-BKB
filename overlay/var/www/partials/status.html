@@ -39,7 +39,7 @@
   </div>
 </div>
 
-<div ng-show="bsHashrate.boards.length === 0" class="alert alert-info">
+<div ng-show="bsHashrate.boards.length === 0 && !status.minerUp" class="alert alert-info">
   No hashrate history yet. The recorder runs every minute &mdash; data will appear shortly after sgminer starts hashing.
 </div>
 </div><!-- /ng-if settings.userCharts !== false -->
