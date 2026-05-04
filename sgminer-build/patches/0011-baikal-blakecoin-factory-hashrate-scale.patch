@@ -1,0 +1,36 @@
+From 4ed0968ed1f13c1d7c50f7f9b2f16cf815fa3d43 Mon Sep 17 00:00:00 2001
+From: Blakestream-GaintB <sid@blakestream.local>
+Date: Sun, 3 May 2026 18:58:00 -0500
+Subject: [PATCH] baikal: match factory BK-B Blakecoin hashrate scale
+
+Factory sgminer reports about 56.064 GH/s per BK-B board at 400 MHz and
+64 chips. The rebuilt USB driver used the upstream Blake/Decred scale of
+2000, which reports exactly 51.2 GH/s per board:
+
+  400 MHz * 64 chips * 2000 = 51.2 GH/s
+
+For Blakecoin/blake256r8, split ALGO_BLAKECOIN out and use 2190:
+
+  400 MHz * 64 chips * 2190 = 56.064 GH/s
+
+Leave Decred, Vanilla, and Blake on the existing 2000 scale.
+---
+ driver-baikalu.c | 3 +++
+ 1 file changed, 3 insertions(+)
+
+diff --git a/driver-baikalu.c b/driver-baikalu.c
+index e6e8e9d..8a9a57a 100644
+--- a/driver-baikalu.c
++++ b/driver-baikalu.c
+@@ -999,6 +999,9 @@ static int64_t baikal_hash_done(struct cgpu_info *baikal, struct miner_info *min
+         break;
+ 
+     case ALGO_BLAKECOIN:
++        hash_done *= 2190; // Match factory BK-B blake256r8 rate: 400MHz * 64 chips = 56.064Gh/s.
++        break;
++
+     case ALGO_DECRED:
+     case ALGO_VANILLA:
+     case ALGO_BLAKE:
+-- 
+2.43.0

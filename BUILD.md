@@ -111,7 +111,7 @@ sudo ./scripts/05-repack.sh
 ## Notes / gotchas
 
 - **`05-repack.sh` rewrites file ownership** for the entire rootfs because the dev-host uid (typically 1000) doesn't match the Pi's uid mapping (1000 = baikal there). It then re-applies a list of "this path needs `www-data`" exceptions. If you add a file that PHP needs to write to, add it to the loop in `05-repack.sh` around line 116.
-- **The patch series numbering has a gap** (no `0003`). This is historical — `0003` was an earlier idea that didn't pan out. Patches `0001 0002 0004 0005 0006 0007 0008` is the full applied series.
+- **The patch series numbering has a gap** (no `0003`). This is historical — `0003` was an earlier idea that didn't pan out. Patches `0001 0002 0004 0005 0006 0007 0008 0009 0010 0011` is the full applied series.
 - **The patch series is intended to apply non-interactively** with `patch -p1` from `sgminer-build/src/`. Before publishing, we smoke-test the full series from the upstream baseline to catch malformed or stale patch artifacts.
 - **xz at `-9` can use significant RAM with `-T0`** because it uses all available CPU threads. On smaller hosts, edit `scripts/06-compress.sh` to use a fixed lower thread count such as `xz -T2 -9`; compression time scales roughly linearly.
 

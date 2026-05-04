@@ -1,0 +1,60 @@
+From 0a81377e9e6a2e2b0dfaa18a12d86a3b883cf400 Mon Sep 17 00:00:00 2001
+From: Blakestream-GaintB <sid@blakestream.local>
+Date: Sun, 3 May 2026 18:48:00 -0500
+Subject: [PATCH] baikal: report configured BK-B clock when setclk is disabled
+
+The BK-B build sends the configured clock through BAIKAL_SET_OPTION, but
+keeps BAIKAL_ENABLE_SETCLK disabled so users cannot override it from
+baikal-options. After detect and every work submit, the firmware reply can
+still overwrite miner->clock with a doubled firmware/status value such as
+240 << 1 = 480. sgminer then exposes that value in stats and uses it for
+its estimated hashrate.
+
+Keep the raw firmware value available only when setclk support is enabled.
+For this fixed-clock BK-B build, keep miner->clock pinned to info->clock
+(BAIKAL_CLK_DEF, currently 400). This moves the 400 MHz behavior into
+sgminer itself instead of correcting it in the web UI.
+---
+ driver-baikalu.c | 13 +++++++++++--
+ 1 file changed, 11 insertions(+), 2 deletions(-)
+
+diff --git a/driver-baikalu.c b/driver-baikalu.c
+index f0fadb8..e6e8e9d 100644
+--- a/driver-baikalu.c
++++ b/driver-baikalu.c
+@@ -35,6 +35,15 @@ static int baikal_primary_pins[BAIKAL_MAXMINERS];
+ static int baikal_effective_pins[BAIKAL_MAXMINERS];
+ static bool baikal_failover_pins[BAIKAL_MAXMINERS];
+ static int baikal_user_failover_pins[BAIKAL_MAXMINERS]; /* explicit per-board failover, BAIKAL_POOL_UNSET = none */
++
++static int baikal_miner_clock(struct baikal_info *info, int firmware_clock)
++{
++#if BAIKAL_ENABLE_SETCLK
++    return firmware_clock;
++#else
++    return info->clock;
++#endif
++}
+ 
+ static bool baikal_pin_index_valid(int miner_id)
+ {
+@@ -379,7 +389,7 @@ static bool baikal_getinfo(struct cgpu_info *baikal)
+     miner->fw_ver       = msg.data[0];
+     miner->hw_ver       = msg.data[1];
+     miner->bbg          = msg.data[2];
+-    miner->clock        = msg.data[3] << 1;
++    miner->clock        = baikal_miner_clock(info, msg.data[3] << 1);
+     miner->asic_count   = msg.data[4];
+     miner->asic_count_r = msg.data[5];
+     miner->asic_ver     = msg.data[6];
+@@ -866,7 +876,7 @@ static bool baikal_send_work(struct cgpu_info *baikal, int miner_id)
+     }
+ 
+     /* update clock */
+-    miner->clock = msg.param << 1;
++    miner->clock = baikal_miner_clock(info, msg.param << 1);
+ 
+     miner->work_idx++;
+     if (miner->work_idx >= BAIKAL_WORK_FIFO) {
+-- 
+2.43.0
