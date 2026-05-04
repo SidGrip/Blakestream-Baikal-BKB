@@ -149,7 +149,7 @@ angular.module('Scripta.controllers', [])
     if (!bsChartsEnabled()) return;
     var h = hours || $scope.bsHashrateWindow || 168;
     $http.get('f_blakestream.php?action=load_hashrate_history&hours=' + h).success(function(d) {
-      if (!d || !d.boards) return;
+      if (!d || !d.boards || d.boards.length === 0) return;
       $scope.bsHashrateUpdated = d.updated || 0;
       // Mutate in place to keep ng-repeat track-by-id stable.
       var prevById = {};
@@ -189,6 +189,43 @@ angular.module('Scripta.controllers', [])
     bsHashrateTimer = $timeout(bsHashratePoll, 60000);
   };
   bsHashratePoll();
+
+  // Synthesise bsHashrate.boards from the live status.devs payload so the
+  // Per-Board Hashrate cards render the moment sgminer reports devices,
+  // instead of waiting up to 60s for the next cron-driven recorder sample.
+  // The next bsLoadHashrateHistory poll merges real samples into these
+  // placeholder cards (matched by id) without losing card identity.
+  var bsSyncBoardsFromDevs = function() {
+    if (!bsChartsEnabled()) return;
+    if (!$scope.status || !$scope.status.devs || $scope.status.devs.length === 0) return;
+    if ($scope.bsHashrate.boards && $scope.bsHashrate.boards.length > 0) return;
+    var next = [];
+    angular.forEach($scope.status.devs, function(d) {
+      var bid = parseInt(d.ID, 10);
+      next.push({
+        id: bid,
+        enabled: d.Enabled === 'Y',
+        current_mhs5s: d.MHS5s || 0,
+        pool_name: '',
+        samples: [],
+        range: bsHashrateRanges[bid] || 'hour'
+      });
+    });
+    $scope.bsHashrate.boards = next;
+  };
+
+  // Watch for sgminer coming up (post-restart). When minerUp flips to true,
+  // synthesise cards immediately and refetch history at +5s and +30s so the
+  // first recorder sample is picked up without waiting for the regular poll.
+  $scope.$watch('status.minerUp', function(newVal, oldVal) {
+    if (newVal === true) {
+      bsSyncBoardsFromDevs();
+      if (oldVal === false) {
+        $timeout(function() { $scope.bsLoadHashrateHistory(); }, 5000);
+        $timeout(function() { $scope.bsLoadHashrateHistory(); }, 30000);
+      }
+    }
+  });
 
   // Settings checkbox handler. Flips userCharts (undefined = ON), updates
   // poll/cards, persists.
