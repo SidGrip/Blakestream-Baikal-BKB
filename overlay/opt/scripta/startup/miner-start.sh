@@ -71,7 +71,7 @@ fi
 case $BUILD_RC in
     0)
         log "starting sgminer with runtime config: $SUMMARY"
-        [ -d /var/run/screen ] && chmod 0777 /var/run/screen 2>/dev/null
+        [ -d /var/run/screen ] && chmod 2775 /var/run/screen 2>/dev/null
         screen -dmS sgminer "$SGMINER" -c "$RUNTIME_CONF" --api-listen
         ;;
     2)
