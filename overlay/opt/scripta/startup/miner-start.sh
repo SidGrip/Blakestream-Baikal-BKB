@@ -38,6 +38,25 @@ stop_sgminer() {
     pkill -9 -f "$SGMINER " 2>/dev/null
 }
 
+fix_screen_dir() {
+    if [[ -x /etc/init.d/screen-cleanup ]]; then
+        /etc/init.d/screen-cleanup start >/dev/null 2>&1 || true
+        return
+    fi
+
+    [ -d /var/run/screen ] || mkdir -p /var/run/screen 2>/dev/null || true
+    chown root:utmp /var/run/screen 2>/dev/null || true
+
+    BINARYPERM=$(stat -c%a /usr/bin/screen 2>/dev/null || echo 0)
+    if [[ "$BINARYPERM" -ge 4000 ]]; then
+        chmod 0755 /var/run/screen 2>/dev/null || true
+    elif [[ "$BINARYPERM" -ge 2000 ]]; then
+        chmod 0775 /var/run/screen 2>/dev/null || true
+    else
+        chmod 1777 /var/run/screen 2>/dev/null || true
+    fi
+}
+
 # Re-exec under flock if we don't already hold it. -n means non-blocking:
 # if another start/restart is already running, we exit immediately rather
 # than queue up (cron will fire us again in 30s anyway).
@@ -71,7 +90,7 @@ fi
 case $BUILD_RC in
     0)
         log "starting sgminer with runtime config: $SUMMARY"
-        [ -d /var/run/screen ] && chmod 2775 /var/run/screen 2>/dev/null
+        fix_screen_dir
         screen -dmS sgminer "$SGMINER" -c "$RUNTIME_CONF" --api-listen
         ;;
     2)
