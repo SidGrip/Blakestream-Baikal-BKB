@@ -249,11 +249,14 @@ def main():
     pools_out = []
     saved_to_runtime = collections.OrderedDict()
     backup_pool_nos = []
-    # has_backups is true whenever ANY backup pool is in the runtime conf —
-    # explicit per-board failovers OR auto-search same-algo pools. The quota
-    # multiplier kicks in either way so primaries get most of the work.
     has_backups = len(backup_pools) > 0
-    use_quota = len(by_pool) > 1 or has_backups
+    # Load-balance + quota prefixes are only correct when boards are split
+    # across multiple PRIMARY pools and we want sgminer to weight work by
+    # quota. With per-asc routing engaged, a single-primary + failover
+    # layout must NOT set load-balance: doing so makes sgminer round-robin
+    # work across primary AND failover pools by their quotas even while
+    # the primary's stratum is healthy, defeating per-asc pinning.
+    use_quota = len(by_pool) > 1
     for idx, (pid, boards) in enumerate(by_pool.items()):
         pool = pool_index[pid]
         url = pool.get("url", "")
