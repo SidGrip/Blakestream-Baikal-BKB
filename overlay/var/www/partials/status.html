@@ -12,12 +12,13 @@
 
 <div class="row bs-hashrate-cards" ng-show="bsHashrate.boards.length > 0">
   <div class="col-md-4" ng-repeat="board in bsHashrate.boards track by board.id">
-    <div class="box box-solid bs-board-card" ng-class="{'bs-board-idle': !board.enabled || board.current_mhs5s === 0}">
+    <div class="box box-solid bs-board-card" ng-class="{'bs-board-idle': !board.enabled || board.current_mhs5s === 0,
+                                                          'bs-board-card-failover': bsBoardFailoverActive(board.id)}">
       <div class="box-header">
         <h4 class="box-title">Board {{board.id}}</h4>
         <span class="pull-right text-muted">
-          <span ng-show="board.pool_name">{{board.pool_name}}</span>
-          <span ng-hide="board.pool_name">&mdash; idle &mdash;</span>
+          <span ng-show="bsBoardCurrentPoolName(board.id)">{{bsBoardCurrentPoolName(board.id)}}</span>
+          <span ng-hide="bsBoardCurrentPoolName(board.id)">&mdash; idle &mdash;</span>
         </span>
       </div>
       <div class="box-body">
@@ -180,16 +181,24 @@
 </div><!-- /.bs-devices-wrapper -->
 
 <div ng-hide="status.pools" class="alert alert-danger">No pools loaded</div>
-<h3 ng-show="status.pools">Pools</h3>
-<table ng-show="status.pools" id="statusPools" class="table table-bordered table-right table-hover">
+<h3 ng-show="status.pools">
+  Pools
+  <span ng-show="bsAllPoolsDisabled()" class="bs-pools-banner-disabled">All pools disabled</span>
+</h3>
+<div ng-show="status.pools && bsPoolDisplayRows().length === 0"
+     class="alert alert-warning">
+  No pools are currently serving any board. Stratum may be down on every
+  configured pool, or sgminer has not yet reconnected.
+</div>
+<table ng-show="bsPoolDisplayRows().length > 0"
+       id="statusPools" class="table table-bordered table-right table-hover">
   <thead>
     <tr>
-
+      <th class="text-center bs-pools-bid-col"><div title="Board IDs routing to this pool">ID</div></th>
       <th>URL</th>
       <th>User</th>
       <th>Status</th>
       <th>Active</th>
-      <th><div title="Priority">Pr</div></th>
       <th><div title="GetWorks">GW</div></th>
       <th><div title="Accepted">Acc</div></th>
       <th><div title="Rejected">Rej</div></th>
@@ -200,33 +209,38 @@
       <th><div title="Difficulty Rejected">DRej</div></th>
       <th><div title="Last Share Difficulty">DLast</div></th>
       <th><div title="Best Share">Best</div></th>
-      <th>SWITCH TO</th>
+      <th>SWITCH</th>
     </tr>
   </thead>
   <tbody>
-    <tr ng-repeat="p in status.pools">
+    <tr ng-repeat="row in bsPoolDisplayRows() track by $index"
+        ng-class="{'bs-pool-row-failover': row.role === 'failover',
+                   'bs-pool-row-disabled': row.role === 'disabled'}">
+      <td class="text-center bs-pools-bid-col">
+        <span ng-repeat="bid in row.boards" class="bs-board-chip">{{bid}}</span>
+      </td>
+      <td class='text-left ellipsis'>
+        <span ng-bind="row.p.URL|cleanPoolUrl"></span>
+        <span ng-show="row.role === 'failover'" class="text-warning"> (failover)</span>
+        <span ng-show="row.role === 'disabled'" class="text-muted"> (disabled)</span>
+      </td>
+      <td ng-bind="row.p.User" class='text-left ellipsis'></td>
+      <td ng-bind="row.p.Status" class='text-left' ng-class="{success:row.p.Status=='Alive',danger:row.p.Status!='Alive'}"></td>
+      <td class='text-left ellipsis' ng-class="{success:row.p.StratumActive,danger:!row.p.StratumActive}">{{row.p.StratumActive ? 'True' : 'False'}}</td>
 
-
-
-      <td ng-bind="p.URL|cleanPoolUrl" class='text-left ellipsis' ng-class="{'bs-failover-row': bsPoolIsActiveFailover(p.POOL)}"></td>
-      <td ng-bind="p.User" class='text-left ellipsis' ng-class="{'bs-failover-row': bsPoolIsActiveFailover(p.POOL)}"></td>
-      <td ng-bind="p.Status" class='text-left' ng-class="{success:p.Status=='Alive',danger:p.Status!='Alive'}"></td>
-        <td class='text-left ellipsis' ng-class="{success:p.StratumActive,danger:!p.StratumActive}">{{p.StratumActive ? 'True' : 'False'}}</td>
-
-      <td ng-bind="p.Priority"></td>
-      <td ng-bind="p.Getworks"></td>
-      <td ng-bind="p.Accepted"></td>
-      <td ng-bind="p.Rejected"></td>
-      <td ng-bind="p.Discarded"></td>
-      <td ng-bind="1000*p.LastShareTime|bsTzDate:'HH:mm:ss'"></td>
-      <td ng-bind="p.Diff1Shares"></td>
-      <td ng-bind-template="{{p.DifficultyAccepted}}&nbsp;[{{100*p.DifficultyAccepted/p.Diff1Shares|number:2}}%]"></td>
-      <td ng-bind-template="{{p.DifficultyRejected}}&nbsp;[{{100*p.DifficultyRejected/p.Diff1Shares|number:2}}%]"></td>
-      <td ng-bind="p.LastShareDifficulty"></td>
-      <td ng-bind="p.BestShare"></td>
+      <td ng-bind="row.p.Getworks"></td>
+      <td ng-bind="row.p.Accepted"></td>
+      <td ng-bind="row.p.Rejected"></td>
+      <td ng-bind="row.p.Discarded"></td>
+      <td ng-bind="1000*row.p.LastShareTime|bsTzDate:'HH:mm:ss'"></td>
+      <td ng-bind="row.p.Diff1Shares"></td>
+      <td ng-bind-template="{{row.p.DifficultyAccepted}}&nbsp;[{{100*row.p.DifficultyAccepted/row.p.Diff1Shares|number:2}}%]"></td>
+      <td ng-bind-template="{{row.p.DifficultyRejected}}&nbsp;[{{100*row.p.DifficultyRejected/row.p.Diff1Shares|number:2}}%]"></td>
+      <td ng-bind="row.p.LastShareDifficulty"></td>
+      <td ng-bind="row.p.BestShare"></td>
       <td class="text-center bs-switch-cell">
         <button type="button"
-                ng-click="bsSwitchAllToPool(p)"
+                ng-click="bsSwitchAllToPool(row.p)"
                 data-tip="Assign all 3 boards to this pool"
                 class="btn btn-default btn-sm bs-switch-btn bs-tip">&#10003;</button>
       </td>

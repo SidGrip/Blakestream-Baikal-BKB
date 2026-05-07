@@ -999,10 +999,14 @@ body.bs-dark .bs-pool-header-select option {
 }
 .bs-board-card {
     border-radius: 4px;
-    transition: opacity 0.2s ease;
+    transition: opacity 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease;
 }
 .bs-board-card.bs-board-idle {
     opacity: 0.65;
+}
+.bs-board-card.bs-board-card-failover {
+    border: 1px solid rgba(245, 166, 35, 0.55) !important;
+    box-shadow: 0 0 8px rgba(245, 166, 35, 0.30);
 }
 .bs-board-card .box-header {
     padding: 8px 12px;
@@ -1076,17 +1080,67 @@ body.bs-dark #statusPools.table-hover > tbody > tr.danger:hover > td.danger {
     background-color: #4a1e1e !important;
 }
 
-/* Pools-table cell tint for active failover pools. */
-#statusPools td.bs-failover-row {
-    background-color: rgba(245, 166, 35, 0.18) !important;
-    color: #b8860b;
+#statusPools .bs-pools-bid-col {
+    width: 1%;
+    white-space: nowrap;
+    padding-left: 6px;
+    padding-right: 6px;
 }
-body.bs-dark #statusPools td.bs-failover-row {
+.bs-board-chip {
+    display: inline-block;
+    background-color: rgba(79, 195, 247, 0.15);
+    color: #4fc3f7;
+    border-radius: 4px;
+    padding: 1px 8px;
+    margin: 0 2px;
+    font-weight: bold;
+    min-width: 22px;
+    text-align: center;
+    font-size: 13px;
+}
+#statusPools tr.bs-pool-row-failover .bs-board-chip {
+    background-color: rgba(245, 166, 35, 0.20);
+    color: inherit;
+}
+
+.bs-pools-banner-disabled {
+    display: inline-block;
+    background-color: rgba(245, 166, 35, 0.18);
+    color: #b8860b;
+    padding: 4px 12px;
+    border-radius: 4px;
+    font-size: 14px;
+    font-weight: normal;
+    margin-left: 14px;
+    vertical-align: middle;
+    line-height: 1.2;
+}
+body.bs-dark .bs-pools-banner-disabled {
+    color: #f5a623;
+}
+
+#statusPools tr.bs-pool-row-failover > td {
+    background-color: rgba(245, 166, 35, 0.32) !important;
+    color: #7a5500;
+}
+#statusPools.table-hover > tbody > tr.bs-pool-row-failover:hover > td {
+    background-color: rgba(245, 166, 35, 0.42) !important;
+}
+body.bs-dark #statusPools tr.bs-pool-row-failover > td {
     background-color: rgba(245, 166, 35, 0.18) !important;
     color: #f5a623;
 }
-#statusPools.table-hover > tbody > tr:hover > td.bs-failover-row {
+body.bs-dark #statusPools.table-hover > tbody > tr.bs-pool-row-failover:hover > td {
     background-color: rgba(245, 166, 35, 0.28) !important;
+}
+
+#statusPools tr.bs-pool-row-disabled > td {
+    color: #6c727a !important;
+    opacity: 0.55;
+}
+#statusPools tr.bs-pool-row-disabled > td.success,
+#statusPools tr.bs-pool-row-disabled > td.danger {
+    background-color: transparent !important;
 }
 
 .bs-charts-toggle {

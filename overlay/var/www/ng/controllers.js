@@ -480,16 +480,102 @@ angular.module('Scripta.controllers', [])
     return !!(slot && slot.primary);
   };
 
-  // True if any board's primary is this pool AND the board has failed away
-  // from it (currently mining on its backup).
+  // True if any board has currently failed-over and is mining on this pool
+  // (i.e. this pool is the *destination* of an active failover, not the
+  // dead primary). Used to highlight the row yellow in the Pools table.
   $scope.bsPoolIsActiveFailover = function(poolNo) {
     var devs = $scope.status && $scope.status.devs;
     if (!devs) return false;
     for (var i = 0; i < devs.length; i++) {
       var d = devs[i];
-      if (d && d.FailoverActive && d.PrimaryPool === poolNo) return true;
+      if (d && d.FailoverActive && d.EffectivePool === poolNo) return true;
     }
     return false;
+  };
+
+  // Pools-table filter predicate. Keep a pool visible if ANY of:
+  //   - some board is currently routing to it (EffectivePool === POOL), OR
+  //   - it's been administratively disabled (Status === 'Disabled') so the
+  //     user can still see + re-enable it greyed out.
+  // Hides backup pools that sgminer keeps stratum-subscribed (under
+  // load-balance) but no board is actually consuming.
+  $scope.bsPoolIsCurrentlyServing = function(p) {
+    if (!p) return false;
+    if (p.Status === 'Disabled') return true;
+    var devs = $scope.status && $scope.status.devs;
+    if (!devs) return false;
+    for (var i = 0; i < devs.length; i++) {
+      if (devs[i] && devs[i].EffectivePool === p.POOL) return true;
+    }
+    return false;
+  };
+
+  // True when every row in the Pools table is a 'disabled' row (i.e. all
+  // configured pools have been administratively disabled). Drives a
+  // centered "All pools are disabled" message above the table.
+  $scope.bsAllPoolsDisabled = function() {
+    var rows = $scope.bsPoolDisplayRows();
+    if (!rows || rows.length === 0) return false;
+    for (var i = 0; i < rows.length; i++) {
+      if (rows[i].role !== 'disabled') return false;
+    }
+    return true;
+  };
+
+  // Build the per-row list for the Pools table. A single physical pool may
+  // appear TWICE — once as a board's primary (normal styling) and once as a
+  // failover destination for a different board (yellow). Disabled pools
+  // appear once with the muted/grey styling. This separates roles so the
+  // user can see at a glance "AT1 is serving as both primary and failover".
+  $scope.bsPoolDisplayRows = function() {
+    var pools = $scope.status && $scope.status.pools;
+    var devs  = $scope.status && $scope.status.devs;
+    if (!pools) return [];
+    var rows = [];
+    for (var i = 0; i < pools.length; i++) {
+      var p = pools[i];
+      if (!p) continue;
+      if (p.Status === 'Disabled') {
+        // Show the disabled row only when at least one of this pool's
+        // primary-assigned boards is currently orphaned (EffectivePool < 0).
+        // If failover absorbed every affected board, the row is just clutter.
+        var orphans = [];
+        if (devs) {
+          for (var k = 0; k < devs.length; k++) {
+            var d2 = devs[k];
+            if (d2 && d2.PrimaryPool === p.POOL && (d2.EffectivePool === undefined || d2.EffectivePool < 0)) {
+              orphans.push(d2.ID);
+            }
+          }
+        }
+        if (orphans.length > 0) rows.push({p: p, role: 'disabled', boards: orphans});
+        continue;
+      }
+      var primaryBoards = [];
+      var failoverBoards = [];
+      if (devs) {
+        for (var j = 0; j < devs.length; j++) {
+          var d = devs[j];
+          if (!d || d.EffectivePool !== p.POOL) continue;
+          if (d.FailoverActive) failoverBoards.push(d.ID);
+          else primaryBoards.push(d.ID);
+        }
+      }
+      if (primaryBoards.length)  rows.push({p: p, role: 'primary',  boards: primaryBoards});
+      if (failoverBoards.length) rows.push({p: p, role: 'failover', boards: failoverBoards});
+    }
+    // Stable order by smallest board ID in the row, so bd0's row is always
+    // first, bd1's next, etc. — regardless of which pool number is actually
+    // hosting that board. Disabled (no-board) rows sink to the bottom.
+    rows.sort(function (a, b) {
+      var aDis = a.role === 'disabled', bDis = b.role === 'disabled';
+      if (aDis && !bDis) return 1;
+      if (bDis && !aDis) return -1;
+      var aMin = (a.boards && a.boards.length) ? Math.min.apply(null, a.boards) : 999;
+      var bMin = (b.boards && b.boards.length) ? Math.min.apply(null, b.boards) : 999;
+      return aMin - bMin;
+    });
+    return rows;
   };
 
   // Live failover state for a specific board (drives the per-board chart's
@@ -504,6 +590,43 @@ angular.module('Scripta.controllers', [])
       if (d && d.ID === bid) return !!d.FailoverActive;
     }
     return false;
+  };
+
+  // Live effective-pool name for a board, looked up via the live status.devs
+  // EffectivePool number → status.pools[i].URL → saved-pool name. Used in
+  // the per-board hashrate card so the displayed pool flips to the failover
+  // pool the moment sgminer routes a board there, instead of waiting up to
+  // 60s for the next recorder sample.
+  $scope.bsBoardCurrentPoolName = function(boardId) {
+    var devs = $scope.status && $scope.status.devs;
+    var pools = $scope.status && $scope.status.pools;
+    if (!devs || !pools) return null;
+    var bid = parseInt(boardId, 10);
+    var dev = null;
+    for (var i = 0; i < devs.length; i++) {
+      if (devs[i] && devs[i].ID === bid) { dev = devs[i]; break; }
+    }
+    if (!dev) return null;
+    var effNo = dev.EffectivePool;
+    if (effNo === undefined || effNo === null || effNo < 0) return null;
+    var pool = null;
+    for (var j = 0; j < pools.length; j++) {
+      if (pools[j] && pools[j].POOL === effNo) { pool = pools[j]; break; }
+    }
+    if (!pool) return null;
+    // Strip the "quota:N;" / "http://" prefixes sgminer adds to the URL,
+    // then look up by cleaned URL in savedPools for the user-friendly name.
+    var url = String(pool.URL || '').replace(/^https?:\/\//, '').replace(/^quota:\d+;/, '');
+    if ($scope.savedPools && $scope.savedPools.categories) {
+      for (var c = 0; c < $scope.savedPools.categories.length; c++) {
+        var cat = $scope.savedPools.categories[c];
+        var ps = (cat && cat.pools) || [];
+        for (var k = 0; k < ps.length; k++) {
+          if (ps[k] && ps[k].url === url) return ps[k].name || url;
+        }
+      }
+    }
+    return pool.Name || url;
   };
 
   $scope.bsTempState = {};
