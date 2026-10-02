@@ -1,0 +1,353 @@
+--- a/driver-baikal.h
++++ b/driver-baikal.h
+@@ -78,6 +78,8 @@
+     int     unit_count;
+ 	int		temp;  
+     int     clock;
++    int     applied_clock;
++    bool    applied_clock_valid;
+     int     reported_clock;
+     int     reported_clock_code;
+     int     sent_clock_code;
+@@ -109,6 +111,8 @@
+     struct pool pool;
+     int miner_count;
+     int clock;
++    int board_clocks[BAIKAL_MAXMINERS];
++    bool board_clock_overrides[BAIKAL_MAXMINERS];
+     uint8_t cutofftemp;
+     uint8_t fanspeed;		// percent
+     uint8_t pending_fanspeed;
+--- a/miner.h
++++ b/miner.h
+@@ -1187,6 +1187,7 @@
+ #ifdef USE_BAIKAL
+ extern char *opt_baikal_options;
+ extern char *opt_baikal_fan;
++extern char *opt_baikal_board_clocks;
+ //enum cl_kernels opt_baikal_kernel;
+ //enum cl_kernels select_kernel(char *arg);
+ #endif 
+@@ -1767,4 +1768,4 @@
+ extern struct api_data *api_add_percent(struct api_data *root, char *name, double *data, bool copy_data);
+ extern struct api_data *api_add_avg(struct api_data *root, char *name, float *data, bool copy_data);
+ 
+-#endif /* MINER_H */
+\ No newline at end of file
++#endif /* MINER_H */
+--- a/sgminer.c
++++ b/sgminer.c
+@@ -178,6 +178,7 @@
+ 
+ char *opt_baikal_options = NULL;
+ char *opt_baikal_fan = NULL;
++char *opt_baikal_board_clocks = NULL;
+ //enum cl_kernels opt_baikal_kernel = KL_X11;
+ //char *opt_baikal_algo = X11_KERNNAME;
+ static int total_algo;
+@@ -1340,6 +1341,21 @@
+ 
+     return (NULL);
+ }
++static char* set_baikal_board_clocks(const char *arg)
++{
++    int board0, board1, board2;
++    char extra;
++
++    if (!arg || sscanf(arg, "%d:%d:%d%c", &board0, &board1, &board2, &extra) != 3)
++        return ("Baikal board clocks must be board0:board1:board2");
++    if (board0 < 260 || board0 > 500 || board0 % 10 != 0 ||
++        board1 < 260 || board1 > 500 || board1 % 10 != 0 ||
++        board2 < 260 || board2 > 500 || board2 % 10 != 0)
++        return ("Baikal board clocks must each be 260-500 MHz in 10 MHz steps");
++
++    opt_set_charp(arg, &opt_baikal_board_clocks);
++    return (NULL);
++}
+ #endif
+ 
+ static char* set_api_allow(const char *arg)
+@@ -1995,6 +2011,10 @@
+                  set_baikal_fan, NULL, NULL,
+                  "Set baikal fan speed(percent)"),
+ 
++    OPT_WITH_ARG("--baikal-board-clocks",
++                 set_baikal_board_clocks, NULL, NULL,
++                 "Advanced BK-B applied clocks board0:board1:board2 (260-500 MHz, 10 MHz steps)"),
++
+     OPT_WITHOUT_ARG("--enable-nicehashsma",
+                     opt_set_bool, &opt_enable_nicehash_sma,
+                     "Use extra wide display without toggling"),
+--- a/driver-baikalu.c
++++ b/driver-baikalu.c
+@@ -123,11 +123,29 @@
+            msg->data[4], msg->data[5], msg->data[6]);
+ }
+ 
+-static void baikal_record_clock(struct miner_info *miner, struct baikal_info *info, int firmware_clock_code)
++static int baikal_configured_clock_for_miner(const struct baikal_info *info, int miner_id)
++{
++    if (miner_id >= 0 && miner_id < BAIKAL_MAXMINERS &&
++            info->board_clock_overrides[miner_id])
++        return info->board_clocks[miner_id];
++    return info->clock;
++}
++
++static void baikal_mark_applied_clock(struct miner_info *miner, int clock)
++{
++    miner->applied_clock = clock;
++    miner->applied_clock_valid = true;
++    miner->clock = clock;
++}
++
++static void baikal_record_clock(struct miner_info *miner, struct baikal_info *info,
++                                int miner_id, int firmware_clock_code)
+ {
+     miner->reported_clock_code = firmware_clock_code;
+     miner->reported_clock = firmware_clock_code << 1;
+-    miner->clock = info->clock;
++    miner->clock = miner->applied_clock_valid
++        ? miner->applied_clock
++        : baikal_configured_clock_for_miner(info, miner_id);
+ }
+ 
+ static void baikal_schedule_clock_retry(struct miner_info *miner)
+@@ -552,15 +570,16 @@
+     miner->fw_ver       = msg.data[0];
+     miner->hw_ver       = msg.data[1];
+     miner->bbg          = msg.data[2];
+-    baikal_record_clock(miner, info, msg.data[3]);
++    baikal_record_clock(miner, info, miner_id, msg.data[3]);
+     miner->asic_count   = msg.data[4];
+     miner->asic_count_r = msg.data[5];
+     miner->asic_ver     = msg.data[6];
+     applog(LOG_NOTICE,
+            "BK-B GET_INFO decoded ASC %d requested=%d bridge_status_code=%d bridge_status_echo=%dMHz fw=%d hw=%d asics=%d",
+-           miner_id, info->clock, msg.data[3], msg.data[3] << 1,
++           miner_id, baikal_configured_clock_for_miner(info, miner_id),
++           msg.data[3], msg.data[3] << 1,
+            msg.data[0], msg.data[1], msg.data[4]);
+-    baikal_log_protocol_msg("GET_INFO", info->clock, &msg);
++    baikal_log_protocol_msg("GET_INFO", baikal_configured_clock_for_miner(info, miner_id), &msg);
+     return (true);
+ }
+ 
+@@ -664,6 +683,7 @@
+     bool getinfo_ok = false;
+     bool echo_ok = false;
+     int retry_clock_code;
++    int retry_clock;
+     int expected_clock;
+     time_t now;
+ 
+@@ -687,18 +707,19 @@
+         return;
+ 
+     miner->clock_retry_last_time = now;
+-    retry_clock_code = baikal_clock_command_code(info->clock);
++    retry_clock = baikal_configured_clock_for_miner(info, miner_id);
++    retry_clock_code = baikal_clock_command_code(retry_clock);
+     applog(LOG_NOTICE,
+            "BK-B post-mining clock retry ASC %d requested=%dMHz pll_index=%d bridge_status_echo=%dMHz fan=%u",
+-           miner_id, info->clock, retry_clock_code, miner->reported_clock,
++           miner_id, retry_clock, retry_clock_code, miner->reported_clock,
+            (unsigned int)info->fanspeed);
+ 
+-    host_ack = baikal_setoption_for_miner(baikal, miner_id, info->clock,
++    host_ack = baikal_setoption_for_miner(baikal, miner_id, retry_clock,
+                                          to_baikal_algorithm(baikal->algorithm.type),
+                                          info->cutofftemp, info->fanspeed);
+     applog(host_ack ? LOG_NOTICE : LOG_WARNING,
+            "BK-B post-mining SET_OPTION ASC %d requested=%dMHz pll_index=%d host_ack=%s",
+-           miner_id, info->clock, retry_clock_code, host_ack ? "yes" : "no");
++           miner_id, retry_clock, retry_clock_code, host_ack ? "yes" : "no");
+ 
+     expected_clock = baikal_clock_from_command_code(retry_clock_code);
+     if (host_ack) {
+@@ -707,24 +728,25 @@
+                   miner->reported_clock == expected_clock;
+         applog(echo_ok ? LOG_NOTICE : LOG_WARNING,
+                "BK-B post-mining GET_INFO ASC %d requested=%dMHz pll_index=%d get_info=%s bridge_status_code=%d bridge_status_echo=%dMHz expected_echo=%dMHz match=%s",
+-               miner_id, info->clock, retry_clock_code,
++               miner_id, retry_clock, retry_clock_code,
+                getinfo_ok ? "yes" : "no", miner->reported_clock_code,
+                miner->reported_clock, expected_clock, echo_ok ? "yes" : "no");
+     }
+ 
+     if (host_ack && getinfo_ok && echo_ok) {
++        baikal_mark_applied_clock(miner, retry_clock);
+         miner->clock_retry_pending = false;
+         miner->clock_retry_done = true;
+         applog(LOG_NOTICE,
+                "BK-B post-mining clock retry OK ASC %d requested=%dMHz pll_index=%d bridge_status_echo=%dMHz",
+-               miner_id, info->clock, retry_clock_code, miner->reported_clock);
++               miner_id, retry_clock, retry_clock_code, miner->reported_clock);
+         return;
+     }
+ 
+     miner->clock_retry_failures++;
+     applog(LOG_WARNING,
+            "BK-B post-mining clock retry failed ASC %d requested=%dMHz pll_index=%d host_ack=%s get_info=%s bridge_status_echo=%dMHz expected_echo=%dMHz failure=%u/%u",
+-           miner_id, info->clock, retry_clock_code,
++           miner_id, retry_clock, retry_clock_code,
+            host_ack ? "yes" : "no", getinfo_ok ? "yes" : "no",
+            miner->reported_clock, expected_clock,
+            (unsigned int)miner->clock_retry_failures,
+@@ -749,6 +771,7 @@
+     bool host_ack;
+     bool getinfo_ok = false;
+     bool echo_ok = false;
++    bool applied;
+     int requested_clock;
+     int clock_code;
+     int expected_clock;
+@@ -783,8 +806,10 @@
+                   miner->reported_clock == expected_clock;
+     }
+ 
++    applied = host_ack && getinfo_ok && echo_ok;
+     mutex_lock(&baikal_clock_reapply_lock);
+-    if (host_ack && getinfo_ok && echo_ok) {
++    if (applied) {
++        baikal_mark_applied_clock(miner, requested_clock);
+         if (miner->pending_clock_reapply_valid &&
+                 miner->pending_clock_reapply_mhz == requested_clock)
+             miner->pending_clock_reapply_valid = false;
+@@ -796,12 +821,12 @@
+     }
+     mutex_unlock(&baikal_clock_reapply_lock);
+ 
+-    applog(host_ack && getinfo_ok && echo_ok ? LOG_NOTICE : LOG_WARNING,
++    applog(applied ? LOG_NOTICE : LOG_WARNING,
+            "BK-B same-clock reapply ASC %d requested=%dMHz pll_index=%d host_ack=%s get_info=%s bridge_status_echo=%dMHz expected_echo=%dMHz result=%s",
+            miner_id, requested_clock, clock_code,
+            host_ack ? "yes" : "no", getinfo_ok ? "yes" : "no",
+            miner->reported_clock, expected_clock,
+-           host_ack && getinfo_ok && echo_ok ? "OK" : "FAILED");
++           applied ? "OK" : "FAILED");
+ }
+ 
+ static void baikal_queue_fan(struct baikal_info *info, uint8_t fan)
+@@ -862,7 +887,9 @@
+     if (!baikal_pending_fan_ready(info, &fan))
+         return;
+ 
+-    if (baikal_setoption(baikal, info->clock, to_baikal_algorithm(baikal->algorithm.type),
++    if (baikal_setoption(baikal,
++                         baikal_configured_clock_for_miner(info, baikal->miner_id),
++                         to_baikal_algorithm(baikal->algorithm.type),
+                          info->cutofftemp, fan) != true) {
+         baikal_pending_fan_failed(info);
+         applog(LOG_WARNING, "BK-B queued fan apply failed at %u%% on ASC %d",
+@@ -897,7 +924,7 @@
+     long value;
+ 
+     if (!option || strcmp(option, "help") == 0) {
+-        snprintf(replybuf, 256, "fan|pwm,<percent 0-100> | reapply-clock,<current global MHz>");
++        snprintf(replybuf, 256, "fan|pwm,<percent 0-100> | reapply-clock,<configured board MHz>");
+         return replybuf;
+     }
+ 
+@@ -908,8 +935,10 @@
+         }
+ 
+         value = strtol(setting, &endptr, 10);
+-        if (*setting == '\0' || (endptr && *endptr != '\0') || value != info->clock) {
+-            snprintf(replybuf, 256, "reapply clock must match global clock %d MHz", info->clock);
++        if (*setting == '\0' || (endptr && *endptr != '\0') ||
++                value != baikal_configured_clock_for_miner(info, baikal->miner_id)) {
++            snprintf(replybuf, 256, "reapply clock must match configured board clock %d MHz",
++                     baikal_configured_clock_for_miner(info, baikal->miner_id));
+             return replybuf;
+         }
+ 
+@@ -987,13 +1016,17 @@
+ 
+         miner = &info->miners[tmp->miner_id];
+         memset(miner, 0, sizeof(struct miner_info));
++        miner->clock = baikal_configured_clock_for_miner(info, tmp->miner_id);
+         cgtimer_time(&miner->start_time);
+         if (baikal_getinfo(tmp) == false) {
+             tmp = usb_free_cgpu(tmp);
+             continue;
+         }
+ 
+-        if (baikal_setoption(tmp, info->clock, to_baikal_algorithm(baikal->algorithm.type), info->cutofftemp, info->fanspeed) != true) {
++        if (baikal_setoption(tmp,
++                             baikal_configured_clock_for_miner(info, tmp->miner_id),
++                             to_baikal_algorithm(baikal->algorithm.type),
++                             info->cutofftemp, info->fanspeed) != true) {
+             tmp = usb_free_cgpu(tmp);
+             continue;
+         }
+@@ -1021,6 +1054,10 @@
+     int cutofftemp      = BAIKAL_CUTOFF_TEMP;
+     int fanspeed        = BAIKAL_FANSPEED_DEF;
+     int recovertemp     = BAIKAL_RECOVER_TEMP;
++    int board_clock0    = 0;
++    int board_clock1    = 0;
++    int board_clock2    = 0;
++    int board_index;
+ 
+ #if BAIKAL_ENABLE_SETCLK
+     if (opt_baikal_options != NULL) {
+@@ -1071,6 +1108,21 @@
+     info->cutofftemp    = (uint8_t)cutofftemp;
+     info->fanspeed      = (uint8_t)fanspeed;
+     info->recovertemp   = (uint8_t)recovertemp;
++    for (board_index = 0; board_index < BAIKAL_MAXMINERS; board_index++)
++        info->board_clocks[board_index] = clock;
++    if (opt_baikal_board_clocks != NULL &&
++            sscanf(opt_baikal_board_clocks, "%d:%d:%d",
++                   &board_clock0, &board_clock1, &board_clock2) == 3) {
++        info->board_clocks[0] = board_clock0;
++        info->board_clocks[1] = board_clock1;
++        info->board_clocks[2] = board_clock2;
++        info->board_clock_overrides[0] = true;
++        info->board_clock_overrides[1] = true;
++        info->board_clock_overrides[2] = true;
++        applog(LOG_NOTICE,
++               "BK-B per-board applied clocks configured: ASC0=%dMHz ASC1=%dMHz ASC2=%dMHz (global request=%dMHz)",
++               board_clock0, board_clock1, board_clock2, clock);
++    }
+ 
+     baikal->device_data = info;
+     baikal->name        = strdup("BKLU");
+@@ -1079,6 +1131,7 @@
+ 
+     miner = &info->miners[baikal->miner_id];
+     memset(miner, 0, sizeof(struct miner_info));
++    miner->clock = baikal_configured_clock_for_miner(info, baikal->miner_id);
+     cgtimer_time(&miner->start_time);
+ 
+     if (!usb_init(baikal, dev, found)) {
+@@ -1095,7 +1148,10 @@
+         goto out;
+     }
+ 
+-    if (baikal_setoption(baikal, clock, to_baikal_algorithm(default_profile.algorithm.type), cutofftemp, fanspeed) != true) {
++    if (baikal_setoption(baikal,
++                         baikal_configured_clock_for_miner(info, baikal->miner_id),
++                         to_baikal_algorithm(default_profile.algorithm.type),
++                         cutofftemp, fanspeed) != true) {
+         goto out;
+     }
+     baikal_schedule_clock_retry(miner);
+@@ -1173,6 +1229,8 @@
+     root = api_add_int(root, "Clock", &miner->clock, false);
+ #endif
+     root = api_add_int(root, "RequestedClock", &info->clock, false);
++    root = api_add_int(root, "AppliedClock", &miner->clock, false);
++    root = api_add_bool(root, "AppliedClockValid", &miner->applied_clock_valid, false);
+     root = api_add_int(root, "ReportedClock", &miner->reported_clock, false);
+     root = api_add_int(root, "ReportedClockCode", &miner->reported_clock_code, false);
+     root = api_add_int(root, "SentClockCode", &miner->sent_clock_code, false);
+@@ -1450,7 +1508,7 @@
+     }
+ 
+     /* update clock */
+-    baikal_record_clock(miner, info, msg.param);
++    baikal_record_clock(miner, info, msg.miner_id, msg.param);
+ 
+     miner->work_idx++;
+     if (miner->work_idx >= BAIKAL_WORK_FIFO) {

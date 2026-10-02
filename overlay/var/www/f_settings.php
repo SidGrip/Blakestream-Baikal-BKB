@@ -1,4 +1,50 @@
 <?php
+require_once __DIR__ . '/inc/firmware-identity.php';
+require_once __DIR__ . '/inc/experimental-clock.php';
+require_once __DIR__ . '/inc/web-auth.php';
+
+function bs_normalize_fan_settings($settings) {
+  $fields = array('userAutoFanMin' => 40, 'userAutoFanTarget' => 36,
+    'userAutoFanMidTemp' => 43, 'userAutoFanMidFan' => 75, 'userAutoFanFull' => 50);
+  if (!array_intersect_key($settings, $fields)) return $settings;
+  $curve = array();
+  foreach ($fields as $key => $fallback) {
+    $value = isset($settings[$key]) && is_numeric($settings[$key]) ? (int)$settings[$key] : $fallback;
+    $percent = $key === 'userAutoFanMin' || $key === 'userAutoFanMidFan';
+    $curve[$key] = max(20, min($percent ? 100 : 120, $value));
+  }
+  $target = min(118, $curve['userAutoFanTarget']);
+  $full = max($target + 2, $curve['userAutoFanFull']);
+  $mid = isset($settings['userAutoFanMidTemp']) && is_numeric($settings['userAutoFanMidTemp'])
+    ? $curve['userAutoFanMidTemp'] : (int)round(($target + $full) / 2);
+  $curve['userAutoFanTarget'] = $target;
+  $curve['userAutoFanFull'] = $full;
+  $curve['userAutoFanMidTemp'] = max($target + 1, min($full - 1, $mid));
+  $curve['userAutoFanMidFan'] = max($curve['userAutoFanMin'], $curve['userAutoFanMidFan']);
+  return array_merge($settings, $curve);
+}
+
+function bs_fan_request_settings($old, $new, $now = null) {
+  $keys = array('userAutoFan', 'userAutoFanMin', 'userAutoFanTarget', 'userAutoFanMidTemp',
+    'userAutoFanMidFan', 'userAutoFanFull', 'userAutoFanEmergency', 'userAutoFanStep', 'userAutoFanMaxDownStep');
+  $changed = false;
+  foreach ($keys as $key) {
+    $before = isset($old[$key]) ? $old[$key] : null;
+    $after = isset($new[$key]) ? $new[$key] : null;
+    if ($before != $after) $changed = true;
+  }
+  foreach (array('userAutoFanRevision', 'userAutoFanRequestedAt') as $key) {
+    unset($new[$key]);
+    if (isset($old[$key])) $new[$key] = $old[$key];
+  }
+  if ($changed) {
+    $new['userAutoFanRevision'] = bin2hex(openssl_random_pseudo_bytes(12));
+    $new['userAutoFanRequestedAt'] = $now === null ? time() : $now;
+  }
+  return $new;
+}
+
+if (!defined('BKB_SETTINGS_LIB_ONLY')) {
 session_start();
 
 if ( !isset($_SESSION['_logged_']) || $_SESSION['_logged_'] === false ) {
@@ -19,16 +65,64 @@ $configUipwd=$configFolder.'uipasswd';
 $configOptns=$configFolder.'miner.options.json';
 $configPools=$configFolder.'miner.pools.json';
 $configMiner=$configFolder.'miner.conf';
+$minerRestart='/opt/scripta/startup/miner-restart.sh';
+$r=array('data'=>array(), 'info'=>array());
+
+function write_config_file($path, $contents, $mode = 0664) {
+  $dir = dirname($path);
+  if (!is_dir($dir) || !is_writable($dir)) return false;
+  $tmp = @tempnam($dir, basename($path) . '.tmp.');
+  if ($tmp === false) return false;
+  if (@file_put_contents($tmp, $contents) === false) {
+    @unlink($tmp);
+    return false;
+  }
+  @chmod($tmp, $mode);
+  if (!@rename($tmp, $path)) {
+    @unlink($tmp);
+    return false;
+  }
+  @chmod($path, $mode);
+  return true;
+}
+
+function trigger_miner_restart($launcher) {
+  if (!is_file($launcher) || !is_executable($launcher)) return false;
+
+  $preflight = 'sudo -n ' . escapeshellarg($launcher) . ' --preflight 2>&1';
+  @exec($preflight, $preflightOutput, $preflightRc);
+  if ($preflightRc !== 0) return false;
+
+  $cmd = 'sudo -n ' . escapeshellarg($launcher) . ' > /tmp/blakestream-launcher.log 2>&1 &';
+  @exec($cmd, $output, $rc);
+  return ($rc === 0);
+}
+
+function add_miner_restart_info(&$r, $started) {
+  if ($started) {
+    $r['info'][]=array('type' => 'info', 'text' => 'Miner: restart triggered');
+  } else {
+    $r['info'][]=array('type' => 'warning', 'text' => 'Miner restart pending; automatic helper repair will retry shortly');
+  }
+}
 
 
 // Set new password
-if (isset($_REQUEST['pass'])) {
-  $pass=json_decode($_REQUEST['pass']);
-  if (strlen($pass) > 0) {
-    file_put_contents($configUipwd,'scripta:' . md5($pass) );
+if (array_key_exists('pass', $_POST) || array_key_exists('pass', $_GET) || array_key_exists('pass', $_COOKIE)) {
+  $pass = isset($_POST['pass']) && is_string($_POST['pass']) ? json_decode($_POST['pass']) : null;
+  if (!isset($_SERVER['REQUEST_METHOD']) || $_SERVER['REQUEST_METHOD'] !== 'POST' || !array_key_exists('pass', $_POST)) {
+    $r['info'][]=array('type' => 'error', 'text' => 'Web password changes require POST form data');
+  } elseif (!bs_web_auth_password_valid($pass)) {
+    $r['info'][]=array('type' => 'error', 'text' => 'Web password must contain 1 to 72 bytes and no NUL bytes');
+  } elseif (!bs_web_auth_save($configUipwd, $pass)) {
+    $r['info'][]=array('type' => 'error', 'text' => 'Web password save failed');
+  } else {
     // also change linux password
-     $r = hostHardCtl(2,$_REQUEST['pass']);
-    $r['info'][]=array('type' => 'success', 'text' => 'Web password saved');    
+    $host = hostHardCtl(2,$_POST['pass']);
+    if (is_array($host) && isset($host['info']) && is_array($host['info'])) {
+      $r['info'] = array_merge($r['info'], $host['info']);
+    }
+    $r['info'][]=array('type' => 'success', 'text' => 'Web password saved');
   }
 }
 
@@ -36,18 +130,52 @@ if (isset($_REQUEST['pass'])) {
 elseif (!empty($_REQUEST['settings'])) {
   $newdata   = json_decode($_REQUEST['settings'], true);
   $r['data'] = json_decode(@file_get_contents($configScripta), true);
+  if (!is_array($r['data'])) $r['data'] = array();
 
   // Sync current with new settings
   if(!empty($newdata)&&is_array($newdata)){
+    $oldSettings = $r['data'];
     foreach ($newdata as $key => $value) {
       $r['data'][$key]=$value;
     }
-    file_put_contents($configScripta, json_encode($r['data'], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
-    $r['info'][]=array('type' => 'success', 'text' => 'Configuration saved');
+    $r['data'] = bs_fan_request_settings($oldSettings, bs_normalize_fan_settings($r['data']));
+    $savedLogTarget = isset($oldSettings['userDevLogTarget']) && is_string($oldSettings['userDevLogTarget'])
+      ? strtoupper($oldSettings['userDevLogTarget']) : '';
+    $logTarget = isset($r['data']['userDevLogTarget']) && is_string($r['data']['userDevLogTarget'])
+      ? strtoupper($r['data']['userDevLogTarget']) : 'RAM';
+    // Log destinations are changed through storage_set_target, not stale Settings drafts.
+    if (in_array($savedLogTarget, array('SD', 'RAM'), true)) $logTarget = $savedLogTarget;
+    $r['data']['userDevLogTarget'] = in_array($logTarget, array('SD', 'RAM'), true) ? $logTarget : 'RAM';
+	    if (!empty($r['data']['userAdjustableClocks']) && !firmware_custom_active()) {
+	      $r['data']['userAdjustableClocks'] = false;
+	      $r['info'][]=array('type' => 'warning', 'text' => 'Adjustable Clocks not enabled; bridge firmware is stock or unknown');
+	    }
+	    if (!write_config_file($configScripta, json_encode($r['data'], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES))) {
+	      $r['data'] = $oldSettings;
+	      $r['settingsSaved'] = false;
+	      $r['info'][]=array('type' => 'error', 'text' => 'Configuration save failed: ' . $configScripta);
+	    } else {
+      $r['settingsSaved'] = true;
+      $r['info'][]=array('type' => 'success', 'text' => 'Configuration saved');
+      if (!empty($r['data']['userAutoFan']) && isset($r['data']['userAutoFanRevision']) &&
+          (!isset($oldSettings['userAutoFanRevision']) || $oldSettings['userAutoFanRevision'] !== $r['data']['userAutoFanRevision'])) {
+        $r['fanRequest'] = $r['data']['userAutoFanRevision'];
+      }
+      if (empty($r['data']['userAdjustableClocks'])) {
+        $clockClamped = clampBaikalClockToStock();
+        if ($clockClamped) {
+          if (!minerConfigGenerate()) {
+            $r['info'][]=array('type' => 'error', 'text' => 'Miner configuration was not rewritten');
+          } else {
+            $r['info'][]=array('type' => 'info', 'text' => 'Adjustable Clocks disabled; requested clock set to 400 MHz');
+            add_miner_restart_info($r, trigger_miner_restart($minerRestart));
+          }
+        }
+      }
+    }
   }
   // Load current settings
   else{
-    $r['info'][]=array('type' => 'info', 'text' => 'Configuration loaded');
   }
 
   if(isset($r['data']['userTimezone'])){
@@ -64,11 +192,13 @@ elseif (!empty($_REQUEST['pools'])) {
   if (is_array($r['data'])) {
     foreach ($r['data'] as $id => $p)
     {
-      $r['data'][$id]['user'] = str_replace('/ ','/+',$p['user']);
-      $r['data'][$id]['url']  = str_replace('stratum tcp','stratum+tcp',$p['url']);
-      if($r['data'][$id]['extranonce'] == "true") {
+      if (!is_array($p)) $p = array();
+      $r['data'][$id]['user'] = str_replace('/ ','/+',isset($p['user']) ? $p['user'] : '');
+      $r['data'][$id]['url']  = str_replace('stratum tcp','stratum+tcp',isset($p['url']) ? $p['url'] : '');
+      if(isset($r['data'][$id]['extranonce']) && $r['data'][$id]['extranonce'] == "true") {
         $r['data'][$id]['extranonce'] = true;
       }
+      if (!isset($r['data'][$id]['priority'])) $r['data'][$id]['priority'] = pool_priority($p);
     }
   } else {
     $r['data'] = array();
@@ -77,8 +207,10 @@ elseif (!empty($_REQUEST['pools'])) {
   if (is_array($newdata)) {
     foreach ($newdata as $id => $p)
     {
-      $newdata[$id]['user'] = str_replace('/ ','/+',$p['user']);
-      $newdata[$id]['url']  = str_replace('stratum tcp','stratum+tcp',$p['url']);
+      if (!is_array($p)) $p = array();
+      $newdata[$id]['user'] = str_replace('/ ','/+',isset($p['user']) ? $p['user'] : '');
+      $newdata[$id]['url']  = str_replace('stratum tcp','stratum+tcp',isset($p['url']) ? $p['url'] : '');
+      if (!isset($newdata[$id]['priority'])) $newdata[$id]['priority'] = pool_priority($p);
       if(isset($p['prio']) && $p['prio'] > $m) $m=$p['prio'];
     }
   }
@@ -96,18 +228,20 @@ elseif (!empty($_REQUEST['pools'])) {
     $savedata = $newdata;
     foreach ($savedata as $id => $p)
     {
-      if($savedata[$id]['extranonce'] == true) {
+      if(isset($savedata[$id]['extranonce']) && $savedata[$id]['extranonce'] == true) {
         $savedata[$id]['extranonce']  = "true";
       }
     }
 
-    file_put_contents($configPools, json_encode($savedata, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
-    minerConfigGenerate();
-    $r['data']=$newdata;
+    if (!write_config_file($configPools, json_encode($savedata, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES))) {
+      $r['info'][]=array('type' => 'error', 'text' => 'Pools config save failed: ' . $configPools);
+    } else {
+      minerConfigGenerate();
+      $r['data']=$newdata;
 
-    $r['info'][]=array('type' => 'success', 'text' => 'Pools config saved');
-    cgminer('restart');    
-    $r['info'][]=array('type' => 'info', 'text' => 'Miner: restart');
+      $r['info'][]=array('type' => 'success', 'text' => 'Pools config saved');
+      add_miner_restart_info($r, trigger_miner_restart($minerRestart));
+    }
   }
   // Load current settings
   elseif(!empty($r['data'])&&is_array($r['data'])){
@@ -121,26 +255,47 @@ elseif (!empty($_REQUEST['pools'])) {
 }
 
 // Manage miner.conf
-elseif (!empty($_REQUEST['options'])) {
+elseif (isset($_REQUEST['options'])) {
   $newdata   = json_decode($_REQUEST['options'], true);
-  $r['data'] = json_decode(@file_get_contents($configOptns), true);
+  $r['data'] = ensureBaikalOptions(json_decode(@file_get_contents($configOptns), true));
 
   // Overwrite current with new config
   if(!empty($newdata)&&is_array($newdata)){
-    file_put_contents($configOptns, json_encode($newdata, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
-    minerConfigGenerate();
-    $r['data']=$newdata;
-    $r['info'][]=array('type' => 'success', 'text' => 'Miner options saved');
-    cgminer('restart');    
-    $r['info'][]=array('type' => 'info', 'text' => 'Miner: restart');
+    $boardClockError = validateBaikalBoardClocks($newdata);
+    $experimentalError = ($boardClockError === null) ? baikalExperimentalClockError($newdata) : null;
+    $experimentalPolicyError = ($boardClockError === null && $experimentalError === null)
+      ? baikalExperimentalPolicyError($newdata) : null;
+    if ($boardClockError !== null) {
+      $r['info'][]=array('type' => 'error', 'text' => $boardClockError);
+    } elseif ($experimentalError !== null) {
+      $r['info'][]=array('type' => 'error', 'text' => $experimentalError);
+    } elseif ($experimentalPolicyError !== null) {
+      $r['info'][]=array('type' => 'error', 'text' => $experimentalPolicyError);
+    } else {
+      $newdata = baikalNormalizeExperimentalOptions(ensureBaikalOptions($newdata));
+    }
+    if ($boardClockError === null && $experimentalError === null && $experimentalPolicyError === null &&
+        !write_config_file($configOptns, json_encode($newdata, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES))) {
+      $r['info'][]=array('type' => 'error', 'text' => 'Miner options save failed: ' . $configOptns);
+    } elseif ($boardClockError === null && $experimentalError === null && $experimentalPolicyError === null) {
+      if (!minerConfigGenerate()) {
+        $r['info'][]=array('type' => 'error', 'text' => 'Miner configuration was not rewritten');
+      } else {
+        $r['data']=$newdata;
+        $r['info'][]=array('type' => 'success', 'text' => 'Miner options saved');
+        add_miner_restart_info($r, trigger_miner_restart($minerRestart));
+      }
+    }
   }
   // Load current settings
   elseif(!empty($r['data'])&&is_array($r['data'])){
+    if (!baikalExperimentalLaunchAllowed())
+      $r['data'] = baikalStripExperimentalOptions($r['data']);
     $r['info'][]=array('type' => 'info', 'text' => 'Miner options loaded');
   }
   // Load new settings
   else{
-    $r['data']=array(array('key'=>'algo','value'=>'c'));
+    $r['data']=ensureBaikalOptions(array(array('key'=>'algo','value'=>'c')));
     $r['info'][]=array('type' => 'error', 'text' => 'Miner options not found');
   }
 }
@@ -156,32 +311,457 @@ elseif (!empty($_REQUEST['timezone'])) {
   $settings = json_decode(@file_get_contents($configScripta), true);
   if (!is_array($settings)) $settings = array();
   $settings['userTimezone'] = $timezone;
-  file_put_contents($configScripta, json_encode($settings, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
-  $r['data']['date'] = date('Y-m-d H:i:s');
-  $r['info'][]=array('type' => 'info', 'text' => 'Timezone is '.$timezone );
+  if (!write_config_file($configScripta, json_encode($settings, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES))) {
+    $r['info'][]=array('type' => 'error', 'text' => 'Timezone save failed: ' . $configScripta);
+  } else {
+    $r['data']['date'] = date('Y-m-d H:i:s');
+    $r['info'][]=array('type' => 'info', 'text' => 'Timezone is '.$timezone );
+  }
+}
+
+if (isset($r['data']['userAdjustableClocks']) && !empty($r['data']['userAdjustableClocks']) && !firmware_custom_active()) {
+  $r['data']['userAdjustableClocks'] = false;
 }
 
 echo json_encode($r);
+}
 
-function minerConfigGenerate(){
-  global $configOptns,$configPools,$configMiner;
-  $options = json_decode(@file_get_contents($configOptns), true);
+function baikalExperimentalFlagValue($value, &$parsed) {
+  if ($value === true || $value === false) {
+    $parsed = $value;
+    return true;
+  }
+  if (is_string($value) && ($value === 'true' || $value === 'false')) {
+    $parsed = ($value === 'true');
+    return true;
+  }
+  return false;
+}
 
-  // Angular objects ==> miner
-  // {key:k,value:v} ==> {k:v}
+function baikalCanonicalBoardPll($value) {
+  if (!is_string($value)) return null;
+  /* D makes $ match only the end, so a final newline is not an index tuple. */
+  if (!preg_match('/^(?:[8-9]|[1-2][0-9]|3[0-2])(?::(?:[8-9]|[1-2][0-9]|3[0-2])){2}$/D', $value))
+    return null;
+  return $value;
+}
+
+function baikalClockScopeValue($value) {
+  if (!is_string($value)) return null;
+  if ($value === 'global' || $value === 'individual') return $value;
+  return null;
+}
+
+function baikalBoardPllIndicesEqual($clock_index) {
+  if (!is_string($clock_index)) return false;
+  $parts = explode(':', $clock_index);
+  return count($parts) === 3 && $parts[0] === $parts[1] && $parts[1] === $parts[2];
+}
+
+function baikalSavedClockScope($options) {
+  if (!is_array($options)) return null;
+  $scope = null;
+  $seen = 0;
+  foreach ($options as $option) {
+    if (!is_array($option) || !isset($option['key']) || $option['key'] !== 'blakestream-clock-scope')
+      continue;
+    $seen++;
+    if ($seen !== 1) return null;
+    $scope = array_key_exists('value', $option) ? baikalClockScopeValue($option['value']) : null;
+    if ($scope === null) return null;
+  }
+  return $scope;
+}
+
+function baikalExplicitIndividualMode($options) {
+  $seen = 0;
+  $individual = false;
+  if (!is_array($options)) return false;
+  foreach ($options as $option) {
+    if (!is_array($option) || !isset($option['key']) || $option['key'] !== 'baikal-clock-mode') continue;
+    $seen++;
+    $value = isset($option['value']) ? $option['value'] : null;
+    $individual = ($value === 'individual');
+  }
+  return $seen === 1 && $individual;
+}
+
+function baikalExperimentalFlagOn($options) {
+  $flag = false;
+  $valid = false;
+  if (!is_array($options)) return false;
+  foreach ($options as $option) {
+    if (!is_array($option) || !isset($option['key']) || $option['key'] !== 'baikal-experimental-clock-index') continue;
+    if (!array_key_exists('value', $option) || !baikalExperimentalFlagValue($option['value'], $flag))
+      return false;
+    $valid = true;
+  }
+  return $valid && $flag === true;
+}
+
+function baikalExperimentalClockError($options) {
+  if (!is_array($options)) return 'miner options must be a list';
+  $flagSeen = false;
+  $flag = false;
+  $clock_indexSeen = false;
+  $clock_index = null;
+  $scopeSeen = false;
+  $scope = null;
+  foreach ($options as $option) {
+    if (!is_array($option) || !isset($option['key'])) continue;
+    if ($option['key'] === 'baikal-experimental-clock-index') {
+      if ($flagSeen) return 'baikal-experimental-clock-index must appear once';
+      $flagSeen = true;
+      if (!array_key_exists('value', $option) || !baikalExperimentalFlagValue($option['value'], $flag))
+        return 'baikal-experimental-clock-index must be a boolean or the string true or false';
+    } elseif ($option['key'] === 'baikal-board-clock-index') {
+      if ($clock_indexSeen) return 'baikal-board-clock-index must appear once';
+      $clock_indexSeen = true;
+      $clock_index = array_key_exists('value', $option) ? baikalCanonicalBoardPll($option['value']) : null;
+      if ($clock_index === null)
+        return 'baikal-board-clock-index must be three integers 8..32 such as 29:30:30';
+    } elseif ($option['key'] === 'blakestream-clock-scope') {
+      if ($scopeSeen) return 'blakestream-clock-scope must appear once';
+      $scopeSeen = true;
+      $scope = array_key_exists('value', $option) ? baikalClockScopeValue($option['value']) : null;
+      if ($scope === null)
+        return 'blakestream-clock-scope must be global or individual';
+    }
+  }
+  if (!$flagSeen && !$clock_indexSeen) return null;
+  if ($flagSeen && $flag === false && !$clock_indexSeen) return null;
+  if ($flagSeen && $flag === true && $clock_indexSeen && baikalExplicitIndividualMode($options)) {
+    /* Global UI still saves individual mode. Equal indices are the batch. */
+    if ($scope === 'global' && !baikalBoardPllIndicesEqual($clock_index))
+      return 'blakestream-clock-scope global requires three equal clock indices';
+    return null;
+  }
+  if ($clock_indexSeen && (!$flagSeen || $flag === false))
+    return 'baikal-board-clock-index requires baikal-experimental-clock-index';
+  if ($flagSeen && $flag === true && !$clock_indexSeen)
+    return 'baikal-experimental-clock-index requires baikal-board-clock-index';
+  return 'baikal-experimental-clock-index requires explicit baikal-clock-mode individual';
+}
+
+function user_adjustable_clocks_enabled() {
+  global $configScripta;
+  $path = isset($GLOBALS['BKB_SCRIPTA_CONF_PATH']) ? $GLOBALS['BKB_SCRIPTA_CONF_PATH'] : $configScripta;
+  if (!$path) return false;
+  $settings = json_decode(@file_get_contents($path), true);
+  return is_array($settings) && isset($settings['userAdjustableClocks']) &&
+    $settings['userAdjustableClocks'] === true;
+}
+
+function baikalExperimentalLaunchAllowed() {
+  return firmware_custom_active() && user_adjustable_clocks_enabled();
+}
+
+function baikalExperimentalPolicyError($options) {
+  if (baikalExperimentalClockError($options) !== null || !baikalExperimentalFlagOn($options))
+    return null;
+  if (!firmware_custom_active())
+    return 'Experimental Index requires verified custom bridge firmware';
+  if (!user_adjustable_clocks_enabled())
+    return 'Experimental Index requires Adjustable Clocks';
+  return null;
+}
+
+function baikalStripExperimentalOptions($options) {
+  return bkb_strip_experimental_options($options);
+}
+
+function baikalNormalizeExperimentalOptions($options) {
+  $valid = baikalExperimentalClockError($options) === null;
+  $enabled = $valid && baikalExperimentalFlagOn($options);
+  $scope = $valid ? baikalSavedClockScope($options) : null;
+  $clock_index = null;
+  if ($enabled) {
+    foreach ($options as $option) {
+      if (is_array($option) && isset($option['key']) && $option['key'] === 'baikal-board-clock-index')
+        $clock_index = baikalCanonicalBoardPll(isset($option['value']) ? $option['value'] : null);
+    }
+  }
+  $out = baikalStripExperimentalOptions($options);
+  if ($enabled && $clock_index !== null) {
+    $out[] = array(
+      'key' => 'baikal-experimental-clock-index',
+      'value' => true,
+      'description' => 'Experimental per-board clock indices (not MHz)'
+    );
+    $out[] = array(
+      'key' => 'baikal-board-clock-index',
+      'value' => $clock_index,
+      'description' => 'Experimental clock indices board0:board1:board2 (8-32, not MHz)'
+    );
+  }
+  if ($scope !== null) {
+    $out[] = array(
+      'key' => 'blakestream-clock-scope',
+      'value' => $scope,
+      'description' => 'Clock control scope (presentation only)'
+    );
+  }
+  return $out;
+}
+
+function baikalAppendExperimentalMinerKeys(&$miner, $rawOptions) {
+  if (baikalExperimentalClockError($rawOptions) !== null) return false;
+  if (!baikalExperimentalFlagOn($rawOptions)) return true;
+  if (!baikalExperimentalLaunchAllowed()) return true;
+  $clock_index = null;
+  foreach ($rawOptions as $option) {
+    if (is_array($option) && isset($option['key']) && $option['key'] === 'baikal-board-clock-index')
+      $clock_index = baikalCanonicalBoardPll(isset($option['value']) ? $option['value'] : null);
+  }
+  if ($clock_index === null) return false;
+  $miner['baikal-experimental-clock-index'] = true;
+  $miner['baikal-board-clock-index'] = $clock_index;
+  return true;
+}
+
+function baikalBuildMinerConfig($rawOptions) {
+  if (baikalExperimentalClockError($rawOptions) !== null) return false;
+  $options = ensureBaikalOptions(is_array($rawOptions) ? $rawOptions : array());
+  $miner = array();
+  $clockMode = 'global';
+
   foreach ($options as $o) {
+    if (is_array($o) && isset($o['key']) && $o['key'] === 'baikal-clock-mode') {
+      $clockMode = normalizeBaikalClockMode(isset($o['value']) ? $o['value'] : '', false);
+      break;
+    }
+  }
+
+  if (!is_array($options)) $options = array();
+  foreach ($options as $o) {
+    if (!is_array($o) || !isset($o['key'])) continue;
+    if ($o['key'] === 'baikal-experimental-clock-index' || $o['key'] === 'baikal-board-clock-index' ||
+        $o['key'] === 'blakestream-clock-scope') continue;
+    if ($o['key'] === 'baikal-board-clocks' && $clockMode !== 'individual') continue;
+    if (!array_key_exists('value', $o)) $o['value'] = '';
     if ($o['value'] == "true") {
       $o['value'] = true;
     }
-    $miner[$o['key']]=$o['value'];    
+    $miner[$o['key']] = $o['value'];
   }
+  if (!baikalAppendExperimentalMinerKeys($miner, is_array($rawOptions) ? $rawOptions : array()))
+    return false;
+  return $miner;
+}
 
-  $miner['pools']= json_decode(@file_get_contents($configPools), true);
-  file_put_contents($configMiner, json_encode($miner, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
+function minerConfigGenerate(){
+  global $configOptns,$configPools,$configMiner;
+  $raw = json_decode(@file_get_contents($configOptns), true);
+  $miner = baikalBuildMinerConfig(is_array($raw) ? $raw : array());
+  if ($miner === false) return false;
+  $miner['pools'] = json_decode(@file_get_contents($configPools), true);
+  if (!is_array($miner['pools'])) $miner['pools'] = array();
+  return write_config_file($configMiner, json_encode($miner, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
+}
+
+function pool_priority($p) {
+    if (is_array($p)) {
+      if (isset($p['priority'])) return (int)$p['priority'];
+      if (isset($p['prio'])) return (int)$p['prio'];
+    }
+    return 0;
 }
 
 function cmp($a, $b) {
-    return $a["priority"] - $b["priority"];
+    return pool_priority($a) - pool_priority($b);
+}
+
+function baikalIntOrDefault($value, $default) {
+    return is_numeric($value) ? intval($value) : $default;
+}
+
+function normalizeBaikalOptionsValue($value) {
+    $clock = 400;
+    $recover = 40;
+    $cutoff = 55;
+    $text = trim((string)$value);
+
+    if ($text !== '') {
+        $parts = explode(':', $text);
+        if (count($parts) >= 3) {
+            $clock = baikalIntOrDefault($parts[0], $clock);
+            $recover = baikalIntOrDefault($parts[1], $recover);
+            $cutoff = baikalIntOrDefault($parts[2], $cutoff);
+        } elseif (count($parts) >= 2) {
+            // Backward-compatible old format: recover:cutoff.
+            $recover = baikalIntOrDefault($parts[0], $recover);
+            $cutoff = baikalIntOrDefault($parts[1], $cutoff);
+        } elseif (count($parts) == 1) {
+            $clock = baikalIntOrDefault($parts[0], $clock);
+        }
+    }
+
+    if ($clock !== 400) $clock = 400;
+    if ($recover < 1) $recover = 1;
+    if ($recover > 99) $recover = 99;
+    if ($cutoff < 1) $cutoff = 1;
+    if ($cutoff > 99) $cutoff = 99;
+    if ($recover >= $cutoff) {
+        $recover = 40;
+        $cutoff = 55;
+    }
+
+    return $clock . ':' . $recover . ':' . $cutoff;
+}
+
+function normalizeBaikalClockMode($value, $hasLegacyBoardClocks) {
+    if ($value === 'global' || $value === 'individual') return $value;
+    return $hasLegacyBoardClocks ? 'individual' : 'global';
+}
+
+function ensureBaikalOptions($options) {
+    if (!is_array($options)) $options = array();
+    $foundBaikal = false;
+    $foundMode = false;
+    $foundBoardClocks = false;
+
+    foreach ($options as $option) {
+        if (!is_array($option) || !isset($option['key'])) continue;
+        if ($option['key'] === 'baikal-clock-mode') $foundMode = true;
+        if ($option['key'] === 'baikal-board-clocks') $foundBoardClocks = true;
+    }
+    $migratedMode = $foundMode ? 'global' : normalizeBaikalClockMode('', $foundBoardClocks);
+
+    foreach ($options as $idx => $option) {
+        if (!is_array($option) || !isset($option['key'])) continue;
+        if ($option['key'] === 'baikal-options') {
+            $options[$idx]['value'] = normalizeBaikalOptionsValue(isset($option['value']) ? $option['value'] : '');
+            if (empty($options[$idx]['description'])) {
+                $options[$idx]['description'] = 'BK-B ASIC clock MHz:recover temp:cutoff temp';
+            }
+            $foundBaikal = true;
+        } elseif ($option['key'] === 'baikal-fan') {
+            $options[$idx]['value'] = (string)max(40, min(100,
+                baikalIntOrDefault(isset($option['value']) ? $option['value'] : null, 70)));
+        } elseif ($option['key'] === 'baikal-clock-mode') {
+            $options[$idx]['value'] = normalizeBaikalClockMode(
+                isset($option['value']) ? $option['value'] : '',
+                false
+            );
+            if (empty($options[$idx]['description'])) {
+                $options[$idx]['description'] = 'BK-B clock application mode (global or individual)';
+            }
+            $migratedMode = $options[$idx]['value'];
+        } elseif ($option['key'] === 'baikal-board-clocks' && empty($options[$idx]['description'])) {
+            $options[$idx]['description'] = 'Advanced per-board applied clocks MHz (board0:board1:board2)';
+        }
+    }
+
+    if (!$foundBaikal) {
+        $options[] = array(
+            'key' => 'baikal-options',
+            'value' => normalizeBaikalOptionsValue(''),
+            'description' => 'BK-B ASIC clock MHz:recover temp:cutoff temp'
+        );
+    }
+    if (!$foundMode) {
+        $options[] = array(
+            'key' => 'baikal-clock-mode',
+            'value' => $migratedMode,
+            'description' => 'BK-B clock application mode (global or individual)'
+        );
+    }
+    if (!$foundBoardClocks) {
+        $options[] = array(
+            'key' => 'baikal-board-clocks',
+            'value' => '400:400:400',
+            'description' => 'Advanced per-board applied clocks MHz (board0:board1:board2)'
+        );
+    }
+
+    return $options;
+}
+
+function validateBaikalBoardClocks($options) {
+    if (!is_array($options)) return null;
+    foreach ($options as $option) {
+        if (!is_array($option) || !isset($option['key'])) continue;
+        if ($option['key'] === 'baikal-clock-mode') {
+            $mode = isset($option['value']) ? (string)$option['value'] : '';
+            if ($mode !== 'global' && $mode !== 'individual') {
+                return 'baikal-clock-mode must be global or individual';
+            }
+            continue;
+        }
+        if ($option['key'] !== 'baikal-board-clocks') continue;
+        $value = isset($option['value']) ? trim((string)$option['value']) : '';
+        if (!preg_match('/^(\d+):(\d+):(\d+)$/', $value, $matches)) {
+            return 'baikal-board-clocks must be board0:board1:board2';
+        }
+        for ($i = 1; $i <= 3; $i++) {
+            $clock = (int)$matches[$i];
+            if ($clock !== 400) {
+                return 'baikal-board-clocks values must use a validated clock (currently 400 MHz)';
+            }
+        }
+    }
+    return null;
+}
+
+function firmware_identity_paths() {
+    if (isset($GLOBALS['BKB_FIRMWARE_IDENTITY_PATHS']) && is_array($GLOBALS['BKB_FIRMWARE_IDENTITY_PATHS']))
+        return $GLOBALS['BKB_FIRMWARE_IDENTITY_PATHS'];
+    return array(
+        '/run/blakestream/bkb-firmware-identity.json',
+        '/opt/scripta/etc/bkb-firmware-identity.json',
+    );
+}
+
+function firmware_custom_active() {
+    foreach (firmware_identity_paths() as $path) {
+        $d = @json_decode(@file_get_contents($path), true);
+        if (is_array($d)) return bkb_firmware_supports_clocks($d);
+    }
+    return false;
+}
+
+function clampBaikalClockToStock() {
+    global $configOptns;
+    $rawOptions = json_decode(@file_get_contents($configOptns), true);
+    $options = ensureBaikalOptions($rawOptions);
+    $changed = false;
+    $optionsNormalized = (json_encode($options) !== json_encode(is_array($rawOptions) ? $rawOptions : array()));
+
+    foreach ($options as $idx => $option) {
+        if (!is_array($option) || !isset($option['key']) || $option['key'] !== 'baikal-options') continue;
+        $normalized = normalizeBaikalOptionsValue(isset($option['value']) ? $option['value'] : '');
+        $parts = explode(':', $normalized);
+        $clock = isset($parts[0]) ? baikalIntOrDefault($parts[0], 400) : 400;
+        if ($clock !== 400) {
+            $parts[0] = '400';
+            $options[$idx]['value'] = implode(':', $parts);
+            $changed = true;
+        } else {
+            $options[$idx]['value'] = $normalized;
+        }
+        break;
+    }
+
+    foreach ($options as $idx => $option) {
+        if (!is_array($option) || !isset($option['key']) || $option['key'] !== 'baikal-clock-mode') continue;
+        if (!isset($option['value']) || $option['value'] !== 'global') {
+            $options[$idx]['value'] = 'global';
+            $changed = true;
+        }
+        break;
+    }
+
+    $stripped = baikalStripExperimentalOptions($options);
+    if (count($stripped) !== count($options)) {
+        $options = $stripped;
+        $changed = true;
+    }
+
+    if (!$changed && !$optionsNormalized) return false;
+    if (!write_config_file($configOptns, json_encode($options, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES))) {
+        return false;
+    }
+    return true;
 }
 
 ?>

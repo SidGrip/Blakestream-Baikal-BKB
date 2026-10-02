@@ -1,0 +1,124 @@
+<form class="form-horizontal" novalidate>
+  <div class="form-group">
+    <label class="col-sm-2 control-label">Wi-Fi Radio</label>
+    <div class="col-sm-10">
+      <div class="btn-group bs-setting-choices" role="group" aria-label="Wi-Fi radio">
+        <button type="button" class="btn btn-default btn-sm" ng-class="{active: wifiRadioOff()}" aria-pressed="{{wifiRadioOff()}}" ng-click="wifiSetRadio(false)" ng-disabled="wifiBusy || !wifiReady">Off</button>
+        <button type="button" class="btn btn-default btn-sm" ng-class="{active: wifi.radio.enabled}" aria-pressed="{{wifi.radio.enabled}}" ng-click="wifiSetRadio(true)" ng-disabled="wifiBusy || !wifiReady">On</button>
+      </div>
+      <p class="help-block" ng-show="wifiHardwareBlocked()">Hardware blocked</p>
+      <p class="help-block" ng-show="wifi.ethernet_connected">Ethernet connected</p>
+      <p class="help-block" role="status" ng-show="wifiAdapterStarting()"><i class="fa fa-spinner fa-spin" aria-hidden="true"></i> Adapter starting...</p>
+      <p class="help-block" role="status" ng-show="wifiAdapterUnavailable() && !wifiAdapterStarting()">Adapter unavailable</p>
+      <p class="text-danger" role="status" ng-show="wifiAbsent()">No Wi-Fi adapter</p>
+      <p class="text-danger" role="alert" ng-show="wifiError">{{wifiError}}</p>
+      <p class="text-warning" role="status" ng-show="wifi.pending && (!wifi.adapter.present || !wifi.radio.enabled || wifiAdapterStarting() || wifiAdapterUnavailable())"><i class="fa fa-spinner fa-spin" aria-hidden="true"></i> {{wifiPendingLabel()}}</p>
+      <p class="text-warning" role="status" ng-show="wifiUnsupportedAdapter()">
+        <span ng-show="wifi.adapter.firmware_missing">Firmware missing</span>
+        <span ng-show="!wifi.adapter.firmware_missing && !wifi.adapter.managed">Adapter unmanaged</span>
+      </p>
+    </div>
+  </div>
+</form>
+
+<form name="wifiForm" class="form-horizontal" novalidate ng-show="wifi.adapter.present && wifi.radio.enabled && !wifiAdapterStarting() && !wifiAdapterUnavailable()">
+  <fieldset ng-disabled="wifiBusy || !!wifi.pending">
+    <div class="form-group" ng-show="wifi.connection">
+      <label class="col-sm-2 control-label">Current Connection</label>
+      <div class="col-sm-10">
+        <p class="form-control-static">
+          <i class="fa fa-check" aria-hidden="true"></i>
+          {{wifi.connection.ssid || 'Wi-Fi connected'}}
+          <span class="text-muted">({{wifiSecurityLabel(wifi.connection.security)}})</span>
+          <span ng-show="wifi.connection.address"> {{wifi.connection.address}}</span>
+          <span ng-show="wifi.connection.hidden"> Hidden</span>
+        </p>
+        <button type="button" class="btn btn-default" ng-click="wifiDisconnect()" ng-disabled="!wifiCanMutate()">Disconnect</button>
+      </div>
+    </div>
+
+    <div class="form-group">
+      <label class="col-sm-2 control-label">Networks</label>
+      <div class="col-sm-10">
+        <button type="button" class="btn btn-default" ng-click="wifiScan()" ng-disabled="!wifiCanScan()">
+          <i class="fa fa-refresh" ng-class="{'fa-spin': wifiBusy}" aria-hidden="true"></i> Scan
+        </button>
+        <span class="text-muted" ng-show="wifiScanWait">Retry in {{wifiScanWait}}s</span>
+        <p class="help-block" ng-show="wifiScanned && !wifiBusy && !wifi.networks.length && wifiCanMutate()">No networks found</p>
+        <div class="list-group bs-wifi-list" ng-show="wifi.networks.length">
+          <a href="" class="list-group-item" ng-repeat="n in wifi.networks" ng-click="wifiSelectNetwork(n)" ng-class="{disabled: !n.supported}">
+            <span class="bs-wifi-network-name">
+            <i class="fa" ng-class="{'fa-unlock': n.security === 'open', 'fa-lock': n.security === 'wpa-psk', 'fa-ban': !n.supported}" aria-hidden="true"></i>
+            {{n.ssid}}
+            <span class="text-muted">{{wifiSecurityLabel(n.security)}}</span>
+            </span>
+            <span class="bs-wifi-signal text-muted"><i class="fa fa-signal" aria-hidden="true"></i> {{n.strength}}%</span>
+          </a>
+        </div>
+      </div>
+    </div>
+
+    <div class="form-group">
+      <label class="col-sm-2 control-label" for="wifiSsid">SSID</label>
+      <div class="col-sm-5">
+        <input id="wifiSsid" class="form-control" type="text" ng-model="wifiDraft.ssid" ng-change="wifiClearConnectFeedback()" ng-trim="false" autocomplete="off" ng-disabled="!wifiCanMutate()">
+      </div>
+    </div>
+    <div class="form-group">
+      <label class="col-sm-2 control-label" for="wifiSecurity">Security</label>
+      <div class="col-sm-5">
+        <select id="wifiSecurity" class="form-control" ng-model="wifiDraft.security" ng-change="wifiSecurityChanged()" ng-disabled="!wifiCanMutate()">
+          <option value="wpa-psk">WPA-PSK (WPA/WPA2)</option>
+          <option value="open">Open</option>
+        </select>
+      </div>
+    </div>
+    <div class="form-group" ng-show="wifiDraft.security === 'wpa-psk'">
+      <label class="col-sm-2 control-label" for="wifiPsk">Password</label>
+      <div class="col-sm-5">
+        <div class="input-group">
+          <input id="wifiPsk" class="form-control" type="password" ng-attr-type="{{wifiPasswordVisible ? 'text' : 'password'}}" ng-model="wifiDraft.psk" ng-change="wifiClearConnectFeedback()" ng-trim="false" autocomplete="off" autocapitalize="none" spellcheck="false" ng-disabled="!wifiCanMutate()">
+          <span class="input-group-btn">
+            <button type="button" class="btn btn-default" ng-click="wifiTogglePassword()" ng-disabled="!wifiCanMutate()" title="{{wifiPasswordVisible ? 'Hide password' : 'Show password'}}" aria-label="{{wifiPasswordVisible ? 'Hide password' : 'Show password'}}" aria-pressed="{{wifiPasswordVisible}}" aria-controls="wifiPsk">
+              <i class="fa" ng-class="{'fa-eye': !wifiPasswordVisible, 'fa-eye-slash': wifiPasswordVisible}" aria-hidden="true"></i>
+            </button>
+          </span>
+        </div>
+      </div>
+    </div>
+    <div class="form-group">
+      <div class="col-sm-offset-2 col-sm-10">
+        <label class="checkbox-inline">
+          <input type="checkbox" ng-model="wifiDraft.hidden" ng-disabled="!wifiCanMutate()"> Hidden network
+        </label>
+      </div>
+    </div>
+    <div class="form-group">
+      <div class="col-sm-offset-2 col-sm-10">
+        <button type="button" class="btn btn-default bs-save-pool-btn bs-wifi-connect" ng-class="{'bs-wifi-connecting': wifiConnecting(), 'bs-wifi-connected': wifiConnected}" ng-click="wifiConnect()" ng-disabled="!wifiValid() || wifiConnected" aria-busy="{{wifiConnecting()}}" aria-live="polite" aria-atomic="true">
+          <i class="fa" ng-class="{'fa-spinner fa-spin': wifiConnecting(), 'fa-check': !wifiConnecting() && wifiConnected, 'fa-link': !wifiConnecting() && !wifiConnected}" aria-hidden="true"></i>
+          <span>{{wifiConnectLabel()}}</span>
+        </button>
+      </div>
+    </div>
+
+    <div class="form-group" ng-show="wifi.saved.length">
+      <label class="col-sm-2 control-label">Saved Networks</label>
+      <div class="col-sm-10">
+        <div class="list-group bs-wifi-list">
+          <div class="list-group-item" ng-repeat="s in wifi.saved">
+            <span class="bs-wifi-network-name">
+            <a href="" ng-click="wifiReconnect(s)" ng-if="s.saved && s.supported" ng-attr-aria-disabled="{{!wifiCanMutate()}}">{{s.ssid || 'Unknown'}}</a>
+            <span ng-if="!s.saved || !s.supported">{{s.ssid || 'Unknown'}}</span>
+            <span class="text-muted">{{wifiSecurityLabel(s.security)}}</span>
+            <span ng-show="s.hidden" class="text-muted">Hidden</span>
+            </span>
+            <button type="button" class="btn btn-default btn-xs" ng-click="wifiForget(s)" ng-disabled="wifiBusy || !!wifi.pending || !wifiReady">
+              <i class="fa fa-trash" aria-hidden="true"></i> Forget
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </fieldset>
+</form>

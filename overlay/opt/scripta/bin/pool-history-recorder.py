@@ -4,8 +4,8 @@
 pool-history-recorder.py - Blakestream-GaintB pool history snapshot recorder.
 
 Polls sgminer's pools API every 5 minutes (via /etc/cron.d/blakestream-pool-history)
-and appends a sample to /opt/scripta/var/pool-history.json. Trims samples older
-than the configured retention window (default 7 days).
+and appends a sample to the Settings -> Persist History -> Pool target. Trims
+samples older than the configured retention window (default 7 days).
 
 Each saved pool gets its own bucket keyed by pool ID. We map sgminer-API pools
 back to saved-pools.json entries by matching the cleaned URL (strip
@@ -32,11 +32,46 @@ import sys
 import time
 
 ETC = '/opt/scripta/etc'
-VAR = '/opt/scripta/var'
+SCRIPTA_CONF = os.path.join(ETC, 'scripta.conf')
+RUNTIME_RAM = '/run/blakestream'
+RUNTIME_SD = '/opt/scripta/var'
+
+
+def runtime_var_dir():
+    """RAM tmpfs by default; SD when settings.userPersistPoolHistory is on."""
+    try:
+        with open(SCRIPTA_CONF, 'r') as f:
+            cfg = json.load(f)
+        if cfg.get('userPersistPoolHistory'):
+            return RUNTIME_SD
+    except (IOError, ValueError):
+        pass
+    return RUNTIME_RAM
+
+
+VAR = runtime_var_dir()
 SAVED_POOLS = os.path.join(ETC, 'saved-pools.json')
 HISTORY = os.path.join(VAR, 'pool-history.json')
 RETENTION_DAYS = 7
 SAMPLE_INTERVAL_SEC = 300  # used for trim sanity, not for sleeping
+
+
+def drop_stale_copy():
+    """Remove the pool-history copy left in the inactive location after a
+    RAM<->SD switch. Guarded by a successful config read."""
+    try:
+        with open(SCRIPTA_CONF, 'r') as f:
+            json.load(f)
+    except (IOError, ValueError):
+        return
+    other = RUNTIME_SD if VAR == RUNTIME_RAM else RUNTIME_RAM
+    try:
+        os.remove(os.path.join(other, 'pool-history.json'))
+    except OSError:
+        pass
+
+
+drop_stale_copy()
 
 
 def load_json(path, default):
@@ -51,29 +86,59 @@ def write_json_atomic(path, data):
     parent = os.path.dirname(path)
     if parent and not os.path.isdir(parent):
         os.makedirs(parent)
-    tmp = path + '.tmp'
-    with open(tmp, 'w') as f:
-        json.dump(data, f, separators=(',', ':'))  # compact
-    os.rename(tmp, path)
+    if parent:
+        try:
+            os.chmod(parent, 0o775)
+        except OSError:
+            pass
+    tmp = '%s.%s.tmp' % (path, os.getpid())
+    try:
+        with open(tmp, 'w') as f:
+            json.dump(data, f, separators=(',', ':'))  # compact
+        try:
+            os.chmod(tmp, 0o664)
+        except OSError:
+            pass
+        os.rename(tmp, path)
+        try:
+            os.chmod(path, 0o664)
+        except OSError:
+            pass
+    finally:
+        if os.path.exists(tmp):
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
 
 
 def query_sgminer_pools():
     """Return parsed list of pool dicts from sgminer's API."""
+    s = None
     try:
         s = socket.socket()
         s.settimeout(4)
         s.connect(('127.0.0.1', 4028))
         s.sendall(b'{"command":"pools"}')
+        try:
+            s.shutdown(socket.SHUT_WR)
+        except socket.error:
+            pass
         data = b''
         while True:
             chunk = s.recv(8192)
             if not chunk:
                 break
             data += chunk
-        s.close()
     except Exception as e:
         sys.stderr.write('pool-history-recorder: cannot query sgminer: %s\n' % e)
         return []
+    finally:
+        if s is not None:
+            try:
+                s.close()
+            except Exception:
+                pass
 
     txt = data.decode('utf-8', 'replace').rstrip('\x00').strip()
     try:

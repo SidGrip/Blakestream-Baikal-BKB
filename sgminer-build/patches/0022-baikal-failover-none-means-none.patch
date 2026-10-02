@@ -1,0 +1,112 @@
+From: sid <sidgrip@gmail.com>
+Subject: [PATCH 0022] baikal: treat empty per-board failover as no fallback
+
+The dashboard's FAILOVER lane uses "none" to mean the board should not route
+to a backup pool. The previous sgminer behavior treated an unset explicit
+failover as permission to auto-search every same-algo pool when the pinned
+primary was unworkable.
+
+Make the runtime behavior match the UI: if `ascfailover` is cleared for a
+board, `select_baikal_failover_pool_locked()` returns NULL and the board
+halts until its primary is workable again. Explicit failover selections still
+work as before.
+
+---
+--- a/sgminer.c
++++ b/sgminer.c
+@@ -8022,9 +8022,8 @@
+  *
+  * These are lifted nearly verbatim from an earlier development branch
+  * (historical reference). The only difference: select_baikal_failover_pool_locked
+- * does NOT use the staged_work_count tiebreaker, because Path B doesn't add
+- * staged_work_count to struct pool. Tiebreaker order is: same-algo,
+- * lowest effective ASC count, then lowest pool prio.
++ * used to auto-search same-algo pools. In this build, failover is explicit:
++ * a board only uses the pool selected through ascfailover.
+  *
+  * All three of these locked variants assume the caller holds devices_lock
+  * (read or write). The non-_locked wrappers acquire it as a reader.
+@@ -8036,69 +8035,29 @@
+            cgpu->primary_pool_no != BAIKAL_POOL_UNSET;
+ }
+ 
+-static int baikal_current_pool_load_locked(int pool_no)
+-{
+-    struct cgpu_info *cgpu;
+-    int count = 0;
+-    int i;
+-
+-    for (i = 0; i < total_devices; i++) {
+-        cgpu = devices[i];
+-        if (!cgpu || cgpu->deven == DEV_DISABLED)
+-            continue;
+-        if (baikal_pool_routing_active(cgpu) && cgpu->effective_pool_no == pool_no)
+-            count++;
+-    }
+-    return (count);
+-}
+-
+ static struct pool *select_baikal_failover_pool_locked(struct cgpu_info *cgpu, struct pool *primary_pool)
+ {
+-    struct pool *best = NULL;
+-    int best_load = INT_MAX;
+-    int i;
+-
+     if (!cgpu || !primary_pool)
+         return (NULL);
+ 
+-    /* If the user has set an explicit failover for this board, honour it
+-     * exclusively: prefer the chosen pool when it is workable + same algo,
+-     * otherwise return NULL so the board halts (the user's "stop hashing
+-     * if both die" guarantee). Do NOT fall through to the auto-search. */
+-    if (cgpu->failover_pool_no != BAIKAL_POOL_UNSET) {
+-        if (cgpu->failover_pool_no >= 0 && cgpu->failover_pool_no < total_pools) {
+-            struct pool *explicit_pool = pools[cgpu->failover_pool_no];
+-            if (explicit_pool && explicit_pool != primary_pool
+-                    && cmp_algorithm(&explicit_pool->algorithm, &primary_pool->algorithm)
+-                    && !pool_unworkable(explicit_pool)) {
+-                return (explicit_pool);
+-            }
+-        }
++    /* Honour the dashboard's per-board failover setting strictly. If the user
++     * left failover as "none", do not auto-search other same-algo pools. */
++    if (cgpu->failover_pool_no == BAIKAL_POOL_UNSET)
+         return (NULL);
+-    }
+-
+-    for (i = 0; i < total_pools; i++) {
+-        struct pool *candidate = pools[i];
+-        int candidate_load;
+ 
+-        if (candidate == primary_pool)
+-            continue;
+-        if (!cmp_algorithm(&candidate->algorithm, &primary_pool->algorithm))
+-            continue;
+-        if (pool_unworkable(candidate))
+-            continue;
+-
+-        candidate_load = baikal_current_pool_load_locked(candidate->pool_no);
+-        /* Tiebreaker: matching algo (already filtered) -> lowest effective
+-         * ASC load -> lowest pool prio. (Path A's queue-depth tiebreaker is
+-         * dropped because Path B has no per-pool queue.) */
+-        if (!best || candidate_load < best_load ||
+-            (candidate_load == best_load && candidate->prio < best->prio)) {
+-            best = candidate;
+-            best_load = candidate_load;
++    /* If the user has set an explicit failover for this board, honour it
++     * exclusively: prefer the chosen pool when it is workable + same algo,
++     * otherwise return NULL so the board halts. Do NOT fall through to the
++     * auto-search. */
++    if (cgpu->failover_pool_no >= 0 && cgpu->failover_pool_no < total_pools) {
++        struct pool *explicit_pool = pools[cgpu->failover_pool_no];
++        if (explicit_pool && explicit_pool != primary_pool
++                && cmp_algorithm(&explicit_pool->algorithm, &primary_pool->algorithm)
++                && !pool_unworkable(explicit_pool)) {
++            return (explicit_pool);
+         }
+     }
+-    return (best);
++    return (NULL);
+ }
+ 
+ static struct pool *baikal_effective_pool_for_cgpu_locked(struct cgpu_info *cgpu)

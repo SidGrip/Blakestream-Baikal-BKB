@@ -1,0 +1,9 @@
+[Unit]
+Description=Re-apply persisted Blakestream Wi-Fi radio state
+After=NetworkManager.service
+PartOf=NetworkManager.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /opt/scripta/bin/wifi-settings.py sync-radio
+TimeoutStartSec=20

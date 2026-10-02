@@ -1,0 +1,180 @@
+Queue Baikal live fan updates outside sgminer API thread.
+
+The BK-B live fan hook previously called BAIKAL_SET_OPTION synchronously
+from ascset/set_device. Auto Fan can call this path periodically, so doing
+USB send/read work inside the API request can wedge the API thread.
+
+Queue the requested fan percentage from ascset and let the Baikal result
+polling master apply it later from the normal driver path. Normal fan changes
+are rate-limited and coalesced; 100% emergency requests bypass the interval.
+
+--- a/driver-baikal.h
++++ b/driver-baikal.h
+@@ -1,6 +1,7 @@
+ #ifndef __DEVICE_BAIKAL_H__
+ #define __DEVICE_BAIKAL_H__
+ 
++#include <time.h>
+ #include "miner.h"
+ 
+ #define BAIKAL_1751             (0x1)
+@@ -102,6 +103,11 @@
+     int clock;
+     uint8_t cutofftemp;
+     uint8_t fanspeed;		// percent
++    uint8_t pending_fanspeed;
++    bool pending_fanspeed_valid;
++    time_t pending_fanspeed_time;
++    time_t last_fanspeed_apply_time;
++    time_t last_fanspeed_failure_time;
+     uint8_t recovertemp;
+ 	pthread_t *process_thr;
+     struct miner_info miners[BAIKAL_MAXMINERS];    
+--- a/driver-baikalu.c
++++ b/driver-baikalu.c
+@@ -31,12 +31,16 @@
+ 
+ static int api_clock = BAIKAL_CLK_DEF;
+ static pthread_mutex_t baikal_pin_lock = PTHREAD_MUTEX_INITIALIZER;
++static pthread_mutex_t baikal_fan_lock = PTHREAD_MUTEX_INITIALIZER;
+ static bool baikal_pin_state_ready;
+ static int baikal_primary_pins[BAIKAL_MAXMINERS];
+ static int baikal_effective_pins[BAIKAL_MAXMINERS];
+ static bool baikal_failover_pins[BAIKAL_MAXMINERS];
+ static int baikal_user_failover_pins[BAIKAL_MAXMINERS]; /* explicit per-board failover, BAIKAL_POOL_UNSET = none */
+ 
++#define BAIKAL_FAN_APPLY_INTERVAL_SEC 30
++#define BAIKAL_FAN_FAILURE_BACKOFF_SEC 60
++
+ static int baikal_clock_command_code(uint16_t clk)
+ {
+     /* Shared monotonic PLL index the v4 firmware reads directly: idx = MHz/10 - 18,
+@@ -590,6 +594,76 @@
+     return (true);
+ }
+ 
++static void baikal_queue_fan(struct baikal_info *info, uint8_t fan)
++{
++    mutex_lock(&baikal_fan_lock);
++    info->pending_fanspeed = fan;
++    info->pending_fanspeed_valid = true;
++    info->pending_fanspeed_time = time(NULL);
++    mutex_unlock(&baikal_fan_lock);
++}
++
++static bool baikal_pending_fan_ready(struct baikal_info *info, uint8_t *fan)
++{
++    time_t now = time(NULL);
++    bool ready = false;
++
++    mutex_lock(&baikal_fan_lock);
++    if (info->pending_fanspeed_valid) {
++        if (info->pending_fanspeed == info->fanspeed) {
++            info->pending_fanspeed_valid = false;
++        } else if (info->pending_fanspeed == BAIKAL_FANSPEED_MAX ||
++                   ((info->last_fanspeed_apply_time == 0 ||
++                     now - info->last_fanspeed_apply_time >= BAIKAL_FAN_APPLY_INTERVAL_SEC) &&
++                    (info->last_fanspeed_failure_time == 0 ||
++                     now - info->last_fanspeed_failure_time >= BAIKAL_FAN_FAILURE_BACKOFF_SEC))) {
++            *fan = info->pending_fanspeed;
++            ready = true;
++        }
++    }
++    mutex_unlock(&baikal_fan_lock);
++
++    return ready;
++}
++
++static void baikal_pending_fan_applied(struct baikal_info *info, uint8_t fan)
++{
++    mutex_lock(&baikal_fan_lock);
++    info->fanspeed = fan;
++    info->last_fanspeed_apply_time = time(NULL);
++    info->last_fanspeed_failure_time = 0;
++    if (info->pending_fanspeed_valid && info->pending_fanspeed == fan)
++        info->pending_fanspeed_valid = false;
++    mutex_unlock(&baikal_fan_lock);
++}
++
++static void baikal_pending_fan_failed(struct baikal_info *info)
++{
++    mutex_lock(&baikal_fan_lock);
++    info->last_fanspeed_failure_time = time(NULL);
++    mutex_unlock(&baikal_fan_lock);
++}
++
++static void baikal_apply_pending_fan(struct cgpu_info *baikal)
++{
++    struct baikal_info *info = baikal->device_data;
++    uint8_t fan = 0;
++
++    if (!baikal_pending_fan_ready(info, &fan))
++        return;
++
++    if (baikal_setoption(baikal, info->clock, to_baikal_algorithm(baikal->algorithm.type),
++                         info->cutofftemp, fan) != true) {
++        baikal_pending_fan_failed(info);
++        applog(LOG_WARNING, "BK-B queued fan apply failed at %u%% on ASC %d",
++               (unsigned int)fan, baikal->miner_id);
++        return;
++    }
++
++    baikal_pending_fan_applied(info, fan);
++    applog(LOG_NOTICE, "BK-B queued fan applied at %u%%", (unsigned int)fan);
++}
++
+ static void baikal_apply_clock_reset(struct cgpu_info *baikal)
+ {
+     struct baikal_info *info = baikal->device_data;
+@@ -632,14 +706,8 @@
+         return replybuf;
+     }
+ 
+-    if (baikal_setoption(baikal, info->clock, to_baikal_algorithm(baikal->algorithm.type),
+-                         info->cutofftemp, (uint8_t)fan) != true) {
+-        snprintf(replybuf, 256, "failed to set fan");
+-        return replybuf;
+-    }
+-
+-    info->fanspeed = (uint8_t)fan;
+-    applog(LOG_NOTICE, "BK-B fan set live to %ld%% on ASC %d", fan, baikal->miner_id);
++    baikal_queue_fan(info, (uint8_t)fan);
++    applog(LOG_NOTICE, "BK-B fan queued at %ld%% from ASC %d", fan, baikal->miner_id);
+     return NULL;
+ }
+ 
+@@ -847,6 +915,15 @@
+     int primary_pool_no = baikal_primary_pool(cgpu);
+     int effective_pool_no = baikal_effective_pool(cgpu);
+     bool failover_active = baikal_pool_failover_active(cgpu);
++    uint8_t fan_percent;
++    uint8_t pending_fan_percent;
++    bool fan_pending;
++
++    mutex_lock(&baikal_fan_lock);
++    fan_percent = info->fanspeed;
++    pending_fan_percent = info->pending_fanspeed;
++    fan_pending = info->pending_fanspeed_valid;
++    mutex_unlock(&baikal_fan_lock);
+ 
+     root = api_add_int(root, "Chip Count", (int *)&miner->asic_count, false);
+ 
+@@ -859,7 +936,9 @@
+     root = api_add_int(root, "ReportedClock", &miner->reported_clock, false);
+     root = api_add_int(root, "ReportedClockCode", &miner->reported_clock_code, false);
+     root = api_add_int(root, "SentClockCode", &miner->sent_clock_code, false);
+-    root = api_add_uint8(root, "FanPercent", &info->fanspeed, false);
++    root = api_add_uint8(root, "FanPercent", &fan_percent, true);
++    root = api_add_bool(root, "FanPending", &fan_pending, true);
++    root = api_add_uint8(root, "PendingFanPercent", &pending_fan_percent, true);
+     root = api_add_int(root, "HWV", (int *)&miner->hw_ver, false);
+     root = api_add_int(root, "FWV", (int *)&miner->fw_ver, false);
+     root = api_add_string(root, "Algo", (char *)algorithm_type_str[thr->cgpu->algorithm.type], false);
+@@ -1306,6 +1385,7 @@
+                     baikal->miner_id);
+                 return 0;
+             }
++            baikal_apply_pending_fan(baikal);
+         } else {
+             cgsleep_ms(50);
+         }

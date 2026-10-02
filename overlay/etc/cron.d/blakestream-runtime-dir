@@ -1,0 +1,8 @@
+# Guarantee the /run/blakestream tmpfs dir + 0775 mode (so the www-data
+# recorders can write there). The dir persists for the whole boot, so once at
+# boot plus a low-frequency safety re-run replaces the old per-recorder
+# "sudo prepare-runtime-dir.sh &&" prefix (which forked sudo+a script every
+# minute for every recorder).
+@reboot root /opt/scripta/bin/prepare-runtime-dir.sh
+# Separate this fork-heavy cleanup from permission repair and alert jobs.
+8-59/15 * * * * root /opt/scripta/bin/prepare-runtime-dir.sh

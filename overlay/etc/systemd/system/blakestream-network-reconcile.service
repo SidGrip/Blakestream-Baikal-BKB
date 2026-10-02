@@ -1,0 +1,13 @@
+[Unit]
+Description=Restore confirmed network profile after NetworkManager restart
+After=NetworkManager.service
+PartOf=NetworkManager.service
+StartLimitInterval=300
+StartLimitBurst=3
+
+[Service]
+Type=simple
+ExecStart=/opt/scripta/bin/network-settings.py restore-confirmed
+TimeoutStartSec=40
+Restart=on-failure
+RestartSec=5

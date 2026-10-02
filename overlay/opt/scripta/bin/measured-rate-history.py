@@ -1,0 +1,6 @@
+#!/usr/bin/env python
+from measured_rate_service import main
+import sys
+
+if __name__ == '__main__':
+    sys.exit(main())

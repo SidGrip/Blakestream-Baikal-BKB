@@ -1,0 +1,11 @@
+{
+  "hw_policy": "baseline-budget-v1",
+  "max_temp": 50,
+  "legs": [
+    {"name": "ref-before", "indices": [30, 30, 30], "warmup_seconds": 180, "measurement_seconds": 1800},
+    {"name": "rot-30-26-22", "indices": [30, 26, 22], "warmup_seconds": 180, "measurement_seconds": 1800},
+    {"name": "rot-22-30-26", "indices": [22, 30, 26], "warmup_seconds": 180, "measurement_seconds": 1800},
+    {"name": "rot-26-22-30", "indices": [26, 22, 30], "warmup_seconds": 180, "measurement_seconds": 1800},
+    {"name": "ref-after", "indices": [30, 30, 30], "warmup_seconds": 180, "measurement_seconds": 1800}
+  ]
+}

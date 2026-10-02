@@ -21,39 +21,17 @@ fi
 
 echo "[04-apply-overlay] Applying ${OVERLAY}/ -> ${ROOTFS}/"
 rsync -aHAX --numeric-ids --info=progress2 --human-readable "${OVERLAY}/" "${ROOTFS}/"
+chmod 0644 "${ROOTFS}/etc/sysctl.d/90-blakestream-dual-network.conf"
+mkdir -p "${ROOTFS}/etc/systemd/system/multi-user.target.wants"
+ln -sfn ../blakestream-measured-rates.service "${ROOTFS}/etc/systemd/system/multi-user.target.wants/blakestream-measured-rates.service"
+mkdir -p "${ROOTFS}/etc/systemd/system/timers.target.wants"
+ln -sfn ../blakestream-network-rollback.timer "${ROOTFS}/etc/systemd/system/timers.target.wants/blakestream-network-rollback.timer"
+ln -sfn ../blakestream-wifi-rollback.timer "${ROOTFS}/etc/systemd/system/timers.target.wants/blakestream-wifi-rollback.timer"
+mkdir -p "${ROOTFS}/etc/systemd/system/NetworkManager.service.wants"
+ln -sfn ../blakestream-wifi-default.service "${ROOTFS}/etc/systemd/system/NetworkManager.service.wants/blakestream-wifi-default.service"
 
-# ----------------------------------------------------------------------------
-# Cleanup: files we want REMOVED from the rootfs that the additive overlay
-# can't delete on its own. List of paths relative to ROOTFS.
-# ----------------------------------------------------------------------------
-DELETE_PATHS=(
-    # Shellinabox: factory default was "Black on White" (the leading + makes
-    # it default). We replace it with "White On Black" via the overlay above.
-    # Remove the old default symlink so the new one wins.
-    "etc/shellinabox/options-enabled/00+Black on White.css"
-    # v2.x: per-board hashrate replaces the factory aggregate RRDtool graphs.
-    # The new pipeline is hashrate-history-recorder.py (cron) +
-    # f_blakestream.php?action=load_hashrate_history + bsHashrateChart directive.
-    # Remove the factory graph PHP renderers and the 5-min PHP writer so they
-    # can't accidentally clobber state. Their cron lines are already commented
-    # out in overlay/etc/cron.d/scripta but the PHP files would still answer
-    # /f_graph.php directly if a stray bookmark hits them.
-    "var/www/f_graph.php"
-    "var/www/f_graphReset.php"
-    "opt/scripta/etc/cron.d/5min/hashrate"
-    "opt/scripta/etc/cron.d/5min/ALERThashrate"
-    # No longer shipped: system clock stays UTC; per-user TZ is display-only
-    # (rendered in PHP/JS). Drop the helper from rootfs if a prior build left it.
-    "opt/scripta/bin/set-timezone.sh"
-)
 echo "[04-apply-overlay] Cleanup: removing legacy paths from rootfs"
-for p in "${DELETE_PATHS[@]}"; do
-    target="${ROOTFS}/${p}"
-    if [[ -e "${target}" || -L "${target}" ]]; then
-        rm -f "${target}"
-        echo "  removed: ${p}"
-    fi
-done
+bash "${HERE}/scripts/prune-rootfs.sh" "${ROOTFS}"
 
 echo "[04-apply-overlay] Done. Files in this overlay:"
 ( cd "${OVERLAY}" && find . -type f -o -type l ) | sort

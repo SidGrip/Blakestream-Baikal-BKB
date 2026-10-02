@@ -1,12 +1,11 @@
-# firmware-original is a symlink to the master workspace's copy on dev boxes
+# Downloaded/extracted factory SD-card image, not required by default QA.
 firmware-original
 firmware-original/PiZero_GB_180105_V1.0.img
 firmware-original/PiZero_GB_180105_V1.0.img.sha256
 firmware-original/rootfs-snapshot/
 firmware-modified/rootfs/
-build/*.img
-build/*.img.xz
-build/*.sha256
+/build/
+/tmp/
 
 # sgminer-build: cloned sources and build artifacts
 sgminer-build/src/
@@ -14,3 +13,19 @@ sgminer-build/build/
 
 __pycache__/
 .ssh-known_hosts
+
+# BK-B STM32 firmware dump (vendor binary; reproducible via DFU upload, see firmware-dump/README.md)
+firmware-dump/*.bin
+firmware-dump/strings.txt
+firmware-dump/__pycache__/
+
+# DFU flash backups (binary)
+firmware-custom/flash/backups/*.bin
+
+# Local QA environments, reports, and temporary source archives.
+.venv/
+qa-output/
+*.rej
+*.orig
+firmware-custom/build/*.o
+firmware-custom/build/*.elf

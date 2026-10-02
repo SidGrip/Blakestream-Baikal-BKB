@@ -10,7 +10,7 @@ index b81b1fb..283c666 100644
 -  strdata = bin2hex(work->data, 80);
 -  strmidstate = bin2hex(work->midstate, 32);
 -  applog(LOG_DEBUG, "data %s midstate %s", strdata, strmidstate);
-+  /* Blakestream-GaintB v2.1 leak fix: upstream calls bin2hex() unconditionally
++  /* Blakestream-GaintB v2.2 leak fix: upstream calls bin2hex() unconditionally
 +   * for a LOG_DEBUG message but never frees the result. In production
 +   * (opt_debug=false) the applog is a no-op but the allocations still happen,
 +   * leaking ~232 bytes per work-generation. Guard with opt_debug + free both
@@ -37,7 +37,7 @@ index e0949cf..f468976 100644
 -  strdata = bin2hex(work->data, 80);
 -  strmidstate = bin2hex(work->midstate, 32);
 -  applog(LOG_DEBUG, "data %s midstate %s", strdata, strmidstate);
-+  /* Blakestream-GaintB v2.1 leak fix: upstream calls bin2hex() unconditionally
++  /* Blakestream-GaintB v2.2 leak fix: upstream calls bin2hex() unconditionally
 +   * for a LOG_DEBUG message but never frees the result. In production
 +   * (opt_debug=false) the applog is a no-op but the allocations still happen,
 +   * leaking ~232 bytes per work-generation (~1.5 MB/min, OOM ~85 min on Pi
@@ -65,7 +65,7 @@ index dd1654a..fa0e31a 100644
 -  strdata = bin2hex(work->data, 128);
 -  strmidstate = bin2hex(work->midstate, 32);
 -  applog(LOG_DEBUG, "data %s midstate %s", strdata, strmidstate);
-+  /* Blakestream-GaintB v2.1 leak fix: upstream calls bin2hex() unconditionally
++  /* Blakestream-GaintB v2.2 leak fix: upstream calls bin2hex() unconditionally
 +   * for a LOG_DEBUG message but never frees the result. In production
 +   * (opt_debug=false) the applog is a no-op but the allocations still happen,
 +   * leaking ~232 bytes per work-generation. Guard with opt_debug + free both

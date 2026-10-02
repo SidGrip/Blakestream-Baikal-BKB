@@ -1,0 +1,16 @@
+[Unit]
+Description=Apply Blakestream Wi-Fi radio default and saved radio state
+Documentation=file:/opt/scripta/bin/wifi-settings.py
+DefaultDependencies=no
+Requires=local-fs.target
+After=local-fs.target
+Before=NetworkManager.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/python3 /opt/scripta/bin/wifi-settings.py provision
+TimeoutStartSec=15
+
+[Install]
+WantedBy=NetworkManager.service

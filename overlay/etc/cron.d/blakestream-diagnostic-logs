@@ -1,0 +1,4 @@
+# Bounded network, system, cooling and web-error event collection.
+PYTHONDONTWRITEBYTECODE=1
+* * * * * www-data sleep 10; /usr/bin/python /opt/scripta/bin/diagnostic-log-recorder.py 2>&1 | /usr/bin/logger -t bs-diagnostic-logs
+* * * * * www-data sleep 40; /usr/bin/python /opt/scripta/bin/diagnostic-log-recorder.py 2>&1 | /usr/bin/logger -t bs-diagnostic-logs

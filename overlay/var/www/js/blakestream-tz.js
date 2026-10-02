@@ -45,11 +45,11 @@
     },
     getZone: function () { return activeZone; },
 
-    format: function (unixMs, fmt) {
+    format: function (unixMs, fmt, zoneOverride) {
       if (unixMs === null || unixMs === undefined) return '';
       var d = new Date(unixMs);
       if (isNaN(d.getTime())) return '';
-      var tz = activeZone;
+      var tz = zoneOverride || activeZone;
       var f = getFormatter(tz);
       if (!f || typeof f.formatToParts !== 'function') {
         // Fallback: browser-local rendering via Date methods.

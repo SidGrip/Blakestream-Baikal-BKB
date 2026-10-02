@@ -1,0 +1,10 @@
+# Blakestream-GaintB consolidated history recorder.
+# Replaces the four per-recorder crons (hashrate / failover / clock / pool) with
+# ONE python process per minute. The orchestrator runs each recorder in a single
+# interpreter, still logs each under its own bs-* tag, and keeps the pool
+# recorder's 5-minute cadence via an internal file-age gate. flock skips a tick
+# if the previous one is still running (>60s). Runs as www-data so the PHP Clear
+# buttons can still rewrite the files. Fan control and temp-watchdog stay on
+# their own crons.
+PYTHONDONTWRITEBYTECODE=1
+* * * * * www-data /usr/bin/flock -n /tmp/blakestream-combined-history.lock /usr/bin/python /opt/scripta/bin/combined-history-recorder.py

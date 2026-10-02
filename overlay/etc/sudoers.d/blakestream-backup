@@ -1,0 +1,2 @@
+# Fixed backup verbs; validated names and data travel on stdin, never shell args.
+www-data ALL=(root) NOPASSWD: /opt/scripta/bin/backup-settings.py snapshot, /opt/scripta/bin/backup-settings.py restore, /opt/scripta/bin/backup-settings.py list, /opt/scripta/bin/backup-settings.py export, /opt/scripta/bin/backup-settings.py import, /opt/scripta/bin/backup-settings.py finish, /opt/scripta/bin/backup-settings.py rename, /opt/scripta/bin/backup-settings.py delete

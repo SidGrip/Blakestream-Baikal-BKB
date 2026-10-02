@@ -1,0 +1,112 @@
+Expose requested and firmware-reported BK-B clocks separately.
+
+The BK-B firmware receives a compact PLL code, not a direct MHz value:
+((clk / 10) % 20) + 2. Keep the legacy API `Clock` field as the configured
+/ requested clock for compatibility with existing status and hashrate scaling,
+but also store the firmware-reported clock/code so diagnostics can tell the
+difference between requested and observed firmware values.
+
+Also clamp recover/cutoff temperatures in the C driver as a final defense
+against direct sgminer config edits that bypass the web UI/PHP/Python
+normalizers.
+--- a/driver-baikal.h
++++ b/driver-baikal.h
+@@ -17,0 +18,4 @@
++/* Hardware note: user MHz is quantized in baikal_setoption():
++ * msg.data[0] = (clk == 0) ? clk : ((clk / 10) % 20) + 2;
++ * The firmware only accepts discrete PLL steps. The 260-500 range is
++ * the supported UI range, not a guarantee of 1 MHz resolution. */
+@@ -32,0 +37,2 @@
++#define BAIKAL_TEMP_MIN         (1)
++#define BAIKAL_TEMP_MAX         (120)
+@@ -63,0 +70,2 @@
++    int     reported_clock;
++    int     reported_clock_code;
+--- a/driver-baikalu.c
++++ b/driver-baikalu.c
+@@ -39 +39 @@
+-static int baikal_miner_clock(struct baikal_info *info, int firmware_clock)
++static void baikal_record_clock(struct miner_info *miner, struct baikal_info *info, int firmware_clock_code)
+@@ -41,2 +41,23 @@
+-    (void)firmware_clock;
+-    return info->clock;
++    miner->reported_clock_code = firmware_clock_code;
++    miner->reported_clock = firmware_clock_code << 1;
++    miner->clock = info->clock;
++}
++
++static void baikal_sanitize_temps(int *recovertemp, int *cutofftemp)
++{
++    if (*recovertemp < BAIKAL_TEMP_MIN) {
++        *recovertemp = BAIKAL_TEMP_MIN;
++    }
++    if (*recovertemp > BAIKAL_TEMP_MAX) {
++        *recovertemp = BAIKAL_TEMP_MAX;
++    }
++    if (*cutofftemp < BAIKAL_TEMP_MIN) {
++        *cutofftemp = BAIKAL_TEMP_MIN;
++    }
++    if (*cutofftemp > BAIKAL_TEMP_MAX) {
++        *cutofftemp = BAIKAL_TEMP_MAX;
++    }
++    if (*recovertemp >= *cutofftemp) {
++        *recovertemp = BAIKAL_RECOVER_TEMP;
++        *cutofftemp = BAIKAL_CUTOFF_TEMP;
++    }
+@@ -387 +408 @@
+-    miner->clock        = baikal_miner_clock(info, msg.data[3] << 1);
++    baikal_record_clock(miner, info, msg.data[3]);
+@@ -545,0 +567,2 @@
++    baikal_sanitize_temps(&recovertemp, &cutofftemp);
++
+@@ -642,0 +666,3 @@
++    root = api_add_int(root, "RequestedClock", &info->clock, false);
++    root = api_add_int(root, "ReportedClock", &miner->reported_clock, false);
++    root = api_add_int(root, "ReportedClockCode", &miner->reported_clock_code, false);
+@@ -889 +915 @@
+-    miner->clock = baikal_miner_clock(info, msg.param << 1);
++    baikal_record_clock(miner, info, msg.param);
+--- a/driver-baikals.c
++++ b/driver-baikals.c
+@@ -38,0 +39,28 @@
++static void baikal_record_clock(struct miner_info *miner, struct baikal_info *info, int firmware_clock_code)
++{
++    miner->reported_clock_code = firmware_clock_code;
++    miner->reported_clock = firmware_clock_code << 1;
++    miner->clock = info->clock;
++}
++
++static void baikal_sanitize_temps(int *recovertemp, int *cutofftemp)
++{
++    if (*recovertemp < BAIKAL_TEMP_MIN) {
++        *recovertemp = BAIKAL_TEMP_MIN;
++    }
++    if (*recovertemp > BAIKAL_TEMP_MAX) {
++        *recovertemp = BAIKAL_TEMP_MAX;
++    }
++    if (*cutofftemp < BAIKAL_TEMP_MIN) {
++        *cutofftemp = BAIKAL_TEMP_MIN;
++    }
++    if (*cutofftemp > BAIKAL_TEMP_MAX) {
++        *cutofftemp = BAIKAL_TEMP_MAX;
++    }
++    if (*recovertemp >= *cutofftemp) {
++        *recovertemp = BAIKAL_RECOVER_TEMP;
++        *cutofftemp = BAIKAL_CUTOFF_TEMP;
++    }
++}
++
++
+@@ -360 +388 @@
+-    miner->clock        = msg.data[3] << 1;
++    baikal_record_clock(miner, info, msg.data[3]);
+@@ -517,0 +546,2 @@
++    baikal_sanitize_temps(&recovertemp, &cutofftemp);
++
+@@ -608,0 +639,3 @@
++    root = api_add_int(root, "RequestedClock", &info->clock, false);
++    root = api_add_int(root, "ReportedClock", &miner->reported_clock, false);
++    root = api_add_int(root, "ReportedClockCode", &miner->reported_clock_code, false);
+@@ -843 +876 @@
+-    miner->clock = msg.param << 1;
++    baikal_record_clock(miner, info, msg.param);

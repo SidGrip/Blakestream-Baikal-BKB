@@ -5,7 +5,7 @@ apply-board-assignments.py - Blakestream-GaintB
 
 Applies per-board enable/disable AND per-board pool pinning to a freshly-
 started sgminer based on board-assignments.json (user choice) and
-temp-state.json (temp watchdog).
+/run/blakestream/temp-state.json (temp watchdog).
 
 Called by /opt/scripta/startup/miner-start.sh once sgminer's API is up.
 sgminer always boots with all detected ASCs enabled and unpinned. After
@@ -54,8 +54,9 @@ import sys
 import time
 
 ETC = '/opt/scripta/etc'
+RUNTIME = '/run/blakestream'
 ASSIGNMENTS = os.path.join(ETC, 'board-assignments.json')
-TEMP_STATE = os.path.join(ETC, 'temp-state.json')
+TEMP_STATE = os.path.join(RUNTIME, 'temp-state.json')
 RUNTIME_POOLMAP = '/tmp/scripta-runtime-poolmap.json'
 BOARD_IDS = ['0', '1', '2']
 DEFAULT_ASSIGNMENTS = {"0": None, "1": None, "2": None}
@@ -144,6 +145,7 @@ def get_api_port():
 
 def call_api(api_port, cmd, parameter=None):
     """Send one sgminer API command. Returns the response string or None."""
+    s = None
     try:
         s = socket.socket()
         s.settimeout(4)
@@ -152,18 +154,27 @@ def call_api(api_port, cmd, parameter=None):
         if parameter is not None:
             msg['parameter'] = str(parameter)
         s.sendall(json.dumps(msg).encode())
+        try:
+            s.shutdown(socket.SHUT_WR)
+        except socket.error:
+            pass
         d = b''
         while True:
             chunk = s.recv(8192)
             if not chunk:
                 break
             d += chunk
-        s.close()
         return d.decode('utf-8', 'replace')
     except Exception as e:
         sys.stderr.write('apply-board-assignments: %s|%s failed: %s\n'
                          % (cmd, parameter, e))
         return None
+    finally:
+        if s is not None:
+            try:
+                s.close()
+            except Exception:
+                pass
 
 
 def api_ok(resp):
@@ -201,26 +212,29 @@ def ascpool_ok(resp):
 def ascfailover(api_port, board_id, pool_no):
     """Send ascfailover|<board_id>,<pool_no>. pool_no = -1 clears.
 
-    Sets the user's explicit failover pool for this board. sgminer's
-    select_baikal_failover_pool_locked prefers this pool when the primary
-    dies, and returns NULL (board halts) if the explicit failover is also
-    unworkable. With pool_no=-1 the board falls back to sgminer's
-    automatic same-algo search (only if other same-algo pools exist in
-    the runtime conf).
+    Sets the user's explicit failover pool for this board. sgminer prefers this
+    pool when the primary dies, and returns NULL (board halts) if the explicit
+    failover is missing or unworkable. With pool_no=-1, no failover is allowed
+    for that board.
     """
     return call_api(api_port, 'ascfailover', '%s,%d' % (board_id, int(pool_no)))
 
 
 def ascfailover_ok(resp):
-    """Validate ascfailover response. Tolerates 'failover pinned' /
-    'cleared failover pin' / on older sgminer without the command, treats
-    'invalid command' as not-implemented (caller decides whether that's
-    a hard failure or acceptable fallback)."""
+    """Validate ascfailover response."""
     if not resp:
         return False
     if '"STATUS":"S"' not in resp:
         return False
     return ('failover pinned' in resp) or ('cleared failover pin' in resp)
+
+
+def ascfailover_unsupported(resp):
+    """Return True for old sgminer builds that do not know ascfailover."""
+    if not resp:
+        return False
+    text = resp.lower()
+    return ('invalid command' in text) or ('unknown command' in text)
 
 
 def wait_for_api(api_port, timeout=15):
@@ -298,9 +312,15 @@ def main():
             else:
                 sys.stderr.write('board %s: ascpool clear -> FAIL (%r)\n' % (board_id, r))
                 had_failures = True
-            # ascfailover clear is best-effort: an older sgminer without the
-            # command will return "invalid command" which we silently tolerate.
-            ascfailover(api_port, board_id, BAIKAL_POOL_UNSET)
+            r = ascfailover(api_port, board_id, BAIKAL_POOL_UNSET)
+            if ascfailover_ok(r):
+                sys.stderr.write('board %s: ascfailover clear -> OK\n' % board_id)
+            elif ascfailover_unsupported(r):
+                sys.stderr.write('board %s: ascfailover clear -> non-fatal unsupported (%r)\n'
+                                 % (board_id, r))
+            else:
+                sys.stderr.write('board %s: ascfailover clear -> FAIL (%r)\n' % (board_id, r))
+                had_failures = True
             continue
 
         # Enabled board: resolve primary pool id -> runtime pool_no
@@ -327,17 +347,27 @@ def main():
             if ascfailover_ok(r):
                 sys.stderr.write('board %s: ascfailover set %s (pool_no=%d) -> OK\n'
                                  % (board_id, failover_id, failover_no))
-            else:
+            elif ascfailover_unsupported(r):
                 # Tolerate older sgminer without ascfailover (returns "invalid
-                # command"). The runtime conf still includes the failover pool
-                # as a quota:1 backup, so sgminer's auto-search will at least
-                # consider it; the user's "stop hashing if both die" guarantee
-                # only applies when the new sgminer is in place.
-                sys.stderr.write('board %s: ascfailover set %s -> non-fatal (%r)\n'
+                # command"). Explicit failover requires a patched sgminer; older
+                # binaries cannot enforce the per-board failover policy.
+                sys.stderr.write('board %s: ascfailover set %s -> non-fatal unsupported (%r)\n'
                                  % (board_id, failover_id, r))
+            else:
+                sys.stderr.write('board %s: ascfailover set %s -> FAIL (%r)\n'
+                                 % (board_id, failover_id, r))
+                had_failures = True
         else:
             # No explicit failover for this board — clear any stale pin.
-            ascfailover(api_port, board_id, BAIKAL_POOL_UNSET)
+            r = ascfailover(api_port, board_id, BAIKAL_POOL_UNSET)
+            if ascfailover_ok(r):
+                sys.stderr.write('board %s: ascfailover clear -> OK\n' % board_id)
+            elif ascfailover_unsupported(r):
+                sys.stderr.write('board %s: ascfailover clear -> non-fatal unsupported (%r)\n'
+                                 % (board_id, r))
+            else:
+                sys.stderr.write('board %s: ascfailover clear -> FAIL (%r)\n' % (board_id, r))
+                had_failures = True
 
     return 1 if had_failures else 0
 

@@ -1,0 +1,26 @@
+'use strict';
+const assert = require('assert');
+const fs = require('fs');
+const path = require('path');
+const vm = require('vm');
+const window = {}, calls = [];
+let done, fail;
+const jQuery = {ajax: options => {
+  calls.push(options);
+  return {done: fn => { done = fn; return {fail: fn => { fail = fn; }}; }};
+}};
+vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../overlay/var/www/js/network-login.js'), 'utf8'), {window, jQuery});
+assert.equal(calls.length, 0, 'nothing is requested before successful authentication');
+window.bsNetworkLoginRedirect('index.php');
+assert.equal(calls[0].url, 'f_network.php?action=pending');
+assert.equal(calls[0].timeout, 5000);
+done({ok:true, pending:{state:'awaiting-confirmation'}});
+assert.equal(window.location, 'index.php#/settings?section=network');
+done({ok:false, pending:{state:'rollback-failed'}});
+assert.equal(window.location, 'index.php#/settings?section=network');
+done({ok:true, pending:null}); assert.equal(window.location, 'index.php');
+fail(); assert.equal(window.location, 'index.php');
+window.bsNetworkLoginRedirect('index.php#/settings?section=network');
+fail(); assert.equal(window.location, 'index.php#/settings?section=network', 'explicit reconnect survives failed check');
+assert(calls.every(c => !c.type && !c.method && !c.data), 'redirect check never confirms or mutates');
+console.log('PASS authenticated login pending redirect, normal landing, failure fallback and no automatic confirmation');

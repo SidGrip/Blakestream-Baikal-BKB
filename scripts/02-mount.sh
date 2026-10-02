@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# 02-mount.sh — Attach the factory image to a loop device and mount its partitions
-# read-only for inspection. Requires sudo.
+# 02-mount.sh — Mount a disposable factory-image copy read-only for inspection.
+# The copy allows ext4 journal recovery without changing the verified input.
+# Requires sudo.
 #
 # Outputs the loop device path and mount points to ../tmp/mount-state.env so the
 # inspection step can pick them up.
@@ -10,16 +11,16 @@ set -euo pipefail
 if [[ $EUID -ne 0 ]]; then
     echo "[02-mount] This script needs root to manipulate loop devices and mount." >&2
     echo "[02-mount] Re-running under sudo ..." >&2
-    exec sudo --preserve-env=PATH "$0" "$@"
+    exec sudo --preserve-env=PATH,BKB_FACTORY_IMG,BKB_MNT_BOOT,BKB_MNT_ROOT "$0" "$@"
 fi
 
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
-IMG="${HERE}/firmware-original/PiZero_GB_180105_V1.0.img"
+IMG="${BKB_FACTORY_IMG:-${HERE}/firmware-original/PiZero_GB_180105_V1.0.img}"
 STATE_DIR="${HERE}/tmp"
 STATE_FILE="${STATE_DIR}/mount-state.env"
 
-MNT_BOOT="/mnt/baikal-boot-ro"
-MNT_ROOT="/mnt/baikal-ro"
+MNT_BOOT="${BKB_MNT_BOOT:-/mnt/baikal-boot-ro}"
+MNT_ROOT="${BKB_MNT_ROOT:-/mnt/baikal-ro}"
 
 if [[ ! -f "${IMG}" ]]; then
     echo "[02-mount] ERROR: ${IMG} not found. Run 01-fetch.sh first." >&2
@@ -28,21 +29,31 @@ fi
 
 mkdir -p "${STATE_DIR}" "${MNT_BOOT}" "${MNT_ROOT}"
 
-# Detach any prior loop device for this image
-prior=$(losetup -j "${IMG}" | awk -F: '{print $1}')
-if [[ -n "${prior}" ]]; then
-    echo "[02-mount] Detaching prior loop device(s): ${prior}"
-    for dev in ${prior}; do
-        # Best-effort unmount of any partition mountpoints first
-        for mp in $(lsblk -no MOUNTPOINT "${dev}" | grep -v '^$' || true); do
-            umount "${mp}" || true
-        done
-        losetup -d "${dev}" || true
-    done
+if [[ -e "${STATE_FILE}" ]]; then
+    echo "[02-mount] ERROR: mount state already exists; run 02-umount.sh for that session first." >&2
+    exit 1
+fi
+if mountpoint -q "${MNT_ROOT}" || mountpoint -q "${MNT_BOOT}"; then
+    echo "[02-mount] ERROR: requested mount point already in use." >&2
+    exit 1
 fi
 
-LOOP=$(losetup -fP --show "${IMG}")
-echo "[02-mount] Attached: ${LOOP}"
+INSPECTION_IMG=$(mktemp "${STATE_DIR}/inspection-XXXXXX.img")
+LOOP=""
+root_mounted=0
+boot_mounted=0
+cleanup_failed_mount() {
+    local status=$?
+    [[ "$boot_mounted" == 0 ]] || umount "${MNT_BOOT}"
+    [[ "$root_mounted" == 0 ]] || umount "${MNT_ROOT}"
+    [[ -z "$LOOP" ]] || losetup -d "${LOOP}"
+    rm -f -- "$INSPECTION_IMG"
+    exit "$status"
+}
+trap cleanup_failed_mount EXIT
+cp --reflink=auto "${IMG}" "${INSPECTION_IMG}"
+LOOP=$(losetup -fP --show "${INSPECTION_IMG}")
+echo "[02-mount] Attached inspection copy: ${LOOP}"
 
 # Show partition layout
 echo "[02-mount] Partition layout:"
@@ -73,20 +84,18 @@ fi
 if [[ -n "${PART_ROOT}" ]]; then
     echo "[02-mount] Mounting rootfs ${PART_ROOT} -> ${MNT_ROOT} (ro)"
     mount -o ro "${PART_ROOT}" "${MNT_ROOT}"
+    root_mounted=1
 fi
 
 if [[ -n "${PART_BOOT}" ]]; then
     echo "[02-mount] Mounting boot ${PART_BOOT} -> ${MNT_BOOT} (ro)"
     mount -o ro "${PART_BOOT}" "${MNT_BOOT}"
+    boot_mounted=1
 fi
 
-cat > "${STATE_FILE}" <<EOF
-LOOP=${LOOP}
-PART_BOOT=${PART_BOOT}
-PART_ROOT=${PART_ROOT}
-MNT_BOOT=${MNT_BOOT}
-MNT_ROOT=${MNT_ROOT}
-EOF
+printf 'LOOP=%q\nPART_BOOT=%q\nPART_ROOT=%q\nMNT_BOOT=%q\nMNT_ROOT=%q\nINSPECTION_IMG=%q\n' \
+    "$LOOP" "$PART_BOOT" "$PART_ROOT" "$MNT_BOOT" "$MNT_ROOT" "$INSPECTION_IMG" > "${STATE_FILE}"
+trap - EXIT
 
 echo "[02-mount] State written to ${STATE_FILE}"
 echo "[02-mount] Ready. To unmount: sudo ./scripts/02-umount.sh"

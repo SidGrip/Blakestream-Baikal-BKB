@@ -1,0 +1,2 @@
+# Sgminer uses capped-log-writer.py on both RAM and SD.
+# Its 4 MiB live log retains the newest 2 MiB when trimmed; no daily archives.

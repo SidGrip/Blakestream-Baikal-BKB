@@ -9,7 +9,7 @@
 set -euo pipefail
 
 if [[ $EUID -ne 0 ]]; then
-    exec sudo --preserve-env=PATH "$0" "$@"
+    exec sudo --preserve-env=PATH,BKB_FACTORY_IMG,BKB_MNT_BOOT,BKB_MNT_ROOT,BKB_MNT_RW,BKB_IMAGE_OUT "$0" "$@"
 fi
 
 HERE="$(cd "$(dirname "$0")/.." && pwd)"

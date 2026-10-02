@@ -1,0 +1,73 @@
+Test applying BK-B clock options with a post-SET_OPTION reset.
+
+Pool-side testing showed that higher requested clocks changed sgminer display
+math but did not change physical accepted-difficulty hashrate. Keep this as a
+narrow diagnostic experiment: after all board SET_OPTION calls during detection,
+issue one normal Baikal reset and read GET_INFO again. This checks whether the
+firmware requires a reset before applying the requested clock command.
+
+--- a/driver-baikalu.c
++++ b/driver-baikalu.c
+@@ -493,6 +493,21 @@ static bool baikal_setoption(struct cgpu_info *baikal, uint16_t clk, uint8_t mod
+     return (true);
+ }
+ 
++static void baikal_apply_clock_reset(struct cgpu_info *baikal)
++{
++    struct baikal_info *info = baikal->device_data;
++
++    applog(LOG_NOTICE, "BK-B post-SET_OPTION reset for requested %d MHz", info->clock);
++    if (baikal_reset(baikal) != true) {
++        applog(LOG_WARNING, "BK-B post-SET_OPTION reset failed for requested %d MHz", info->clock);
++        return;
++    }
++
++    if (baikal_getinfo(baikal) != true) {
++        applog(LOG_WARNING, "BK-B post-SET_OPTION GET_INFO failed after reset");
++    }
++}
++
+ static char *baikal_set_device(struct cgpu_info *baikal, char *option, char *setting, char *replybuf)
+ {
+     struct baikal_info *info = baikal->device_data;
+@@ -699,6 +714,7 @@ static struct cgpu_info* baikal_detect_one(struct libusb_device *dev, struct usb
+     update_usb_stats(baikal);
+ 
+     baikal_detect_remains(baikal);
++    baikal_apply_clock_reset(baikal);
+ 
+     return (baikal);
+ 
+--- a/driver-baikals.c
++++ b/driver-baikals.c
+@@ -474,6 +474,22 @@ static bool baikal_setoption(struct cgpu_info *baikal, uint16_t clk, uint8_t mod
+     return (true);
+ }
+ 
++static void baikal_apply_clock_reset(struct cgpu_info *baikal)
++{
++    struct baikal_info *info = baikal->device_data;
++
++    applog(LOG_NOTICE, "BK-B post-SET_OPTION reset for requested %d MHz", info->clock);
++    if (baikal_reset(baikal) != true) {
++        applog(LOG_WARNING, "BK-B post-SET_OPTION reset failed for requested %d MHz", info->clock);
++        return;
++    }
++
++    cgsleep_ms(200);
++    if (baikal_getinfo(baikal) != true) {
++        applog(LOG_WARNING, "BK-B post-SET_OPTION GET_INFO failed after reset");
++    }
++}
++
+ static char *baikal_set_device(struct cgpu_info *baikal, char *option, char *setting, char *replybuf)
+ {
+     struct baikal_info *info = baikal->device_data;
+@@ -682,6 +698,7 @@ static void baikal_detect(void)
+     }
+ 
+     baikal_detect_remains(baikal);
++    baikal_apply_clock_reset(baikal);
+ 
+     detect_one = true;
+     return;

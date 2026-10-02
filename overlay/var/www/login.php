@@ -5,8 +5,10 @@
 // is dead, the fetch failed, and the failures showed as PHP warnings on the
 // page. We use a static local banner instead.
 
+session_start();
+$loginTarget = isset($_GET['network']) && $_GET['network'] === '1' ? 'index.php#/settings?section=network' : 'index.php';
 if ( isset($_SESSION['_logged_']) and ($_SESSION['_logged_'] === true) )  {
-        header('location: index.php');
+        header('location: ' . $loginTarget);
         exit();
 }
 ?>
@@ -16,7 +18,7 @@ if ( isset($_SESSION['_logged_']) and ($_SESSION['_logged_'] === true) )  {
 <html lang="en" ng-app="Scripta">
 <head>
   <meta charset="utf-8">
-  <title>Blakestream-GaintB v2.1 &mdash; Sign In</title>
+  <title>Blakestream-GaintB v2.2 &mdash; Sign In</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="description" content="Blakestream miner controller">
   <meta name="author" content="Blakestream">
@@ -26,8 +28,8 @@ if ( isset($_SESSION['_logged_']) and ($_SESSION['_logged_'] === true) )  {
   <link rel="stylesheet" href="css/ionicons.min.css">
   <link rel="stylesheet" href="css/AdminLTE.min.css">
   <link href="css/alertify.css" rel="stylesheet">
-  <link href="css/blakestream-dark.css" rel="stylesheet">
-  <script src="js/blakestream-theme.js"></script>
+    <link href="css/blakestream-dark.css?v=network-indicator-1" rel="stylesheet">
+  <script src="js/blakestream-theme.js?v=wifi-ui-1"></script>
   <style>
     /* Tight banner */
     .blakestream-banner {
@@ -55,11 +57,7 @@ if ( isset($_SESSION['_logged_']) and ($_SESSION['_logged_'] === true) )  {
       background: linear-gradient(135deg, #0f1316 0%, #15334a 50%, #29b6f6 100%);
     }
 
-    /* Fix AdminLTE lockscreen leftover-avatar gap and white background.
-     * AdminLTE's .lockscreen-item is a 290px white box. .lockscreen-credentials
-     * has margin-left: 70px to leave room for an .lockscreen-image avatar, which
-     * Baikal removed but never cleaned up the CSS for — leaving an empty white
-     * gap on the left of the password input. Override here. */
+    /* Login layout and controls. */
     .lockscreen-wrapper {
       margin-top: 50px;
     }
@@ -73,9 +71,6 @@ if ( isset($_SESSION['_logged_']) and ($_SESSION['_logged_'] === true) )  {
       margin-left: 0;
     }
     .lockscreen-credentials .input-group {
-      /* Bootstrap uses display: table for input-group; border-spacing gives
-       * a visible gap between the input and the button so the focus outline
-       * has room to render on the right side of the input. */
       border-collapse: separate;
       border-spacing: 6px 0;
     }
@@ -139,7 +134,8 @@ if ( isset($_SESSION['_logged_']) and ($_SESSION['_logged_'] === true) )  {
   <p>Custom firmware for Baikal BK-B &mdash; mining Blakecoin (BLAKE-256 R8)</p>
 </div>
 
-<body class="hold-transition lockscreen">
+<body class="hold-transition lockscreen bs-dark">
+<script>window.BlakestreamTheme.init();</script>
     <div class="lockscreen-wrapper">
       <div class="lockscreen-logo">
         <span><b>Baikal</b>Miner</span>
@@ -169,12 +165,13 @@ if ( isset($_SESSION['_logged_']) and ($_SESSION['_logged_'] === true) )  {
     <div class="container text-center">
       <hr />
       <p>
-        <a href='http://www.lateralfactory.com/scripta/' target='_blank' rel='noopener noreferrer'>Scripta</a> by <a href='http://www.lateralfactory.com' target='_blank' rel='noopener noreferrer'>Lateral Factory</a>, modified by Baikal Miner, rebranded as <a href='https://github.com/SidGrip/Blakestream-Baikal-BKB' target='_blank' rel='noopener noreferrer'>Blakestream-GaintB v2.1</a> &mdash; GPLv3
+        <a href='http://www.lateralfactory.com/scripta/' target='_blank' rel='noopener noreferrer'>Scripta</a> by <a href='http://www.lateralfactory.com' target='_blank' rel='noopener noreferrer'>Lateral Factory</a>, modified by Baikal Miner, rebranded as <a href='https://github.com/SidGrip/Blakestream-Baikal-BKB' target='_blank' rel='noopener noreferrer'>Blakestream-GaintB v2.2</a> &mdash; GPLv3
       </p>
     </div>
   </footer>
   <script src="js/alertify.min.js"></script>
   <script src="js/jquery.min.js"></script>
+  <script src="js/network-login.js?v=20260929-network-compact"></script>
   <script src="js/highcharts.js"></script>
   <script src="js/bootstrap.min.js"></script>
   <script>
@@ -182,11 +179,16 @@ if ( isset($_SESSION['_logged_']) and ($_SESSION['_logged_'] === true) )  {
           window.location.href = "http:" + window.location.href.substring(window.location.protocol.length);
 
       $(document).ready(function() {
-		$(document).keypress(function(e) {
+		$('#formLogin').on('submit', function(e) {
+			e.preventDefault();
+			return false;
+		});
 
-			if(e.which == 13) {
+		$('#userPassword').on('keydown', function(e) {
+			if (e.which == 13) {
 				e.preventDefault();
-				$('#loginbutton').click();
+				e.stopPropagation();
+				return false;
 			}
 		});
 
@@ -200,7 +202,7 @@ if ( isset($_SESSION['_logged_']) and ($_SESSION['_logged_'] === true) )  {
 				data: sData,
 				success: function(returnMessage) {
 					if (returnMessage == 1)
-						window.location = "index.php";
+						bsNetworkLoginRedirect(<?php echo json_encode($loginTarget); ?>);
 					else
 						alert("Incorrect password");
 

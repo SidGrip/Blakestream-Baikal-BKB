@@ -1,0 +1,148 @@
+<div class="bs-clock-history-page">
+<h3>
+  Clock History
+  <small>
+    <a href ng-click="bsLoadClockHistory(1)">1h</a> -
+    <a href ng-click="bsLoadClockHistory(24)">24h</a> -
+    <a href ng-click="bsLoadClockHistory(168)">7d</a>
+    -
+    <a href ng-click="bsLoadClockHistory(bsClockWindow || 24)">refresh</a>
+    <span ng-show="bsClockWindow"> &mdash; window: {{bsClockWindow}}h</span>
+    <span ng-show="bsClockUpdated"> &mdash; updated {{1000*bsClockUpdated|bsTzDate:'HH:mm:ss':bsTzNonce}}</span>
+  </small>
+  <span class="pull-right bs-history-controls">
+    <label class="bs-utc-toggle bs-tip" data-tip="Display times in UTC (matches system logs)">
+      <input type="checkbox"
+             ng-model="settings.userShowSystemTime"
+             ng-change="sync('settings', settings, 1)"> show UTC
+    </label>
+    <button type="button" class="btn btn-default btn-sm"
+            ng-click="bsClearClockHistory()"
+            ng-disabled="!bsClockRuns.length">
+      Clear All History
+    </button>
+    <button type="button" class="btn btn-default btn-sm bs-tip"
+            ng-click="bsExportClockHistory()"
+            ng-disabled="!bsClockRuns.length"
+            data-tip="Download visible clock samples as CSV">
+      Export CSV
+    </button>
+  </span>
+</h3>
+
+<p class="help-block" ng-show="settings.userHelp">
+  Per-board clock diagnostics recorded once per minute while Adjustable Clocks
+  is enabled. Requested is the configured sgminer clock used for hashrate
+	  scaling. Estimate is calculated from the requested clock. Accepted 15m and
+	  Accepted 1h are measured from difficulty accepted over valid time windows.
+  <span ng-if="settings.userDev">Bridge Status Echo is a bridge-side diagnostic,
+  not proof of ASIC PLL lock or physical MHz. Sent Clock Index is the compact set-option code sgminer
+  attempted to send.</span> Fan is the live commanded fan percent when
+  available. Records are kept for 7 days and follow Settings &gt; Persist
+  History &gt; Clock for RAM/SD storage. SD mode buffers live samples in RAM and
+  flushes them to SD periodically.
+</p>
+
+<div class="bs-clock-history-data">
+<div ng-show="!bsClockRuns.length" class="alert alert-info bs-history-empty">
+  No clock history yet. Enable Adjustable Clocks and wait for the next recorder
+  tick, or use Dev Tools &gt; Recorders to run Clock History now.
+</div>
+
+<div ng-repeat="run in bsClockRuns" class="bs-clock-run" ng-class="{'bs-clock-run-active': run.active}">
+  <h4 class="bs-clock-run-title">
+    <span class="bs-clock-run-summary">
+      <span class="bs-clock-run-state">{{run.active ? 'Current Run' : 'Previous Run'}}</span>
+      <span ng-if="!run.experimental">{{run.clock}} MHz</span>
+      <span ng-if="run.experimental">Experimental Index</span>
+      <small>
+        recover {{run.recover}}&deg;C &middot;
+        cutoff {{run.cutoff}}&deg;C &middot;
+        fan {{run.fan || 0}}% {{run.fan_mode || 'manual'}} &middot;
+        {{1000*run.start_ts|bsTzDate:'HH:mm:ss':bsTzNonce}}
+        <span ng-show="!run.active">- {{1000*run.end_ts|bsTzDate:'HH:mm:ss':bsTzNonce}}</span>
+        <span ng-show="run.active">- active</span>
+        &middot; {{run.duration_seconds|duration}} &middot;
+        {{run.sample_count}} samples
+      </small>
+    </span>
+    <button type="button"
+            class="btn btn-default btn-xs bs-clear-clock-run-btn"
+            ng-show="!run.active"
+            ng-click="bsClearClockRun(run)">
+      Clear
+    </button>
+  </h4>
+
+  <div class="bs-history-scroll">
+    <table class="table table-bordered table-right table-hover bs-history-table">
+      <thead>
+        <tr>
+          <th class="text-center">Board</th>
+          <th class="text-left">Latest</th>
+          <th class="bs-tip" data-tip="The global clock requested in the normal miner controls.">Global Request</th>
+          <th class="bs-tip" data-tip="The clock actually sent to this board. Advanced calibration may differ by board.">Applied</th>
+          <th class="bs-tip"
+              data-tip="Yes only after SET_OPTION is acknowledged, GET_INFO succeeds, and the bridge status echo matches the quantized request.">Command Verified</th>
+          <th ng-if="settings.userDev" class="bs-tip"
+              data-tip="Bridge-side status returned after SET_OPTION. A match confirms command/status consistency, not ASIC PLL lock or physical clock speed.">Bridge Status Echo</th>
+          <th ng-if="settings.userDev" class="bs-tip"
+              data-tip="Clock-table index sent by sgminer, not a physical MHz measurement.">Sent Index</th>
+          <th>Fan</th>
+          <th>Temp</th>
+          <th class="bs-tip" data-tip="Immediate configured-clock model; not measured work.">Estimate</th>
+          <th>Accepted 15m</th>
+          <th>Accepted 1h</th>
+          <th>Accepted</th>
+          <th>Rejected</th>
+          <th>Reject %</th>
+          <th>HW</th>
+          <th>Utility</th>
+          <th class="text-left bs-clock-pool-col">Pool</th>
+          <th>Samples</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr ng-repeat="b in run.boards">
+          <td class="text-center"><span class="bs-board-chip">{{b.id}}</span></td>
+          <td class="text-left">{{1000*b.last_seen|bsTzDate:'yyyy-MM-dd HH:mm:ss':bsTzNonce}}</td>
+          <td><span ng-if="!b.experimental">{{b.requested_clock}} MHz</span><span ng-if="b.experimental">&mdash;</span></td>
+          <td><span ng-if="!b.experimental">{{b.configured_clock}} MHz</span><span ng-if="b.experimental">Index {{b.requested_clock_index}}</span></td>
+          <td>{{b.command_verified ? 'Yes' : 'No'}}</td>
+          <td ng-if="settings.userDev">
+            {{b.reported_clock}} MHz
+            <small class="text-muted bs-tip" data-tip="Raw bridge status code in half-MHz units. It is a protocol cross-check, not physical clock proof.">code {{b.reported_clock_code || 'n/a'}}</small>
+          </td>
+          <td ng-if="settings.userDev">{{b.sent_clock_index || 'n/a'}}</td>
+          <td>{{b.fan || 0}}% <small class="text-muted">{{b.fan_mode || 'manual'}}</small></td>
+          <td>
+            {{b.temp|number:0}}&deg;C
+            <small class="text-muted">({{b.min_temp|number:0}}/{{b.avg_temp|number:0}}/{{b.max_temp|number:0}})</small>
+          </td>
+          <td><span ng-if="!b.experimental">{{b.mhs5s|mhs}}h/s</span><span ng-if="b.experimental">&mdash;</span></td>
+          <td>
+            <span ng-if="!b.accepted_15m_measuring">{{b.accepted_15m|mhs}}h/s</span>
+            <span ng-if="b.accepted_15m_measuring" class="text-muted">Measuring&hellip;</span>
+          </td>
+          <td>
+            <span ng-if="!b.accepted_1h_measuring">{{b.accepted_1h|mhs}}h/s</span>
+            <span ng-if="b.accepted_1h_measuring" class="text-muted">Measuring&hellip;</span>
+          </td>
+          <td>{{b.accepted_delta}}</td>
+          <td ng-class="{danger:b.reject_pct > 5}">{{b.rejected_delta}}</td>
+          <td ng-class="{danger:b.reject_pct > 5}">{{b.reject_pct|number:2}}%</td>
+          <td ng-class="{danger:b.hw_delta > 0}">{{b.hw_delta}}</td>
+          <td>{{b.utility|number:4}}</td>
+          <td class="text-left bs-clock-pool-col">
+            <span ng-class="{'text-warning': b.failover_active}">
+              {{b.pool_url}}
+            </span>
+          </td>
+          <td>{{b.sample_count}}</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+</div>
+</div>

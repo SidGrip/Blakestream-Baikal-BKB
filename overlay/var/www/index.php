@@ -1,15 +1,16 @@
 <?php
 session_start();
 if (!isset($_SESSION['_logged_']) || $_SESSION['_logged_'] === false) {
-    header('Location: login.php');
+    header('Location: login.php' . (isset($_GET['network']) && $_GET['network'] === '1' ? '?network=1' : ''));
     die();
 }
+if (empty($_SESSION['bs_view_session'])) $_SESSION['bs_view_session'] = bin2hex(openssl_random_pseudo_bytes(16));
 ?>
 <!DOCTYPE html>
 <html lang="en" ng-app="Scripta">
 <head>
     <meta charset="utf-8">
-    <title>Blakestream-GaintB v2.1</title>
+    <title>Blakestream-GaintB v2.2</title>
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="description" content="Blakestream miner controller">
     <meta name="author" content="Blakestream">
@@ -26,12 +27,14 @@ if (!isset($_SESSION['_logged_']) || $_SESSION['_logged_'] === false) {
     <link href="css/theme.css" rel="stylesheet">
     <link href="css/alertify.css" rel="stylesheet">
     <link href='css/css.css' rel="stylesheet" type='text/css'>
-    <link href="css/blakestream-dark.css" rel="stylesheet">
-    <script src="js/blakestream-theme.js"></script>
+    <link href="css/blakestream-dark.css?v=collector-wait-1" rel="stylesheet">
+    <script src="js/blakestream-theme.js?v=wifi-ui-1"></script>
+    <script src="js/blakestream-tooltips.js?v=20260930-clock-compact"></script>
 </head>
 
 
-<body class="hold-transition skin-blue layout-top-nav" ng-controller="CtrlMain">
+<body class="hold-transition skin-blue layout-top-nav bs-dark" ng-controller="CtrlMain" data-view-session="<?php echo htmlspecialchars($_SESSION['bs_view_session'], ENT_QUOTES, 'UTF-8'); ?>">
+<script>window.BlakestreamTheme.init();</script>
 <header class="main-header scripta-trigger">
     <nav class="navbar navbar-static-top">
         <div class="container-fluid">
@@ -56,7 +59,10 @@ if (!isset($_SESSION['_logged_']) || $_SESSION['_logged_'] === false) {
                     <li menu-active><a ng-href="#/settings">Settings</a></li>
                     <li menu-active><a ng-href="#/backup">Backup</a></li>
                     <li menu-active><a ng-href="#/pool-history">Pool History</a></li>
+                    <li menu-active><a ng-href="#/failover-history">Failover History</a></li>
+                    <li menu-active ng-show="settings.userAdjustableClocks"><a ng-href="#/clock-history">Clock History</a></li>
                     <li menu-active><a ng-href="#/terminal">Terminal</a></li>
+                    <li menu-active ng-show="settings.userDev"><a ng-href="#/dev-tools">Dev Tools</a></li>
 
                 </ul>
                 <ul class="nav navbar-nav navbar-right">
@@ -68,16 +74,21 @@ if (!isset($_SESSION['_logged_']) || $_SESSION['_logged_'] === false) {
                     {{downTime}}s downtime
                     </button>
 
-                    <button class="btn btn-primary btn-flat navbar-btn" ng-click="tick(1,1)"
-                        title="Auto refresh in {{counter}}s">
+                    <button class="btn btn-default btn-flat navbar-btn bs-navbar-action bs-tip bs-tip-down bs-tip-right" ng-click="tick(1,1)"
+                        aria-label="Refresh now" data-tip="Auto refresh in {{counter}}s">
                     <i class="fa fa-refresh " ng-class="{'fa-spin':counter<2}"></i>
                     </button>
 
-                    <button class="btn btn-default btn-flat navbar-btn bs-theme-toggle" type="button"
-                        title="Toggle dark / light mode"
+                    <button class="btn btn-default btn-flat navbar-btn bs-theme-toggle bs-tip bs-tip-down bs-tip-right" type="button"
+                        aria-label="Toggle dark / light mode" data-tip="Toggle dark / light mode"
                         onclick="if(window.BlakestreamTheme){window.BlakestreamTheme.toggle();}else{document.body.classList.toggle('bs-dark');try{localStorage.setItem('bsTheme',document.body.classList.contains('bs-dark')?'dark':'light');}catch(e){}}">☾</button>
 
-                    <button class="btn btn-primary btn-flat navbar-btn" title="Logout"
+                    <span class="navbar-btn bs-connection-indicator bs-tip bs-tip-down bs-tip-right" role="img"
+                          data-tip="{{bsConnectionLabel()}}" aria-label="{{bsConnectionLabel()}}">
+                        <i class="fa" ng-class="bsConnectionIcon()" aria-hidden="true"></i>
+                    </span>
+
+                    <button class="btn btn-default btn-flat navbar-btn bs-navbar-action"
                         onclick="location.href='f_logout.php'">
                     Logout
                     </button>
@@ -98,12 +109,12 @@ if (!isset($_SESSION['_logged_']) || $_SESSION['_logged_'] === false) {
 </div>
 
 <!-- Blakestream-GaintB: in-page confirm modal (replaces browser confirm()/alert()) -->
-<div class="bs-modal-overlay ng-cloak" ng-show="bsConfirmShow" ng-click="bsConfirmCancel()">
-    <div class="bs-modal-box" ng-click="$event.stopPropagation()">
-        <div class="bs-modal-title" ng-show="bsConfirmTitle">{{bsConfirmTitle}}</div>
+<div class="bs-modal-overlay ng-cloak" ng-show="bsConfirmShow" ng-click="bsConfirmBackdrop()">
+    <div class="bs-modal-box" ng-class="bsConfirmBoxClass" ng-click="$event.stopPropagation()">
+        <div class="bs-modal-title" ng-class="bsConfirmTitleClass" ng-show="bsConfirmTitle">{{bsConfirmTitle}}</div>
         <div class="bs-modal-msg" ng-bind-html-unsafe="bsConfirmMsg"></div>
         <div class="bs-modal-actions">
-            <button type="button" class="btn btn-primary bs-modal-yes" ng-click="bsConfirmOk()">{{bsConfirmYesLabel || 'OK'}}</button>
+            <button type="button" class="btn btn-primary bs-modal-yes" ng-click="bsConfirmOk()" ng-show="bsConfirmShowOk !== false">{{bsConfirmYesLabel || 'OK'}}</button>
             <button type="button" class="btn btn-default bs-modal-no" ng-click="bsConfirmCancel()" ng-show="bsConfirmShowCancel !== false">{{bsConfirmNoLabel || 'Cancel'}}</button>
         </div>
     </div>
@@ -120,7 +131,7 @@ if (!isset($_SESSION['_logged_']) || $_SESSION['_logged_'] === false) {
         &nbsp;-&nbsp;
         <span class="bs-tip" data-tip="{{bsSysStats.mem_used_mb}}M used of {{bsSysStats.mem_total_mb}}M total">Mem {{bsSysStats.mem_pct}}%</span>
         </span>
-        <a href='http://www.lateralfactory.com/scripta/' target='_blank' rel='noopener noreferrer'>Scripta</a> by <a href='http://www.lateralfactory.com' target='_blank' rel='noopener noreferrer'>Lateral Factory</a>, modified by Baikal Miner, rebranded as <a href='https://github.com/SidGrip/Blakestream-Baikal-BKB' target='_blank' rel='noopener noreferrer'>Blakestream-GaintB v2.1</a> &mdash; GPLv3
+        <a href='http://www.lateralfactory.com/scripta/' target='_blank' rel='noopener noreferrer'>Scripta</a> by <a href='http://www.lateralfactory.com' target='_blank' rel='noopener noreferrer'>Lateral Factory</a>, modified by Baikal Miner, rebranded as <a href='https://github.com/SidGrip/Blakestream-Baikal-BKB' target='_blank' rel='noopener noreferrer'>Blakestream-GaintB v2.2</a> &mdash; GPLv3
         </p>
     </div>
 </footer>
@@ -139,15 +150,19 @@ if (!isset($_SESSION['_logged_']) || $_SESSION['_logged_'] === false) {
 <script src="js/app.min.js">
 </script>
 
-<script src="ng/app.js">
+<script src="ng/app.js?v=fan-inputs-1">
 </script>
-<script src="ng/services.js">
+<script src="ng/services.js?v=20260518-clock-diagnostics">
 </script>
-<script src="ng/controllers.js">
+<script src="ng/dev-activity.js?v=clock-index-1">
 </script>
-<script src="ng/filters.js">
+<script src="ng/controllers.js?v=fan-inputs-1">
 </script>
-<script src="ng/directives.js">
+<script src="ng/network-settings.js?v=20260930-ui-backup"></script>
+<script src="ng/wifi-settings.js?v=wifi-password-2"></script>
+<script src="ng/filters.js?v=20260518-clock-diagnostics">
+</script>
+<script src="ng/directives.js?v=fan-inputs-1">
 </script>
 <script>
     $(document).ready(function() {

@@ -1,0 +1,199 @@
+--- a/driver-baikal.h
++++ b/driver-baikal.h
+@@ -85,6 +85,10 @@
+     bool    clock_retry_done;
+     uint8_t clock_retry_failures;
+     time_t  clock_retry_last_time;
++    int     pending_clock_reapply_mhz;
++    bool    pending_clock_reapply_valid;
++    uint8_t clock_reapply_failures;
++    time_t  clock_reapply_last_time;
+     int     bbg;
+     bool    working;
+     bool    overheated;
+--- a/driver-baikalu.c
++++ b/driver-baikalu.c
+@@ -32,6 +32,7 @@
+ static int api_clock = BAIKAL_CLK_DEF;
+ static pthread_mutex_t baikal_pin_lock = PTHREAD_MUTEX_INITIALIZER;
+ static pthread_mutex_t baikal_fan_lock = PTHREAD_MUTEX_INITIALIZER;
++static pthread_mutex_t baikal_clock_reapply_lock = PTHREAD_MUTEX_INITIALIZER;
+ static bool baikal_pin_state_ready;
+ static int baikal_primary_pins[BAIKAL_MAXMINERS];
+ static int baikal_effective_pins[BAIKAL_MAXMINERS];
+@@ -730,6 +731,79 @@
+            (unsigned int)BAIKAL_CLOCK_RETRY_MAX_FAILURES);
+ }
+
++static void baikal_queue_clock_reapply(struct miner_info *miner, int clock)
++{
++    mutex_lock(&baikal_clock_reapply_lock);
++    miner->pending_clock_reapply_mhz = clock;
++    miner->pending_clock_reapply_valid = true;
++    miner->clock_reapply_failures = 0;
++    miner->clock_reapply_last_time = 0;
++    mutex_unlock(&baikal_clock_reapply_lock);
++}
++
++static void baikal_apply_pending_clock_reapply(struct cgpu_info *baikal, int miner_id)
++{
++    struct baikal_info *info = baikal->device_data;
++    struct miner_info *miner;
++    bool pending;
++    bool host_ack;
++    bool getinfo_ok = false;
++    bool echo_ok = false;
++    int requested_clock;
++    int clock_code;
++    int expected_clock;
++    time_t now = time(NULL);
++
++    if (!baikal_pin_index_valid(miner_id) || miner_id >= info->miner_count)
++        return;
++
++    miner = &info->miners[miner_id];
++    mutex_lock(&baikal_clock_reapply_lock);
++    pending = miner->pending_clock_reapply_valid;
++    requested_clock = miner->pending_clock_reapply_mhz;
++    if (pending && miner->clock_reapply_last_time != 0 &&
++            now - miner->clock_reapply_last_time < BAIKAL_CLOCK_RETRY_DELAY_SEC)
++        pending = false;
++    if (pending)
++        miner->clock_reapply_last_time = now;
++    mutex_unlock(&baikal_clock_reapply_lock);
++
++    if (!pending || miner->clock_retry_pending || !miner->working)
++        return;
++
++    clock_code = baikal_clock_command_code((uint16_t)requested_clock);
++    host_ack = baikal_setoption_for_miner(
++        baikal, miner_id, (uint16_t)requested_clock,
++        to_baikal_algorithm(baikal->algorithm.type),
++        info->cutofftemp, info->fanspeed);
++    expected_clock = baikal_clock_from_command_code(clock_code);
++    if (host_ack) {
++        getinfo_ok = baikal_getinfo_for_miner(baikal, miner_id);
++        echo_ok = getinfo_ok && expected_clock > 0 &&
++                  miner->reported_clock == expected_clock;
++    }
++
++    mutex_lock(&baikal_clock_reapply_lock);
++    if (host_ack && getinfo_ok && echo_ok) {
++        if (miner->pending_clock_reapply_valid &&
++                miner->pending_clock_reapply_mhz == requested_clock)
++            miner->pending_clock_reapply_valid = false;
++        miner->clock_reapply_failures = 0;
++    } else {
++        miner->clock_reapply_failures++;
++        if (miner->clock_reapply_failures >= BAIKAL_CLOCK_RETRY_MAX_FAILURES)
++            miner->pending_clock_reapply_valid = false;
++    }
++    mutex_unlock(&baikal_clock_reapply_lock);
++
++    applog(host_ack && getinfo_ok && echo_ok ? LOG_NOTICE : LOG_WARNING,
++           "BK-B same-clock reapply ASC %d requested=%dMHz pll_index=%d host_ack=%s get_info=%s bridge_status_echo=%dMHz expected_echo=%dMHz result=%s",
++           miner_id, requested_clock, clock_code,
++           host_ack ? "yes" : "no", getinfo_ok ? "yes" : "no",
++           miner->reported_clock, expected_clock,
++           host_ack && getinfo_ok && echo_ok ? "OK" : "FAILED");
++}
++
+ static void baikal_queue_fan(struct baikal_info *info, uint8_t fan)
+ {
+     mutex_lock(&baikal_fan_lock);
+@@ -818,14 +892,33 @@
+ static char *baikal_set_device(struct cgpu_info *baikal, char *option, char *setting, char *replybuf)
+ {
+     struct baikal_info *info = baikal->device_data;
++    struct miner_info *miner = &info->miners[baikal->miner_id];
+     char *endptr = NULL;
+-    long fan;
++    long value;
+
+     if (!option || strcmp(option, "help") == 0) {
+-        snprintf(replybuf, 256, "fan|pwm,<percent 0-100>");
++        snprintf(replybuf, 256, "fan|pwm,<percent 0-100> | reapply-clock,<current global MHz>");
+         return replybuf;
+     }
+
++    if (strcmp(option, "reapply-clock") == 0) {
++        if (!setting || *setting == '\0') {
++            snprintf(replybuf, 256, "missing clock MHz");
++            return replybuf;
++        }
++
++        value = strtol(setting, &endptr, 10);
++        if (*setting == '\0' || (endptr && *endptr != '\0') || value != info->clock) {
++            snprintf(replybuf, 256, "reapply clock must match global clock %d MHz", info->clock);
++            return replybuf;
++        }
++
++        baikal_queue_clock_reapply(miner, (int)value);
++        applog(LOG_NOTICE, "BK-B same-clock reapply queued at %ldMHz for ASC %d",
++               value, baikal->miner_id);
++        return NULL;
++    }
++
+     if (strcmp(option, "fan") != 0 && strcmp(option, "pwm") != 0) {
+         snprintf(replybuf, 256, "unsupported option %s", option);
+         return replybuf;
+@@ -836,14 +929,14 @@
+         return replybuf;
+     }
+
+-    fan = strtol(setting, &endptr, 10);
+-    if (*setting == '\0' || (endptr && *endptr != '\0') || fan < 0 || fan > BAIKAL_FANSPEED_MAX) {
++    value = strtol(setting, &endptr, 10);
++    if (*setting == '\0' || (endptr && *endptr != '\0') || value < 0 || value > BAIKAL_FANSPEED_MAX) {
+         snprintf(replybuf, 256, "fan percent must be 0-100");
+         return replybuf;
+     }
+
+-    baikal_queue_fan(info, (uint8_t)fan);
+-    applog(LOG_NOTICE, "BK-B fan queued at %ld%% from ASC %d", fan, baikal->miner_id);
++    baikal_queue_fan(info, (uint8_t)value);
++    applog(LOG_NOTICE, "BK-B fan queued at %ld%% from ASC %d", value, baikal->miner_id);
+     return NULL;
+ }
+
+@@ -1056,6 +1149,9 @@
+     uint8_t fan_percent;
+     uint8_t pending_fan_percent;
+     bool fan_pending;
++    int pending_clock_reapply_mhz;
++    uint8_t clock_reapply_failures;
++    bool clock_reapply_pending;
+
+     mutex_lock(&baikal_fan_lock);
+     fan_percent = info->fanspeed;
+@@ -1063,6 +1159,12 @@
+     fan_pending = info->pending_fanspeed_valid;
+     mutex_unlock(&baikal_fan_lock);
+
++    mutex_lock(&baikal_clock_reapply_lock);
++    pending_clock_reapply_mhz = miner->pending_clock_reapply_mhz;
++    clock_reapply_failures = miner->clock_reapply_failures;
++    clock_reapply_pending = miner->pending_clock_reapply_valid;
++    mutex_unlock(&baikal_clock_reapply_lock);
++
+     root = api_add_int(root, "Chip Count", (int *)&miner->asic_count, false);
+
+ #if BAIKAL_CLK_FIX
+@@ -1077,6 +1179,9 @@
+     root = api_add_bool(root, "ClockRetryPending", &miner->clock_retry_pending, false);
+     root = api_add_bool(root, "ClockRetryDone", &miner->clock_retry_done, false);
+     root = api_add_uint8(root, "ClockRetryFailures", &miner->clock_retry_failures, false);
++    root = api_add_bool(root, "ClockReapplyPending", &clock_reapply_pending, true);
++    root = api_add_int(root, "PendingClockReapply", &pending_clock_reapply_mhz, true);
++    root = api_add_uint8(root, "ClockReapplyFailures", &clock_reapply_failures, true);
+     root = api_add_uint8(root, "FanPercent", &fan_percent, true);
+     root = api_add_bool(root, "FanPending", &fan_pending, true);
+     root = api_add_uint8(root, "PendingFanPercent", &pending_fan_percent, true);
+@@ -1433,6 +1538,7 @@
+
+             if (board_requested_work && board_retry_allowed) {
+                 baikal_apply_clock_retry(baikal, i);
++                baikal_apply_pending_clock_reapply(baikal, i);
+             }
+
+             cgsleep_ms(1);

@@ -1,0 +1,8 @@
+[Unit]
+Description=Apply an unconfirmed Blakestream network change
+After=NetworkManager.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /opt/scripta/bin/network-settings.py activate
+TimeoutStartSec=40

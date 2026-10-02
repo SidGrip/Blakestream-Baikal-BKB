@@ -1,0 +1,65 @@
+Expose the BK-B clock command code sent to firmware.
+
+The configured clock and local Blakecoin hashrate are based on the user
+request. Firmware-reported clock/status bytes are useful diagnostics, but they
+are not proof of the physical PLL. Track the compact BAIKAL_SET_OPTION clock
+code that sgminer actually sends so Clock History and Dev Tools can distinguish
+requested clock, firmware echo, and sent command code.
+--- a/driver-baikal.h
++++ b/driver-baikal.h
+@@ -71,0 +72 @@
++    int     sent_clock_code;
+--- a/driver-baikalu.c
++++ b/driver-baikalu.c
+@@ -39,0 +40,5 @@
++static int baikal_clock_command_code(uint16_t clk)
++{
++    return (clk == 0) ? 0 : ((clk / 10) % 20) + 2;
++}
++
+@@ -425,0 +431,4 @@
++    int sent_clock_code;
++    int previous_clock_code;
++    struct baikal_info *info = baikal->device_data;
++    struct miner_info *miner = &info->miners[baikal->miner_id];
+@@ -430 +439,3 @@
+-    msg.data[0] = (clk == 0) ? clk : ((clk / 10) % 20) + 2;
++    sent_clock_code = baikal_clock_command_code(clk);
++    previous_clock_code = miner->sent_clock_code;
++    msg.data[0] = sent_clock_code;
+@@ -452,0 +464,6 @@
++    miner->sent_clock_code = sent_clock_code;
++    if (previous_clock_code != sent_clock_code) {
++        applog(LOG_NOTICE, "BK-B sent PLL code %d for requested %d MHz on ASC %d",
++               sent_clock_code, (int)clk, baikal->miner_id);
++    }
++
+@@ -707,0 +725 @@
++    root = api_add_int(root, "SentClockCode", &miner->sent_clock_code, false);
+--- a/driver-baikals.c
++++ b/driver-baikals.c
+@@ -39,0 +40,5 @@
++static int baikal_clock_command_code(uint16_t clk)
++{
++    return (clk == 0) ? 0 : ((clk / 10) % 20) + 2;
++}
++
+@@ -404,0 +410,4 @@
++    int sent_clock_code;
++    int previous_clock_code;
++    struct baikal_info *info = baikal->device_data;
++    struct miner_info *miner = &info->miners[baikal->miner_id];
+@@ -409 +418,3 @@
+-    msg.data[0] = (clk == 0) ? clk : ((clk / 10) % 20) + 2;
++    sent_clock_code = baikal_clock_command_code(clk);
++    previous_clock_code = miner->sent_clock_code;
++    msg.data[0] = sent_clock_code;
+@@ -431,0 +443,6 @@
++    miner->sent_clock_code = sent_clock_code;
++    if (previous_clock_code != sent_clock_code) {
++        applog(LOG_NOTICE, "BK-B sent PLL code %d for requested %d MHz on ASC %d",
++               sent_clock_code, (int)clk, baikal->miner_id);
++    }
++
+@@ -680,0 +698 @@
++    root = api_add_int(root, "SentClockCode", &miner->sent_clock_code, false);

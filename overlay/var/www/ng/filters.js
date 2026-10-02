@@ -23,7 +23,7 @@ angular.module('Scripta.filters', [])
 })
 .filter('duration', function() {
   return function(s) {
-    if(!s) return 'loading';
+    if(s === undefined || s === null || s < 0 || isNaN(s)) return 'loading';
     var d=Math.floor(s%60)+'s';
     if(s < 60){return d;} s/=60; d=Math.floor(s%60)+'m '+d;
     if(s < 60){return d;} s/=60; d=Math.floor(s%60)+'h '+d;
@@ -52,11 +52,21 @@ angular.module('Scripta.filters', [])
   };
 })
 
-/* Format a UTC unix-ms timestamp in settings.userTimezone.
- * Example: {{1000*p.LastShareTime | bsTzDate:'HH:mm:ss'}} */
-.filter('bsTzDate', function() {
-  return function(unixMs, fmt) {
-    if (typeof BlakestreamTZ === 'undefined') return unixMs;  // helper not yet loaded
-    return BlakestreamTZ.format(unixMs, fmt || 'yyyy-MM-dd HH:mm:ss');
+/* Format a UTC unix-ms timestamp. By default renders in settings.userTimezone.
+ * When settings.userShowSystemTime is true, renders in UTC instead so the
+ * dashboard matches journalctl/syslog timestamps directly.
+ *
+ * Pass bsTzNonce as a third argument to bust the filter cache when the
+ * UTC toggle or timezone changes; CtrlMain bumps it on those events.
+ *   {{ 1000*ts | bsTzDate:'HH:mm:ss':bsTzNonce }} */
+.filter('bsTzDate', ['$rootScope', function($rootScope) {
+  return function(unixMs, fmt, _nonce) {
+    if (typeof BlakestreamTZ === 'undefined') return unixMs;
+    var f = fmt || 'yyyy-MM-dd HH:mm:ss';
+    var s = $rootScope.settings || {};
+    if (s.userShowSystemTime) {
+      return BlakestreamTZ.format(unixMs, f, 'UTC');
+    }
+    return BlakestreamTZ.format(unixMs, f);
   };
-});
+}]);

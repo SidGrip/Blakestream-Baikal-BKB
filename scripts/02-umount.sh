@@ -4,7 +4,7 @@
 set -euo pipefail
 
 if [[ $EUID -ne 0 ]]; then
-    exec sudo --preserve-env=PATH "$0" "$@"
+    exec sudo --preserve-env=PATH,BKB_FACTORY_IMG,BKB_MNT_BOOT,BKB_MNT_ROOT,BKB_MNT_RW,BKB_IMAGE_OUT "$0" "$@"
 fi
 
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
@@ -31,5 +31,12 @@ if [[ -n "${LOOP:-}" ]] && losetup "${LOOP}" >/dev/null 2>&1; then
     losetup -d "${LOOP}"
 fi
 
+if [[ -n "${INSPECTION_IMG:-}" ]]; then
+    if [[ "$(dirname "$INSPECTION_IMG")" != "$HERE/tmp" || "$(basename "$INSPECTION_IMG")" != inspection-*.img ]]; then
+        echo "[02-umount] ERROR: refusing to remove unexpected inspection image: $INSPECTION_IMG" >&2
+        exit 1
+    fi
+    rm -f -- "$INSPECTION_IMG"
+fi
 rm -f "${STATE_FILE}"
 echo "[02-umount] Done."

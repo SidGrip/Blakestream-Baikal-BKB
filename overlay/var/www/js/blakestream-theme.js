@@ -1,20 +1,18 @@
 /* Blakestream dark/light theme toggle.
- * Reads localStorage.bsTheme on page load (default "light"), applies/removes
+ * Reads localStorage.bsTheme on page load (default "dark"), applies/removes
  * `bs-dark` class on <body>, wires the toggle button click. Vanilla JS, no
  * dependencies — runs before Angular bootstraps so first-paint matches.
  */
 (function () {
     'use strict';
-    console.log('[blakestream-theme] script loaded');
-
     var KEY = 'bsTheme';
 
     function getStoredTheme() {
         try {
-            return localStorage.getItem(KEY) || 'light';
+            return localStorage.getItem(KEY) === 'light' ? 'light' : 'dark';
         } catch (e) {
             // localStorage may be blocked (private mode, file://, etc.)
-            return 'light';
+            return 'dark';
         }
     }
 
@@ -27,6 +25,7 @@
     }
 
     function applyTheme(theme) {
+        document.documentElement.classList.toggle('bs-dark', theme === 'dark');
         var body = document.body;
         if (!body) return;
         if (theme === 'dark') {
@@ -40,7 +39,8 @@
             btns[i].textContent = theme === 'dark' ? '☀' : '☾';
             btns[i].setAttribute('aria-label',
                 theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode');
-            btns[i].setAttribute('title',
+            btns[i].removeAttribute('title');
+            btns[i].setAttribute('data-tip',
                 theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode');
         }
         // Broadcast for subscribers (e.g. chart palette swap).
@@ -57,9 +57,8 @@
     }
 
     function toggleTheme() {
-        var current = getStoredTheme();
+        var current = document.body ? (document.body.classList.contains('bs-dark') ? 'dark' : 'light') : getStoredTheme();
         var next = current === 'dark' ? 'light' : 'dark';
-        console.log('[blakestream-theme] toggle:', current, '->', next);
         setStoredTheme(next);
         applyTheme(next);
     }
@@ -71,10 +70,10 @@
     // in index.php uses an inline onclick="window.BlakestreamTheme.toggle()" so
     // adding another listener would cause double-firing.
     function init() {
-        console.log('[blakestream-theme] init, body=', document.body, 'stored=', getStoredTheme());
         applyTheme(getStoredTheme());
     }
 
+    init();
     if (document.readyState === 'loading') {
         document.addEventListener('DOMContentLoaded', init);
     } else {
@@ -84,7 +83,8 @@
     // Expose for debugging / Angular integration
     window.BlakestreamTheme = {
         get: getStoredTheme,
-        set: function (t) { setStoredTheme(t); applyTheme(t); },
+        init: init,
+        set: function (t) { t = t === 'light' ? 'light' : 'dark'; setStoredTheme(t); applyTheme(t); },
         toggle: toggleTheme
     };
 })();

@@ -1,0 +1,150 @@
+Add live Baikal fan control through sgminer ascset.
+
+BK-B fan speed was previously only applied during device detection from the
+static `baikal-fan` option. Add a small Baikal `set_device` hook so the web
+runtime can issue `ascset|<asc>,fan,<percent>` without restarting sgminer.
+The fan curve/controller remains outside sgminer; this patch only provides the
+safe live firmware command and reports the currently commanded fan percent.
+
+--- a/driver-baikalu.c
++++ b/driver-baikalu.c
+@@ -13,6 +13,7 @@
+
+ #include <stdarg.h>
+ #include <stdio.h>
++#include <stdlib.h>
+ #include <unistd.h>
+ #include <math.h>
+ #include <pthread.h>
+@@ -422,6 +423,44 @@ static bool baikal_setoption(struct cgpu_info *baikal, uint16_t clk, uint8_t mod
+     return (true);
+ }
+
++static char *baikal_set_device(struct cgpu_info *baikal, char *option, char *setting, char *replybuf)
++{
++    struct baikal_info *info = baikal->device_data;
++    char *endptr = NULL;
++    long fan;
++
++    if (!option || strcmp(option, "help") == 0) {
++        snprintf(replybuf, 256, "fan|pwm,<percent 0-100>");
++        return replybuf;
++    }
++
++    if (strcmp(option, "fan") != 0 && strcmp(option, "pwm") != 0) {
++        snprintf(replybuf, 256, "unsupported option %s", option);
++        return replybuf;
++    }
++
++    if (!setting || *setting == '\0') {
++        snprintf(replybuf, 256, "missing fan percent");
++        return replybuf;
++    }
++
++    fan = strtol(setting, &endptr, 10);
++    if (*setting == '\0' || (endptr && *endptr != '\0') || fan < 0 || fan > BAIKAL_FANSPEED_MAX) {
++        snprintf(replybuf, 256, "fan percent must be 0-100");
++        return replybuf;
++    }
++
++    if (baikal_setoption(baikal, info->clock, to_baikal_algorithm(baikal->algorithm.type),
++                         info->cutofftemp, (uint8_t)fan) != true) {
++        snprintf(replybuf, 256, "failed to set fan");
++        return replybuf;
++    }
++
++    info->fanspeed = (uint8_t)fan;
++    applog(LOG_NOTICE, "BK-B fan set live to %ld%% on ASC %d", fan, baikal->miner_id);
++    return NULL;
++}
++
+
+ static bool baikal_setidle(struct cgpu_info *baikal)
+ {
+@@ -665,6 +704,7 @@ static struct api_data* baikal_api_stats(struct cgpu_info *cgpu)
+     root = api_add_int(root, "RequestedClock", &info->clock, false);
+     root = api_add_int(root, "ReportedClock", &miner->reported_clock, false);
+     root = api_add_int(root, "ReportedClockCode", &miner->reported_clock_code, false);
++    root = api_add_uint8(root, "FanPercent", &info->fanspeed, false);
+     root = api_add_int(root, "HWV", (int *)&miner->hw_ver, false);
+     root = api_add_int(root, "FWV", (int *)&miner->fw_ver, false);
+     root = api_add_string(root, "Algo", (char *)algorithm_type_str[thr->cgpu->algorithm.type], false);
+@@ -1215,6 +1255,7 @@ struct device_drv baikalu_drv = {
+     .get_statline_before	= baikal_get_statline_before,
+     .get_api_stats			= baikal_api_stats,
+     .identify_device		= baikal_identify,
++    .set_device            = baikal_set_device,
+     .thread_prepare			= baikal_prepare,
+     .thread_init			= baikal_init,
+     .hash_work              = hash_driver_work,
+--- a/driver-baikals.c
++++ b/driver-baikals.c
+@@ -12,6 +12,7 @@
+ #include "config.h"
+ #include <stdarg.h>
+ #include <stdio.h>
++#include <stdlib.h>
+ #include <unistd.h>
+ #include <math.h>
+ #include <pthread.h>
+@@ -431,6 +432,44 @@ static bool baikal_setoption(struct cgpu_info *baikal, uint16_t clk, uint8_t mod
+     return (true);
+ }
+
++static char *baikal_set_device(struct cgpu_info *baikal, char *option, char *setting, char *replybuf)
++{
++    struct baikal_info *info = baikal->device_data;
++    char *endptr = NULL;
++    long fan;
++
++    if (!option || strcmp(option, "help") == 0) {
++        snprintf(replybuf, 256, "fan|pwm,<percent 0-100>");
++        return replybuf;
++    }
++
++    if (strcmp(option, "fan") != 0 && strcmp(option, "pwm") != 0) {
++        snprintf(replybuf, 256, "unsupported option %s", option);
++        return replybuf;
++    }
++
++    if (!setting || *setting == '\0') {
++        snprintf(replybuf, 256, "missing fan percent");
++        return replybuf;
++    }
++
++    fan = strtol(setting, &endptr, 10);
++    if (*setting == '\0' || (endptr && *endptr != '\0') || fan < 0 || fan > BAIKAL_FANSPEED_MAX) {
++        snprintf(replybuf, 256, "fan percent must be 0-100");
++        return replybuf;
++    }
++
++    if (baikal_setoption(baikal, info->clock, to_baikal_algorithm(baikal->algorithm.type),
++                         info->cutofftemp, (uint8_t)fan) != true) {
++        snprintf(replybuf, 256, "failed to set fan");
++        return replybuf;
++    }
++
++    info->fanspeed = (uint8_t)fan;
++    applog(LOG_NOTICE, "BK-B fan set live to %ld%% on ASC %d", fan, baikal->miner_id);
++    return NULL;
++}
++
+
+ static bool baikal_setidle(struct cgpu_info *baikal)
+ {
+@@ -639,6 +678,7 @@ static struct api_data* baikal_api_stats(struct cgpu_info *cgpu)
+     root = api_add_int(root, "RequestedClock", &info->clock, false);
+     root = api_add_int(root, "ReportedClock", &miner->reported_clock, false);
+     root = api_add_int(root, "ReportedClockCode", &miner->reported_clock_code, false);
++    root = api_add_uint8(root, "FanPercent", &info->fanspeed, false);
+     root = api_add_int(root, "HWV", (int *)&miner->hw_ver, false);
+     root = api_add_int(root, "FWV", (int *)&miner->fw_ver, false);
+     root = api_add_string(root, "Algo", (char *)algorithm_type_str[thr->cgpu->algorithm.type], false);
+@@ -1127,6 +1167,7 @@ struct device_drv baikals_drv = {
+     .get_statline_before	= baikal_get_statline_before,
+     .get_api_stats			= baikal_api_stats,
+     .identify_device		= baikal_identify,
++    .set_device            = baikal_set_device,
+     .thread_prepare			= baikal_prepare,
+     .thread_init			= baikal_init,
+     .hash_work              = hash_driver_work,

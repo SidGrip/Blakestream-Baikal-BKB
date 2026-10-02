@@ -1,0 +1,2 @@
+# Persist sshd login attempts to /opt/scripta/var/security.log (intrusion trail).
+*/3 * * * * root /opt/scripta/bin/ssh-auth-logger.sh 2>&1 | /usr/bin/logger -t bs-sshauth

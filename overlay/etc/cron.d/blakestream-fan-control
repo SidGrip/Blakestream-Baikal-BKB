@@ -1,0 +1,6 @@
+# Blakestream-GaintB automatic fan controller.
+# Runs only when Settings -> Auto Fan Control is enabled. Every 60s — the fan
+# curve is gradual, so 30s granularity is unnecessary. Overheat safety is the
+# temp-watchdog, which stays at 30s.
+PYTHONDONTWRITEBYTECODE=1
+* * * * * root /usr/bin/python /opt/scripta/bin/fan-controller.py 2>&1 | /usr/bin/logger -t bs-fan

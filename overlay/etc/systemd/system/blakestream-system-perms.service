@@ -1,0 +1,12 @@
+[Unit]
+Description=Prepare Blakestream runtime permissions
+After=systemd-tmpfiles-setup.service
+Before=cron.service lighttpd.service ssh.service shellinabox.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/scripta/bin/repair-system-perms.sh
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

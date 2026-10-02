@@ -1,0 +1,547 @@
+{
+  "algorithm": "blake256r8",
+  "bridge_artifact_sha256": "caf95856393914cf01436d07724e067f41dab9d1fa98057e7b3a272c16ab4a54",
+  "bridge_chip_md5": "0e8467eddabf589ad94549a8d572c759",
+  "compatible_bridge_chip_md5": [
+    "18babe0c4c67d9146e230f9dc423f2f2"
+  ],
+  "frequency_status": "unverified",
+  "host_sha256": "bcba6b0c851f4fea6afc43a6b48a7e1d5d20f5ec97153a880f2beb075cf23f2f",
+  "compatible_host_sha256": [
+    "c90c9fab655c1b1e52bacc0c0dd6f05743104b9e5e45912364d5a612d4320c52"
+  ],
+  "physical_mhz": null,
+  "power_measured": false,
+  "qualified": false,
+  "rows": [
+    {
+      "accepted_shares": 421,
+      "board_seconds": 1801.385763,
+      "board_windows": 1,
+      "contexts": [
+        [
+          8,
+          30,
+          30
+        ]
+      ],
+      "estimate_kind": "performance-equivalent",
+      "estimated_mhz": 209.86540209469888,
+      "ghs": 32.12071539599039,
+      "hw_errors": 0,
+      "measured_boards": [
+        0
+      ],
+      "clock_index": 8,
+      "reference_ghs": 61.22155453045349
+    },
+    {
+      "accepted_shares": 481,
+      "board_seconds": 1801.368265,
+      "board_windows": 1,
+      "contexts": [
+        [
+          11,
+          10,
+          9
+        ]
+      ],
+      "estimate_kind": "performance-equivalent",
+      "estimated_mhz": 242.49662365845046,
+      "ghs": 36.698846040807766,
+      "hw_errors": 0,
+      "measured_boards": [
+        2
+      ],
+      "clock_index": 9,
+      "reference_ghs": 60.5350218690006
+    },
+    {
+      "accepted_shares": 483,
+      "board_seconds": 1801.367461,
+      "board_windows": 1,
+      "contexts": [
+        [
+          11,
+          10,
+          9
+        ]
+      ],
+      "estimate_kind": "performance-equivalent",
+      "estimated_mhz": 238.1031748585025,
+      "ghs": 36.85145644305385,
+      "hw_errors": 0,
+      "measured_boards": [
+        1
+      ],
+      "clock_index": 10,
+      "reference_ghs": 61.90838314516982
+    },
+    {
+      "accepted_shares": 482,
+      "board_seconds": 1801.367267,
+      "board_windows": 1,
+      "contexts": [
+        [
+          11,
+          10,
+          9
+        ]
+      ],
+      "estimate_kind": "performance-equivalent",
+      "estimated_mhz": 240.27592029880952,
+      "ghs": 36.775163392321154,
+      "hw_errors": 0,
+      "measured_boards": [
+        0
+      ],
+      "clock_index": 11,
+      "reference_ghs": 61.22155453045348
+    },
+    {
+      "accepted_shares": 480,
+      "board_seconds": 1801.488922,
+      "board_windows": 1,
+      "contexts": [
+        [
+          14,
+          13,
+          12
+        ]
+      ],
+      "estimate_kind": "performance-equivalent",
+      "estimated_mhz": 241.97626492165972,
+      "ghs": 36.62009622202939,
+      "hw_errors": 0,
+      "measured_boards": [
+        2
+      ],
+      "clock_index": 12,
+      "reference_ghs": 60.5350218690006
+    },
+    {
+      "accepted_shares": 476,
+      "board_seconds": 1801.502439,
+      "board_windows": 1,
+      "contexts": [
+        [
+          14,
+          13,
+          12
+        ]
+      ],
+      "estimate_kind": "performance-equivalent",
+      "estimated_mhz": 234.63482282101637,
+      "ghs": 36.314656276006296,
+      "hw_errors": 0,
+      "measured_boards": [
+        1
+      ],
+      "clock_index": 13,
+      "reference_ghs": 61.90838314516982
+    },
+    {
+      "accepted_shares": 496,
+      "board_seconds": 1801.515739,
+      "board_windows": 1,
+      "contexts": [
+        [
+          14,
+          13,
+          12
+        ]
+      ],
+      "estimate_kind": "performance-equivalent",
+      "estimated_mhz": 247.23451141549148,
+      "ghs": 37.84020280608384,
+      "hw_errors": 0,
+      "measured_boards": [
+        0
+      ],
+      "clock_index": 14,
+      "reference_ghs": 61.22155453045348
+    },
+    {
+      "accepted_shares": 535,
+      "board_seconds": 1801.324598,
+      "board_windows": 1,
+      "contexts": [
+        [
+          17,
+          16,
+          15
+        ]
+      ],
+      "estimate_kind": "performance-equivalent",
+      "estimated_mhz": 269.7273152988682,
+      "ghs": 40.81987232570951,
+      "hw_errors": 0,
+      "measured_boards": [
+        2
+      ],
+      "clock_index": 15,
+      "reference_ghs": 60.5350218690006
+    },
+    {
+      "accepted_shares": 541,
+      "board_seconds": 1801.324619,
+      "board_windows": 1,
+      "contexts": [
+        [
+          17,
+          16,
+          15
+        ]
+      ],
+      "estimate_kind": "performance-equivalent",
+      "estimated_mhz": 266.7016175070214,
+      "ghs": 41.27766480515304,
+      "hw_errors": 0,
+      "measured_boards": [
+        1
+      ],
+      "clock_index": 16,
+      "reference_ghs": 61.90838314516982
+    },
+    {
+      "accepted_shares": 585,
+      "board_seconds": 1801.324812,
+      "board_windows": 1,
+      "contexts": [
+        [
+          17,
+          16,
+          15
+        ]
+      ],
+      "estimate_kind": "performance-equivalent",
+      "estimated_mhz": 291.62806272537586,
+      "ghs": 44.63480836188027,
+      "hw_errors": 0,
+      "measured_boards": [
+        0
+      ],
+      "clock_index": 17,
+      "reference_ghs": 61.22155453045348
+    },
+    {
+      "accepted_shares": 617,
+      "board_seconds": 1801.447745,
+      "board_windows": 1,
+      "contexts": [
+        [
+          20,
+          19,
+          18
+        ]
+      ],
+      "estimate_kind": "performance-equivalent",
+      "estimated_mhz": 311.0474335427279,
+      "ghs": 47.073157979513866,
+      "hw_errors": 0,
+      "measured_boards": [
+        2
+      ],
+      "clock_index": 18,
+      "reference_ghs": 60.5350218690006
+    },
+    {
+      "accepted_shares": 637,
+      "board_seconds": 1801.44777,
+      "board_windows": 1,
+      "contexts": [
+        [
+          20,
+          19,
+          18
+        ]
+      ],
+      "estimate_kind": "performance-equivalent",
+      "estimated_mhz": 314.0061300639469,
+      "ghs": 48.59902952482713,
+      "hw_errors": 0,
+      "measured_boards": [
+        1
+      ],
+      "clock_index": 19,
+      "reference_ghs": 61.90838314516982
+    },
+    {
+      "accepted_shares": 623,
+      "board_seconds": 1801.447555,
+      "board_windows": 1,
+      "contexts": [
+        [
+          20,
+          19,
+          18
+        ]
+      ],
+      "estimate_kind": "performance-equivalent",
+      "estimated_mhz": 310.5502630444891,
+      "ghs": 47.53092465856216,
+      "hw_errors": 0,
+      "measured_boards": [
+        0
+      ],
+      "clock_index": 20,
+      "reference_ghs": 61.22155453045348
+    },
+    {
+      "accepted_shares": 606,
+      "board_seconds": 1802.017523,
+      "board_windows": 1,
+      "contexts": [
+        [
+          23,
+          22,
+          21
+        ]
+      ],
+      "estimate_kind": "performance-equivalent",
+      "estimated_mhz": 305.4054210282923,
+      "ghs": 46.21930960214753,
+      "hw_errors": 0,
+      "measured_boards": [
+        2
+      ],
+      "clock_index": 21,
+      "reference_ghs": 60.5350218690006
+    },
+    {
+      "accepted_shares": 639,
+      "board_seconds": 1802.022336,
+      "board_windows": 1,
+      "contexts": [
+        [
+          23,
+          22,
+          21
+        ]
+      ],
+      "estimate_kind": "performance-equivalent",
+      "estimated_mhz": 314.8915869184877,
+      "ghs": 48.736072530350704,
+      "hw_errors": 0,
+      "measured_boards": [
+        1
+      ],
+      "clock_index": 22,
+      "reference_ghs": 61.90838314516982
+    },
+    {
+      "accepted_shares": 695,
+      "board_seconds": 1802.0187799999999,
+      "board_windows": 1,
+      "contexts": [
+        [
+          23,
+          22,
+          21
+        ]
+      ],
+      "estimate_kind": "performance-equivalent",
+      "estimated_mhz": 346.3306833478456,
+      "ghs": 53.00725704037336,
+      "hw_errors": 0,
+      "measured_boards": [
+        0
+      ],
+      "clock_index": 23,
+      "reference_ghs": 61.221554530453474
+    },
+    {
+      "accepted_shares": 710,
+      "board_seconds": 1801.415829,
+      "board_windows": 1,
+      "contexts": [
+        [
+          26,
+          25,
+          24
+        ]
+      ],
+      "estimate_kind": "performance-equivalent",
+      "estimated_mhz": 357.93774804130766,
+      "ghs": 54.16942351355346,
+      "hw_errors": 0,
+      "measured_boards": [
+        2
+      ],
+      "clock_index": 24,
+      "reference_ghs": 60.5350218690006
+    },
+    {
+      "accepted_shares": 720,
+      "board_seconds": 1801.415102,
+      "board_windows": 1,
+      "contexts": [
+        [
+          26,
+          25,
+          24
+        ]
+      ],
+      "estimate_kind": "performance-equivalent",
+      "estimated_mhz": 354.9270229257299,
+      "ghs": 54.932395309651405,
+      "hw_errors": 0,
+      "measured_boards": [
+        1
+      ],
+      "clock_index": 25,
+      "reference_ghs": 61.90838314516982
+    },
+    {
+      "accepted_shares": 791,
+      "board_seconds": 1801.414338,
+      "board_windows": 1,
+      "contexts": [
+        [
+          26,
+          25,
+          24
+        ]
+      ],
+      "estimate_kind": "performance-equivalent",
+      "estimated_mhz": 394.3014247502803,
+      "ghs": 60.349365441961965,
+      "hw_errors": 0,
+      "measured_boards": [
+        0
+      ],
+      "clock_index": 26,
+      "reference_ghs": 61.22155453045348
+    },
+    {
+      "accepted_shares": 818,
+      "board_seconds": 1801.549331,
+      "board_windows": 1,
+      "contexts": [
+        [
+          29,
+          28,
+          27
+        ]
+      ],
+      "estimate_kind": "performance-equivalent",
+      "estimated_mhz": 412.35405741047094,
+      "ghs": 62.404654707784964,
+      "hw_errors": 0,
+      "measured_boards": [
+        2
+      ],
+      "clock_index": 27,
+      "reference_ghs": 60.5350218690006
+    },
+    {
+      "accepted_shares": 818,
+      "board_seconds": 1801.558043,
+      "board_windows": 1,
+      "contexts": [
+        [
+          29,
+          28,
+          27
+        ]
+      ],
+      "estimate_kind": "performance-equivalent",
+      "estimated_mhz": 403.2045403875956,
+      "ghs": 62.40435293046842,
+      "hw_errors": 0,
+      "measured_boards": [
+        1
+      ],
+      "clock_index": 28,
+      "reference_ghs": 61.90838314516982
+    },
+    {
+      "accepted_shares": 813,
+      "board_seconds": 1801.549323,
+      "board_windows": 1,
+      "contexts": [
+        [
+          29,
+          28,
+          27
+        ]
+      ],
+      "estimate_kind": "performance-equivalent",
+      "estimated_mhz": 405.2377233099217,
+      "ghs": 62.023208438537985,
+      "hw_errors": 0,
+      "measured_boards": [
+        0
+      ],
+      "clock_index": 29,
+      "reference_ghs": 61.22155453045349
+    },
+    {
+      "accepted_shares": 12036,
+      "board_seconds": 27020.100852,
+      "board_windows": 15,
+      "contexts": [
+        [
+          30,
+          30,
+          30
+        ]
+      ],
+      "estimate_kind": "nominal-stock-anchor",
+      "estimated_mhz": 400,
+      "ghs": 61.22165320735835,
+      "hw_errors": 1,
+      "measured_boards": [
+        0,
+        1,
+        2
+      ],
+      "clock_index": 30,
+      "reference_ghs": 61.22165320735835
+    },
+    {
+      "accepted_shares": 823,
+      "board_seconds": 1801.51615,
+      "board_windows": 1,
+      "contexts": [
+        [
+          30,
+          31,
+          30
+        ]
+      ],
+      "estimate_kind": "performance-equivalent",
+      "estimated_mhz": 405.6785493698316,
+      "ghs": 62.78725767041056,
+      "hw_errors": 0,
+      "measured_boards": [
+        1
+      ],
+      "clock_index": 31,
+      "reference_ghs": 61.90838314516982
+    },
+    {
+      "accepted_shares": 849,
+      "board_seconds": 1801.07979,
+      "board_windows": 1,
+      "contexts": [
+        [
+          30,
+          32,
+          30
+        ]
+      ],
+      "estimate_kind": "performance-equivalent",
+      "estimated_mhz": 418.59603120679844,
+      "ghs": 64.78650870749485,
+      "hw_errors": 0,
+      "measured_boards": [
+        1
+      ],
+      "clock_index": 32,
+      "reference_ghs": 61.90838314516982
+    }
+  ],
+  "schema": 1,
+  "source": "lab-example"
+}

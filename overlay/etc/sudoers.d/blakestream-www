@@ -1,7 +1,11 @@
 # Blakestream-GaintB: allow lighttpd's www-data user to run only the narrow
-# root helpers needed by the web UI: miner launch/restart and timezone update.
+# root helpers needed by the web UI and recorder runtime setup.
 #
 # Scope: explicit commands below only. Nothing else.
 
 www-data ALL=(root) NOPASSWD: /opt/scripta/startup/miner-start.sh
 www-data ALL=(root) NOPASSWD: /opt/scripta/startup/miner-restart.sh
+www-data ALL=(root) NOPASSWD: /opt/scripta/bin/prepare-runtime-dir.sh
+www-data ALL=(root) NOPASSWD: /opt/scripta/bin/bkb-firmware.sh
+www-data ALL=(root) NOPASSWD: /opt/scripta/bin/network-settings.py status, /opt/scripta/bin/network-settings.py apply, /opt/scripta/bin/network-settings.py confirm, /opt/scripta/bin/network-settings.py rollback
+www-data ALL=(root) NOPASSWD: /opt/scripta/bin/network-settings.py pending

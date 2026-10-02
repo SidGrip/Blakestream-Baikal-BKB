@@ -1,0 +1,6 @@
+# Blakestream-GaintB does not use the local sendmail MSP queue.
+#
+# E-mail alerts use PEAR Mail with the SMTP server configured in Scripta.
+# Disabling the factory cron-msp job prevents undeliverable cron mail from
+# accumulating and retrying against a local MTA that is not running.
+

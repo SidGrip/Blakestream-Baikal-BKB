@@ -1,0 +1,100 @@
+From: Blakestream-GaintB V2.2
+Subject: [PATCH 32/32] baikal: replace arithmetic MHz conversion with validated table
+
+The bridge PLL index is not a linear public MHz scale. Factory startup uses
+index 30, so expose only the factory-400 candidate until accepted-work tests
+validate more lookup entries. Keep the bridge display echo mapping separate
+from public labels: an index-30 command echoes 480 through the legacy GET_INFO
+table, but that echo proves only command-path completion. Raw index testing
+remains restricted to explicit lab builds.
+---
+ driver-baikalu.c | 54 ++++++++++++++++++++++++++++++++----------------------
+ 1 file changed, 32 insertions(+), 22 deletions(-)
+
+diff --git a/driver-baikalu.c b/driver-baikalu.c
+--- a/driver-baikalu.c
++++ b/driver-baikalu.c
+@@ -46,30 +46,38 @@
+ 
+ static int baikal_clock_command_code(uint16_t clk)
+ {
+-    /* Shared monotonic PLL index the v5+ firmware reads directly: idx = MHz/10 - 18,
+-       clamped to the mode-0x10 ladder [8,32] (~260-500 MHz). clk==0 keeps the
+-       firmware default/off path. The old ((clk/10)%20)+2 form was non-monotonic and
+-       could not emit indices 22-32, so distinct MHz collapsed onto the same low PLL
+-       entries (e.g. 400->code2 and 520->code14 both read ~150 GH/s). On stock
+-       firmware the PLL-over-SPI sender is disconnected, so the code is ignored and
+-       this change is a no-op until compatible custom firmware is flashed. */
+-    int idx;
+-
++    /*
++     * Public clock labels must come from accepted-work validation, not arithmetic.
++     * Factory startup uses PLL index 30, so v1 treats that as the sole public
++     * 400 MHz candidate until hardware tests validate additional table entries.
++     * Raw-index experiments remain compile-time lab builds.
++     */
+     if (clk == 0)
+         return 0;
+-    idx = (int)(clk / 10) - 18;
+-    if (idx < 8)
+-        idx = 8;
+-    if (idx > 32)
+-        idx = 32;
+-    return idx;
++    if (clk == 400)
++        return 30;
++    return 30;
+ }
+ 
+-static int baikal_clock_from_command_code(int code)
++static int baikal_bridge_echo_from_command_code(int code)
+ {
+-    if (code < 8 || code > 32)
++    /*
++     * GET_INFO reports through the stock bridge display table, not through the
++     * public validated-clock table. Keep this mapping explicit so a bridge
++     * echo can verify the command path without being presented as physical MHz.
++     */
++    switch (code) {
++    case 8:
++        return 260;
++    case 22:
++        return 400;
++    case 30:
++        return 480;
++    case 32:
++        return 500;
++    default:
+         return 0;
+-    return (code + 18) * 10;
++    }
+ }
+ 
+ static void baikal_log_raw_clock_experiment_build(void)
+@@ -807,6 +815,6 @@ static void baikal_apply_clock_retry(struct cgpu_info *baikal, int miner_id)
+            miner_id, retry_clock, retry_clock_code, host_ack ? "yes" : "no");
+ 
+-    expected_clock = baikal_clock_from_command_code(retry_clock_code);
++    expected_clock = baikal_bridge_echo_from_command_code(retry_clock_code);
+     if (host_ack) {
+         getinfo_ok = baikal_getinfo_for_miner(baikal, miner_id);
+         echo_ok = getinfo_ok && expected_clock > 0 &&
+@@ -890,6 +898,6 @@ static void baikal_apply_pending_clock_reapply(struct cgpu_info *baikal, int miner_id)
+         to_baikal_algorithm(baikal->algorithm.type),
+         info->cutofftemp, info->fanspeed);
+-    expected_clock = baikal_clock_from_command_code(clock_code);
++    expected_clock = baikal_bridge_echo_from_command_code(clock_code);
+     if (host_ack) {
+         getinfo_ok = baikal_getinfo_for_miner(baikal, miner_id);
+         echo_ok = getinfo_ok && expected_clock > 0 &&
+@@ -985,7 +993,7 @@ static void baikal_apply_global_clock_generation(struct cgpu_info *baikal)
+         return;
+ 
+     clock_code = baikal_clock_command_code((uint16_t)info->clock);
+-    expected_clock = baikal_clock_from_command_code(clock_code);
++    expected_clock = baikal_bridge_echo_from_command_code(clock_code);
+     bridge_global = opt_baikal_bridge_global;
+     mutex_lock(&info->clock_lock);
+     if (!info->global_clock_pending || info->global_clock_inflight ||
+-- 
+2.43.0

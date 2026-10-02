@@ -1,125 +1,172 @@
-# Building Blakestream-GaintB from source
+# Building Blakestream-GaintB V2.2
 
-This document covers everything needed to reproduce the published `.img.xz` from a clean clone of this repository, on a Linux host. Tested on Ubuntu 22.04 / 24.04. macOS will not work because `losetup` is Linux-specific.
+The public release is V2.2. Bridge firmware v1 is the experimental STM32
+clock patch shipped inside that release, not a separate product version.
+Architecture, what the bridge echo does and does not prove, and the hardware
+checks that are still open are in [TECHNICAL-GUIDE.md](TECHNICAL-GUIDE.md).
+Day-to-day tests are in [QA.md](QA.md). The sgminer checkout and ARM build are
+in [sgminer-build/BUILD-SOURCE.md](sgminer-build/BUILD-SOURCE.md).
 
-## What gets built
+Scripts locate the repository from their own path. The clone can live in any
+directory, including one with spaces, and the commands below can be run from
+any working directory.
 
-A 3.9 GB raw `.img` containing the modified Baikal Orange Pi rootfs, then xz-compressed to ~900 MB:
+## Default QA
 
-```
-build/
-├── Blakestream-BKB-v2.1.img         (3.9 GB raw, dd this to an SD card)
-├── Blakestream-BKB-v2.1.img.sha256
-├── Blakestream-BKB-v2.1.img.xz      (~900 MB, what we publish)
-└── Blakestream-BKB-v2.1.img.xz.sha256
-```
-
-The image is the **factory** Baikal `PiZero_GB_180105_V1.0.img` with our modifications rsync'd in. We do not redistribute the factory image; you'll fetch it on your first build.
-
-## Host requirements
-
-- Linux x86_64 with **sudo** (the repack step needs root for `losetup` + mounting the loop device).
-- ~10 GB free disk: 4 GB for the raw image, 1 GB for the xz, plus temp space.
-- Tools: `bash`, `rsync`, `losetup`, `mount`, `partprobe`, `udevadm`, `blkid`, `xz` (`xz-utils`), `sha256sum`, `wget`. Most ship with a base install; on Ubuntu add anything missing with `sudo apt install xz-utils util-linux`.
-- For the sgminer ARM rebuild (only needed if you also want to rebuild `sgminer.patched`): **Docker** + qemu-user-static so an `arm32v7/ubuntu:16.04` container can run on your host. `sudo apt install docker.io qemu-user-static binfmt-support`.
-
-## Two build paths
-
-### Path A — Image only (use the pre-built `sgminer.patched` checked in)
-
-This is the common path. The committed binary is a 5.3 MB ARMv7 ELF that has all our patches applied; you just bake it into the image.
+No root, no network, no miner, no stock STM32 dump, and no sgminer source tree:
 
 ```bash
-cd Blakestream-Baikal-BKB
-./scripts/01-fetch.sh                 # download factory image (~3.9 GB)
-./scripts/02-mount.sh                 # mount factory image read-only
-./scripts/03-snapshot.sh              # copy mounted rootfs to firmware-modified/rootfs/
-./scripts/02-umount.sh                # release the read-only mount
-./scripts/04-apply-overlay.sh         # rsync overlay/ over firmware-modified/rootfs/
-sudo ./scripts/05-repack.sh           # build the .img (requires root for loop device)
-./scripts/06-compress.sh              # xz -T0 -9 → .img.xz (~7 min on 8 cores)
+scripts/qa
 ```
 
-If you re-run after editing the overlay, the cycle is:
+That runs the PHP, Node, and Python contract tests and the Unicorn v1
+emulator against the tracked image. Missing `php`, `node`, `python3`, or the
+`unicorn` module fails the run. The runner does not install them. Optional
+native, driver, firmware-rebuild, and ARM phases are listed as not run. Ask
+for them by name when you have their inputs; a missing input then fails
+instead of being skipped. See [QA.md](QA.md).
+
+## What is already in the tree
+
+| Path | Role |
+| --- | --- |
+| `overlay/` | Files copied over the factory rootfs. The image build uses this tree as it is. |
+| `sgminer-build/sgminer.patched` and `overlay/opt/scripta/bin/sgminer` | Reference ARMv7 host binary, sha256 `c90c9fab655c1b1e52bacc0c0dd6f05743104b9e5e45912364d5a612d4320c52`. Do not replace it with a local rebuild unless you are publishing a new binary. |
+| `sgminer-build/patches/` | 34 numbered patches, `0001`–`0002` and `0004`–`0035`, on upstream `3cde8deca53f83ac65bc685b988166bd17930753`. `patches/rejected/0003` is not applied. |
+| `sgminer-build/vendor/sgminer-baikal.bundle` | Complete pinned upstream source and original history, restored offline after SHA-256 verification. No upstream GitHub checkout is required. |
+| `firmware-custom/build/bkb-stm32f407-flash-clockmod-v1.bin` | Reference v1 image, sha256 `d2a1a66db73e8fb95cc482962b64011226ded70f107eb6301808aef65e076c8a`. |
+| `overlay/opt/scripta/firmware/stock.bin` | Included stock rollback image, also usable as the bridge build input. Identity is in `firmware-custom/STOCK-BRIDGE.txt`. |
+| `firmware-dump/bkb-stm32f407-flash.bin` | Optional gitignored private stock bridge dump. |
+| `firmware-original/`, `firmware-modified/rootfs/`, `build/` | Gitignored factory image, rootfs snapshot, and SD-image output. |
+
+## Rebuild sgminer
+
+Source preparation uses the included Git bundle, not the upstream URL.
+It fails on a missing or corrupt bundle without trying the network.
 
 ```bash
-sudo chown -R $(whoami):$(whoami) firmware-modified/rootfs   # script 05 chowns to root
-rm -f build/Blakestream-BKB-v2.1.img*
-./scripts/04-apply-overlay.sh
-sudo ./scripts/05-repack.sh
-sudo chown $(whoami):$(whoami) build
-./scripts/06-compress.sh
+scripts/qa source-baseline
+sgminer-build/fetch-baseline.sh --src /path/to/sgminer-src
+sgminer-build/apply-patches.sh --src /path/to/sgminer-src
+BKB_SGMINER_SRC=/path/to/sgminer-src scripts/qa native native-tsan driver
 ```
 
-### Path B — Also rebuild `sgminer.patched` from source
+Set `BKB_SGMINER_SRC` instead of `--src` if you prefer. Host `configure` /
+`make` and the Ubuntu 16.04 ARMv7 container build are separate commands in
+[sgminer-build/BUILD-SOURCE.md](sgminer-build/BUILD-SOURCE.md). They do not
+pull container images unless you pass `--pull` to the ARM script. The ARM
+container may still download missing build packages. These commands do not
+copy the new binary over the reference.
 
-Only needed if you've changed code under `sgminer-build/src/` or one of `sgminer-build/patches/`.
+## Rebuild the v1 bridge image
+
+Use the included stock rollback image, or supply a verified stock dump.
+The script checks size, md5, and sha256, then requires `gcc-arm-none-eabi`
+and friends on `PATH`. It does not download the dump or install the compiler.
 
 ```bash
-# 1. Clone upstream sgminer source into sgminer-build/src/ (gitignored).
-git clone https://github.com/cod3gen/sgminer-baikal sgminer-build/src
-cd sgminer-build/src
-git checkout dev
-
-# 2. Apply patches in order. Patches assume CWD is sgminer-build/src.
-for p in ../patches/[0-9]*.patch; do
-    patch -p1 < "$p"
-done
-cd ../..
-
-# 3. Build inside an ARMv7 Ubuntu 16.04 container. The repo's pre-built image
-#    matches Baikal's libc6/libssl/libudev versions; newer Ubuntu containers
-#    will produce a binary that won't run on the device.
-docker pull --platform linux/arm/v7 arm32v7/ubuntu:16.04
-docker run --rm --platform linux/arm/v7 \
-    -v "$PWD/sgminer-build/src:/src" \
-    arm32v7/ubuntu:16.04 \
-    bash -c '
-        DEBIAN_FRONTEND=noninteractive apt-get update -qq
-        DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
-            sed coreutils build-essential autoconf automake libtool pkg-config \
-            libcurl4-openssl-dev libudev-dev libusb-1.0-0-dev libjansson-dev \
-            libncurses5-dev libssl-dev
-        for t in sed grep awk mkdir nm; do [ ! -e /usr/bin/$t ] && ln -sf /bin/$t /usr/bin/$t; done
-        cd /src
-        make CFLAGS="-g -O1 -Wall -DTRUE=1 -DFALSE=0"
-    '
-
-# 4. Promote the new binary into the overlay + the tracked artifact.
-cp sgminer-build/src/sgminer overlay/opt/scripta/bin/sgminer
-cp sgminer-build/src/sgminer sgminer-build/sgminer.patched
-
-# 5. Continue with the Path A image build steps.
-./scripts/04-apply-overlay.sh
-sudo ./scripts/05-repack.sh
-./scripts/06-compress.sh
+firmware-custom/build.sh --dump overlay/opt/scripta/firmware/stock.bin \
+    --out-dir /path/to/firmware-out v1
 ```
 
-## Source layout
+`--check-dump` stops after the identity check. The reference image was built
+with `gcc-arm-none-eabi` 13.2. `scripts/qa firmware-build` writes to
+`sgminer-build/build/firmware-rebuild` (or `BKB_FIRMWARE_OUT`) and fails if
+the bytes differ from the tracked v1 image. It does not replace that image.
 
-| Path | Purpose |
-|------|---------|
-| `overlay/` | All files we add or replace in the factory rootfs. The build rsyncs this over the factory tree. |
-| `sgminer-build/sgminer.patched` | Pre-built ARMv7 sgminer binary, committed. |
-| `sgminer-build/patches/` | Numbered patch series applied on top of upstream `cod3gen/sgminer-baikal` to produce the binary. GPLv3 source-of-truth. |
-| `sgminer-build/src/` | Gitignored. Cloned upstream source where patches are applied. |
-| `firmware-original/` | Gitignored. Holds the factory `.img` after `01-fetch.sh`. |
-| `firmware-modified/rootfs/` | Gitignored. The factory rootfs snapshot with our overlay rsync'd over it. |
-| `build/` | Gitignored. Where the output `.img` and `.img.xz` land. |
-| `scripts/` | The numbered build scripts. |
-
-## Notes / gotchas
-
-- **`05-repack.sh` rewrites file ownership** for the entire rootfs because the dev-host uid (typically 1000) doesn't match the Pi's uid mapping (1000 = baikal there). It then re-applies a list of "this path needs `www-data`" exceptions. If you add a file that PHP needs to write to, add it to the loop in `05-repack.sh` around line 116.
-- **The patch series numbering has a gap** (no `0003`). This is historical — `0003` was an earlier idea that didn't pan out. Patches `0001 0002 0004 0005 0006 0007 0008 0009 0010 0011` is the full applied series.
-- **The patch series is intended to apply non-interactively** with `patch -p1` from `sgminer-build/src/`. Before publishing, we smoke-test the full series from the upstream baseline to catch malformed or stale patch artifacts.
-- **xz at `-9` can use significant RAM with `-T0`** because it uses all available CPU threads. On smaller hosts, edit `scripts/06-compress.sh` to use a fixed lower thread count such as `xz -T2 -9`; compression time scales roughly linearly.
-
-## Verifying a built image
+Emulator checks do not need the dump:
 
 ```bash
-sha256sum build/Blakestream-BKB-v2.1.img.xz
-# compare against the published value at https://explorer.blakestream.io/baikal-bkb
+python3 firmware-custom/smoke_assert_v1.py
 ```
 
-The raw `.img` sha will vary slightly between builds because of `mtime` preservation in some factory directory entries. The xz wrapper is also non-deterministic at `-T0`. If you need byte-identical reproducibility, run the build single-threaded and zero out the few mtime-bearing directory entries before `cp`. Most users don't need this.
+## SD-card image
+
+This path is optional, uses the network and root, and is not part of QA.
+Tested mechanics are Linux `losetup` (Ubuntu 22.04 / 24.04). You need roughly
+16 GB free, plus `bash`, `rsync`, `losetup`, `mount`, `partprobe`, `udevadm`,
+`blkid`, `xz`, `sha256sum`, `curl`, Python 3, `depmod` (kmod), `fsck.fat` (dosfstools), and
+`sunxi-fexc` from sunxi-tools 1.4.2 or newer.
+
+`01-fetch.sh` downloads the factory `PiZero_GB_180105_V1.0.img` (about 3.9 GB)
+to `firmware-original/` or to `BKB_FACTORY_IMG`. Mount points default to
+`/mnt/baikal-boot-ro`, `/mnt/baikal-ro`, and `/mnt/baikal-rw`. The fetcher
+requires both the expected byte count and SHA-256
+`de3b514d890c9581d1fe22e90574ae534c2d19d3bdee6a33db0a5df7a37447be`.
+An existing input with a mismatched size or hash is not overwritten. Override
+mount points with `BKB_MNT_BOOT`, `BKB_MNT_ROOT`, and `BKB_MNT_RW`. Image output defaults to
+`build/` and can be moved with `BKB_IMAGE_OUT`.
+
+The output is `Blakestream-GaintB-v2.2.img`, its `.img.xz` compressed copy,
+and a `.sha256` file for each. Checksum entries contain filenames, not paths
+on the build machine. Verify with `sha256sum -c` inside the output directory.
+The repacker refuses an existing output and uses `.img.partial` until the
+filesystem has been cleanly unmounted. Use a fresh output directory for a
+new build; never flash a partial file. QA logs under `build/qa-*` are not
+SD-card images.
+
+The repacker repairs inherited FAT metadata on the output copy and checks the
+boot filesystem before and after updating its files. The factory input stays
+unchanged; a failed filesystem check stops publication.
+
+The repacker enables onboard Wi-Fi discovery with `wifi_used=1` in the boot
+partition's `script.bin`. It verifies the decoded round trip and preserves all
+other boot settings. Rootfs preparation removes the factory's forced `8189es`
+module load so the unused Realtek driver cannot disturb the XR819 SDIO bus.
+The repacker also rebuilds the kernel module index. This does not
+enable the radio: the rootfs NetworkManager default remains Off, and saved
+wireless credentials and local transaction state are removed from the image.
+
+Startup uses `systemd-timesyncd` for network time. Legacy NTP hooks and the
+unused local sendmail service are disabled; Scripta SMTP alerts remain unchanged.
+An early permission-repair service prepares screen before cron and interactive
+services start, including when no pools are assigned.
+
+Inspection uses a disposable copy under ignored `tmp/`: the factory ext4
+filesystem needs journal recovery even when mounted read-only. Recovery must
+not alter the verified input image. `02-umount.sh` removes the inspection copy
+after unmounting and detaching its loop device.
+
+```bash
+scripts/01-fetch.sh
+sudo --preserve-env=PATH,BKB_FACTORY_IMG,BKB_MNT_BOOT,BKB_MNT_ROOT scripts/02-mount.sh
+sudo --preserve-env=PATH,BKB_FACTORY_IMG,BKB_MNT_BOOT,BKB_MNT_ROOT scripts/03-snapshot.sh
+sudo --preserve-env=PATH,BKB_MNT_BOOT,BKB_MNT_ROOT scripts/02-umount.sh
+scripts/04-apply-overlay.sh
+sudo --preserve-env=PATH,BKB_FACTORY_IMG,BKB_IMAGE_OUT,BKB_MNT_RW scripts/05-repack.sh
+scripts/06-compress.sh
+```
+
+The image is the factory SD image plus `overlay/`. It picks up whatever
+`sgminer` and bridge image are already in the overlay. Rebuilding those
+binaries does not change the image until you deliberately put the new files
+in the overlay.
+
+`05-repack.sh` rewrites rootfs ownership for the controller and then restores
+the `www-data` exceptions. If you add a path PHP must write, update that list
+in `05-repack.sh`. Compression defaults to two threads and preset 9. Set
+`BKB_XZ_THREADS` and `BKB_XZ_PRESET` to bound CPU/memory use; preset 6 is faster.
+The scripts preserve the factory input, do not overwrite existing artifacts,
+and remove only the explicit superseded paths in `scripts/prune-rootfs.sh`.
+
+Published compressed-image checksums, when you are comparing a release
+artifact, are published with the release. Raw `.img` bytes are not a stable
+checksum across hosts because some directory mtimes from the factory image
+are preserved.
+
+## Patch series, short form
+
+| Patches | Role |
+| --- | --- |
+| 0001, 0002, 0004, 0005 | Do not stall or silently refill a disabled board. 0003 is rejected. |
+| 0006–0016 | Routing, pool backup flag, BK-B default clock, reporting. |
+| 0017–0029 | Live fan, clock diagnostics, retry, per-board clocks. |
+| 0030 | Global versus individual clock generation. |
+| 0031 | Optional bridge-global `dest=1` transport. |
+| 0032 | Public 400 maps to clock index 30. Display echo stays a separate table. |
+| 0033 | Host diagnostic counters and trace, included from `driver-baikalu.c`. |
+| 0034 | Opt-in independent clock indices, strict configuration and explicit command readback. |
+| 0035 | Consistent clock-index API and configuration names; numeric values and wire behavior unchanged. |
+
+`apply-patches.sh` is the command that applies them. Do not hand-merge the
+series into one diff.

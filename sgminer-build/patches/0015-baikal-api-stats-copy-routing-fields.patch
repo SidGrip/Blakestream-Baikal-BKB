@@ -1,0 +1,37 @@
+From 1b7f27a2b0480b89253cfa9d2e95a3b23d3a44d0 Mon Sep 17 00:00:00 2001
+From: Blakestream-GaintB <sid@blakestream.local>
+Date: Sun, 17 May 2026 10:25:00 -0500
+Subject: [PATCH] baikal: copy stats routing fields before returning API data
+
+`baikal_api_stats()` appends driver-specific fields to the sgminer `stats`
+response, then returns the linked list to the generic API formatter. Values
+backed by local stack variables must be copied into the API list before the
+function returns.
+
+The `devs` API was already reporting per-board pool routing correctly, but
+`stats` could show garbage for `Primary Pool` and a stale boolean for
+`Failover Active`. Copy those local values so diagnostics and Clock History
+can trust the stats output.
+---
+ driver-baikalu.c | 6 +++---
+ 1 file changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/driver-baikalu.c b/driver-baikalu.c
+index 8fbffde..47ebd96 100644
+--- a/driver-baikalu.c
++++ b/driver-baikalu.c
+@@ -669,9 +669,9 @@ static struct api_data* baikal_api_stats(struct cgpu_info *cgpu)
+     root = api_add_int(root, "HWV", (int *)&miner->hw_ver, false);
+     root = api_add_int(root, "FWV", (int *)&miner->fw_ver, false);
+     root = api_add_string(root, "Algo", (char *)algorithm_type_str[thr->cgpu->algorithm.type], false);
+-    root = api_add_int(root, "Primary Pool", &primary_pool_no, false);
+-    root = api_add_int(root, "Effective Pool", &effective_pool_no, false);
+-    root = api_add_bool(root, "Failover Active", &failover_active, false);
++    root = api_add_int(root, "Primary Pool", &primary_pool_no, true);
++    root = api_add_int(root, "Effective Pool", &effective_pool_no, true);
++    root = api_add_bool(root, "Failover Active", &failover_active, true);
+
+     return (root);
+ }
+--
+2.43.0

@@ -1,0 +1,368 @@
+#!/usr/bin/env bash
+# Portable V2.2 QA entry point. Run it from any working directory.
+# Default phases need no miner, network, root, stock dump, or sgminer source.
+# Optional phases fail closed when their prerequisites are missing. A phase
+# that was not requested is reported as not run; that is not a pass.
+set -euo pipefail
+
+if ! command -v dirname >/dev/null 2>&1; then
+    echo "missing required dirname (coreutils)" >&2
+    exit 1
+fi
+SCRIPT_DIR=$(dirname -- "${BASH_SOURCE[0]}")
+ROOT=$(cd "${SCRIPT_DIR}/.." && pwd)
+PHP_BIN=${BKB_PHP:-php}
+NODE_BIN=${BKB_NODE:-node}
+PY_BIN=${BKB_PYTHON:-python3}
+
+DEFAULT_PHASES=(contract-php contract-node contract-python emulation-v1 emulation-active-slots)
+OPTIONAL_PHASES=(network source-baseline native native-tsan driver firmware-build arm-compat firmware-container)
+ALL_HOST_PHASES=("${DEFAULT_PHASES[@]}" native native-tsan driver)
+
+usage() {
+    cat <<EOF
+Usage: scripts/qa [phase ...]
+       scripts/qa --help
+       scripts/qa --describe
+
+Default phases (no arguments):
+  contract-php       PHP accepted-work, dev-activity, startup-count, and identity tests
+  contract-node      Node activity counters, polling, and unified Boards tests
+  contract-python    Python clock, recorder, report, wire-contract, and QA entry tests
+  emulation-v1       Unicorn smoke of the tracked v1 image (no stock dump)
+  emulation-active-slots  V1 inactive-slot selection and strict active failures
+
+Optional phases, each a failure if its tools or inputs are missing:
+  network           Offline network transaction, filesystem and real D-Bus type tests
+  source-baseline    Offline source bundle restoration and all 34 patches (git, patch)
+  native             ASan/UBSan diagnostic helper tests (patched sgminer tree, gcc)
+  native-tsan        ThreadSanitizer concurrency test (x86_64 setarch -R)
+  driver             Host harness that includes driver-baikalu.c
+  firmware-build     Rebuild v1 from a verified stock dump (ARM bare-metal gcc)
+  arm-compat         Docker ARMv7 configure/build plus the native tests
+  firmware-container Offline firmware/HTTP/sudo/screen integration (prepared Docker image)
+
+  host               default phases plus native and native-tsan
+  all                host plus driver
+
+Paths come from this script's location, not the current directory. Overrides:
+  BKB_PHP BKB_NODE BKB_PYTHON
+  BKB_SGMINER_SRC BKB_QA_OUT
+  BKB_V1_IMAGE
+  BKB_STOCK_DUMP BKB_FIRMWARE_OUT
+  BKB_ARM_IMAGE BKB_ARM_OUTPUT
+  BKB_FIRMWARE_QA_IMAGE
+
+Default QA does not ssh, flash, apt-install, docker-pull, or clone.
+EOF
+}
+
+describe() {
+    cat <<EOF
+Repository: ${ROOT}
+Default phases are required. An optional phase not run is not a pass:
+  ${OPTIONAL_PHASES[*]}
+Invoke them by name. A missing prerequisite of a requested phase exits non-zero.
+EOF
+}
+
+require_exec() {
+    local label=$1
+    local bin=$2
+    if [[ "${bin}" == */* ]]; then
+        if [[ ! -x "${bin}" ]]; then
+            echo "missing required ${label}: ${bin}" >&2
+            return 1
+        fi
+        return 0
+    fi
+    if ! command -v "${bin}" >/dev/null 2>&1; then
+        echo "missing required ${label}: ${bin}" >&2
+        return 1
+    fi
+}
+
+phase_contract_php() {
+    require_exec php "${PHP_BIN}"
+    "${PHP_BIN}" "${ROOT}/scripts/test-web-auth.php"
+    "${PHP_BIN}" "${ROOT}/scripts/test-accepted-work.php"
+    "${PHP_BIN}" "${ROOT}/scripts/test-dev-activity.php"
+    "${PHP_BIN}" "${ROOT}/scripts/test-status-startup-count.php"
+    "${PHP_BIN}" "${ROOT}/scripts/test-status-estimates.php"
+    "${PHP_BIN}" "${ROOT}/scripts/test-manual-fan.php"
+    "${PHP_BIN}" "${ROOT}/scripts/test-fan-pending.php"
+    "${PHP_BIN}" "${ROOT}/scripts/test-settings-save.php"
+    "${PHP_BIN}" "${ROOT}/scripts/test-firmware-identity.php"
+    "${PHP_BIN}" "${ROOT}/scripts/test-firmware-runtime.php"
+    "${PHP_BIN}" "${ROOT}/scripts/test-firmware-failure.php"
+    "${PHP_BIN}" "${ROOT}/scripts/test-clock-index-settings.php"
+    "${PHP_BIN}" "${ROOT}/scripts/test-clock-profiles.php"
+    "${PHP_BIN}" "${ROOT}/scripts/test-network-probe.php"
+    "${PHP_BIN}" "${ROOT}/scripts/test-network-settings.php"
+    "${PHP_BIN}" "${ROOT}/scripts/test-connection-status.php"
+    "${PHP_BIN}" "${ROOT}/scripts/test-wifi-settings.php"
+    "${PHP_BIN}" "${ROOT}/scripts/test-clock-log.php"
+    "${PHP_BIN}" "${ROOT}/scripts/test-measured-rates.php"
+    "${PHP_BIN}" "${ROOT}/scripts/test-measured-report.php"
+    "${PHP_BIN}" "${ROOT}/scripts/test-dev-storage.php"
+    "${PHP_BIN}" "${ROOT}/scripts/test-diagnostic-logs.php"
+    "${PHP_BIN}" "${ROOT}/scripts/test-clock-baseline.php"
+    "${PHP_BIN}" "${ROOT}/scripts/test-backup-endpoint.php"
+}
+
+phase_firmware_container() {
+    require_exec docker docker
+    bash "${ROOT}/scripts/test-firmware-container.sh"
+}
+
+phase_contract_node() {
+    require_exec node "${NODE_BIN}"
+    "${NODE_BIN}" "${ROOT}/scripts/test-web-password-ui.js"
+    "${NODE_BIN}" "${ROOT}/scripts/test-dev-activity.js"
+    "${NODE_BIN}" "${ROOT}/scripts/test-dev-boards-tab.js"
+    "${NODE_BIN}" "${ROOT}/scripts/test-clock-index-ui.js"
+    "${NODE_BIN}" "${ROOT}/scripts/test-dev-network-logs.js"
+    "${NODE_BIN}" "${ROOT}/scripts/test-measured-rates-ui.js"
+    "${NODE_BIN}" "${ROOT}/scripts/test-status-presentation.js"
+    "${NODE_BIN}" "${ROOT}/scripts/test-view-session.js"
+    "${NODE_BIN}" "${ROOT}/scripts/test-fan-pending.js"
+    "${NODE_BIN}" "${ROOT}/scripts/test-backup-ui.js"
+    "${NODE_BIN}" "${ROOT}/scripts/test-miner-tabs.js"
+    "${NODE_BIN}" "${ROOT}/scripts/test-theme.js"
+    "${NODE_BIN}" "${ROOT}/scripts/test-connection-status.js"
+    "${NODE_BIN}" "${ROOT}/scripts/test-firmware-progress-ui.js"
+    "${NODE_BIN}" "${ROOT}/scripts/test-settings-tabs.js"
+    "${NODE_BIN}" "${ROOT}/scripts/test-settings-features.js"
+    "${NODE_BIN}" "${ROOT}/scripts/test-dev-logs.js"
+    "${NODE_BIN}" "${ROOT}/scripts/test-network-settings-ui.js"
+    "${NODE_BIN}" "${ROOT}/scripts/test-wifi-settings-ui.js"
+    "${NODE_BIN}" "${ROOT}/scripts/test-network-login.js"
+}
+
+phase_network() {
+    require_exec python3 "${PY_BIN}"
+    "${PY_BIN}" -c 'import dbus' || { echo 'network QA requires python3-dbus in BKB_PYTHON' >&2; return 1; }
+    export PYTHONDONTWRITEBYTECODE=1
+    "${PY_BIN}" "${ROOT}/scripts/test-network-bindings.py"
+    "${PY_BIN}" "${ROOT}/scripts/test-network-runtime.py"
+    "${PY_BIN}" "${ROOT}/scripts/test-network-guards.py"
+    "${PY_BIN}" "${ROOT}/scripts/test-network-transactions.py"
+    "${PY_BIN}" "${ROOT}/scripts/test-wifi-settings.py"
+    "${PY_BIN}" "${ROOT}/scripts/test-wifi-bindings.py"
+}
+
+phase_contract_python() {
+    require_exec python3 "${PY_BIN}"
+    require_exec php "${PHP_BIN}"
+    export PYTHONDONTWRITEBYTECODE=1
+    "${PY_BIN}" "${ROOT}/scripts/test-firmware-firstboot.py"
+    "${PY_BIN}" "${ROOT}/scripts/test-clock-config.py"
+    "${PY_BIN}" "${ROOT}/scripts/test-clock-index-names.py"
+    "${PY_BIN}" "${ROOT}/scripts/test-manual-fan.py"
+    "${PY_BIN}" "${ROOT}/scripts/test-firmware-job.py"
+    "${PY_BIN}" "${ROOT}/scripts/test-firmware-container-runner.py"
+    "${PY_BIN}" "${ROOT}/scripts/test-bkb-clock-trial.py"
+    "${PY_BIN}" "${ROOT}/scripts/test-controller-memory.py"
+    "${PY_BIN}" "${ROOT}/scripts/test-diagnostic-log-recorder.py"
+    "${PY_BIN}" "${ROOT}/scripts/test-clock-baseline-export.py"
+    "${PY_BIN}" "${ROOT}/scripts/test-accepted-work-recorder.py"
+    "${PY_BIN}" "${ROOT}/scripts/test-hashrate-accepted-history.py"
+    "${PY_BIN}" "${ROOT}/scripts/test-backup-review.py"
+    "${PY_BIN}" "${ROOT}/scripts/test-measured-rates.py"
+    "${PY_BIN}" "${ROOT}/scripts/test-measured-rate-store.py"
+    "${PY_BIN}" "${ROOT}/scripts/test-measured-rate-service.py"
+    "${PY_BIN}" "${ROOT}/scripts/test-measured-recovery.py"
+    "${PY_BIN}" "${ROOT}/scripts/test-measured-image-prune.py"
+    "${PY_BIN}" "${ROOT}/scripts/test-bkb-diagnostics-report.py"
+    "${PY_BIN}" "${ROOT}/scripts/test-bkb-diagnostics-recorder.py"
+    "${PY_BIN}" "${ROOT}/scripts/test-bkb-wire-contract.py" "${ROOT}"
+    "${PY_BIN}" "${ROOT}/scripts/test-qa-entrypoints.py"
+    "${PY_BIN}" "${ROOT}/scripts/test-image-packaging.py"
+    "${PY_BIN}" "${ROOT}/scripts/test-image-startup.py"
+    "${PY_BIN}" "${ROOT}/scripts/test-image-wifi.py"
+}
+
+phase_emulation_image() {
+    local version=$1 image=$2
+    require_exec python3 "${PY_BIN}"
+    if [[ ! -f "${image}" ]]; then
+        echo "missing ${version} reference image: ${image}" >&2
+        echo "Set BKB_V1_IMAGE or keep the tracked firmware-custom/build image." >&2
+        echo "This phase does not rebuild from a stock dump and does not skip." >&2
+        return 1
+    fi
+    if ! "${PY_BIN}" -c 'import unicorn' >/dev/null 2>&1; then
+        echo "missing required Python module: unicorn (tested with 2.1.4)" >&2
+        echo "Install it yourself, for example: ${PY_BIN} -m pip install --user 'unicorn==2.1.4'" >&2
+        echo "Default QA does not install Python packages." >&2
+        return 1
+    fi
+    PYTHONDONTWRITEBYTECODE=1 "${PY_BIN}" "${ROOT}/firmware-custom/smoke_assert_${version}.py" "${image}"
+}
+
+phase_emulation_v1() {
+    phase_emulation_image v1 "${BKB_V1_IMAGE:-${ROOT}/firmware-custom/build/bkb-stm32f407-flash-clockmod-v1.bin}"
+}
+
+phase_emulation_active_slots() {
+    phase_emulation_image active_slots "${BKB_V1_IMAGE:-${ROOT}/firmware-custom/build/bkb-stm32f407-flash-clockmod-v1.bin}"
+}
+
+phase_source_baseline() {
+    require_exec python3 "${PY_BIN}"
+    require_exec git git
+    require_exec patch patch
+    require_exec sha256sum sha256sum
+    PYTHONDONTWRITEBYTECODE=1 "${PY_BIN}" "${ROOT}/scripts/test-sgminer-source.py"
+}
+
+phase_native() {
+    bash "${ROOT}/sgminer-build/test-native.sh" helpers
+}
+
+phase_native_tsan() {
+    bash "${ROOT}/sgminer-build/test-native.sh" tsan
+}
+
+phase_driver() {
+    bash "${ROOT}/sgminer-build/test-native.sh" driver
+}
+
+phase_firmware_build() {
+    local out=${BKB_FIRMWARE_OUT:-${ROOT}/sgminer-build/build/firmware-rebuild}
+    local version built ref ref_sha built_sha
+    local -a args
+    for version in v1; do
+        args=(--out-dir "${out}" "${version}")
+        if [[ -n "${BKB_STOCK_DUMP:-}" ]]; then
+            args=(--dump "${BKB_STOCK_DUMP}" "${args[@]}")
+        fi
+        bash "${ROOT}/firmware-custom/build.sh" "${args[@]}" || return
+        built="${out}/bkb-stm32f407-flash-clockmod-${version}.bin"
+        ref="${ROOT}/firmware-custom/build/bkb-stm32f407-flash-clockmod-${version}.bin"
+        ref_sha=$(sha256sum "${ref}" | awk '{print $1}')
+        built_sha=$(sha256sum "${built}" | awk '{print $1}')
+        echo "reference ${version} sha256 ${ref_sha}"
+        echo "rebuilt   ${version} sha256 ${built_sha}"
+        if [[ "${ref_sha}" != "${built_sha}" ]]; then
+            echo "rebuilt ${version} image does not match the tracked reference" >&2
+            echo "The reference was built with gcc-arm-none-eabi 13.2. A different compiler can change stub bytes." >&2
+            echo "The tracked image was not replaced." >&2
+            return 1
+        fi
+        echo "rebuilt ${version} matches the tracked reference and was not copied over it"
+    done
+}
+
+phase_arm_compat() {
+    bash "${ROOT}/sgminer-build/build-arm.sh"
+}
+
+run_phase() {
+    local name=$1
+    local fn=$2
+    echo "=== ${name} ==="
+    set +e
+    (
+        set -euo pipefail
+        "${fn}"
+    )
+    local status=$?
+    set -e
+    if [[ "${status}" -eq 0 ]]; then
+        RESULTS+=("${name} PASS")
+        echo "--- ${name} PASS ---"
+    else
+        RESULTS+=("${name} FAIL")
+        FAILED=1
+        echo "--- ${name} FAIL (exit ${status}) ---" >&2
+    fi
+}
+
+requested=()
+if [[ $# -eq 0 ]]; then
+    requested=("${DEFAULT_PHASES[@]}")
+else
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            -h|--help)
+                usage
+                exit 0
+                ;;
+            --describe)
+                describe
+                exit 0
+                ;;
+            host)
+                requested+=("${ALL_HOST_PHASES[@]}")
+                shift
+                ;;
+            all)
+                requested+=( "${ALL_HOST_PHASES[@]}" driver )
+                shift
+                ;;
+            contract-php|contract-node|contract-python|emulation-v1|emulation-active-slots|network|source-baseline|native|native-tsan|driver|firmware-build|arm-compat|firmware-container)
+                requested+=("$1")
+                shift
+                ;;
+            *)
+                echo "unknown phase: $1" >&2
+                usage >&2
+                exit 2
+                ;;
+        esac
+    done
+fi
+
+RESULTS=()
+FAILED=0
+for phase in "${requested[@]}"; do
+    case "${phase}" in
+        contract-php) run_phase contract-php phase_contract_php ;;
+        contract-node) run_phase contract-node phase_contract_node ;;
+        contract-python) run_phase contract-python phase_contract_python ;;
+        emulation-v1) run_phase emulation-v1 phase_emulation_v1 ;;
+        emulation-active-slots) run_phase emulation-active-slots phase_emulation_active_slots ;;
+        network) run_phase network phase_network ;;
+        source-baseline) run_phase source-baseline phase_source_baseline ;;
+        native) run_phase native phase_native ;;
+        native-tsan) run_phase native-tsan phase_native_tsan ;;
+        driver) run_phase driver phase_driver ;;
+        firmware-build) run_phase firmware-build phase_firmware_build ;;
+        arm-compat) run_phase arm-compat phase_arm_compat ;;
+        firmware-container) run_phase firmware-container phase_firmware_container ;;
+        *)
+            echo "unhandled phase: ${phase}" >&2
+            exit 2
+            ;;
+    esac
+done
+
+echo
+echo "QA root: ${ROOT}"
+echo "Requested:"
+for row in "${RESULTS[@]}"; do
+    echo "  ${row}"
+done
+
+not_run=()
+for opt in "${OPTIONAL_PHASES[@]}"; do
+    seen=0
+    for phase in "${requested[@]}"; do
+        if [[ "${phase}" == "${opt}" ]]; then
+            seen=1
+        fi
+    done
+    if [[ "${seen}" -eq 0 ]]; then
+        not_run+=("${opt}")
+    fi
+done
+if [[ "${#not_run[@]}" -gt 0 ]]; then
+    echo "Not run (optional, not a pass): ${not_run[*]}"
+fi
+if [[ "${FAILED}" -ne 0 ]]; then
+    echo "RESULT: FAIL"
+    exit 1
+fi
+echo "RESULT: PASS"
+exit 0

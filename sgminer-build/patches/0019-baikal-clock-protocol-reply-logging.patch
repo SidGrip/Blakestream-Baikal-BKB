@@ -1,0 +1,152 @@
+Log BK-B clock protocol request/reply details.
+
+The dashboard clock and hashrate are based on the requested sgminer clock, but
+pool-side testing showed no physical hashrate increase at higher requested
+clocks. Log the SET_OPTION request, SET_OPTION reply, and GET_INFO firmware
+echo bytes when the requested clock code changes so hardware tests can prove
+whether the firmware accepts, ignores, or rewrites the clock command.
+
+Also clear `msg.data` before parsing each reply. SET_OPTION replies currently
+come back with `len=0`, so stale request bytes must not be mistaken for a
+firmware echo.
+
+--- a/driver-baikalu.c
++++ b/driver-baikalu.c
+@@ -41,6 +41,15 @@ static int baikal_clock_command_code(uint16_t clk)
+     return (clk == 0) ? 0 : ((clk / 10) % 20) + 2;
+ }
+ 
++static void baikal_log_protocol_msg(const char *label, int requested_clock, const baikal_msg *msg)
++{
++    applog(LOG_NOTICE,
++           "BK-B %s reply requested=%d miner_id=%d cmd=0x%02x param=0x%02x dest=0x%02x len=%u data[0..6]=%02x %02x %02x %02x %02x %02x %02x",
++           label, requested_clock, msg->miner_id, msg->cmd, msg->param, msg->dest, (unsigned int)msg->len,
++           msg->data[0], msg->data[1], msg->data[2], msg->data[3],
++           msg->data[4], msg->data[5], msg->data[6]);
++}
++
+ static void baikal_record_clock(struct miner_info *miner, struct baikal_info *info, int firmware_clock_code)
+ {
+     miner->reported_clock_code = firmware_clock_code;
+@@ -283,6 +292,8 @@ static int baikal_readmsg(struct cgpu_info *baikal, baikal_msg *msg, int size)
+     msg->cmd        = buf[pos++];
+     msg->param      = buf[pos++];
+     msg->dest       = buf[pos++];
++    memset(msg->data, 0, sizeof(msg->data));
++    msg->len = 0;
+ 
+     for (len = 0; pos < amount - 2; len++, pos += 2) {
+         msg->data[len] = buf[pos + 1];
+@@ -420,7 +431,10 @@ static bool baikal_getinfo(struct cgpu_info *baikal)
+     miner->working      = true;
+     miner->overheated   = false;
+-	
+-	applog(LOG_ERR, "Firmware Version: %d - Hardware Version: %d - BBG?: %d - Clock: %d - Clock << 1: %d - ASIC Count: %d - ASIC Count R: %d - ASIC Ver: %d.", msg.data[0], msg.data[1], msg.data[2], msg.data[3], msg.data[3] << 1, msg.data[4], msg.data[5], msg.data[6]); // Added for debug 26.03.18
++    applog(LOG_NOTICE,
++           "BK-B GET_INFO decoded ASC %d requested=%d firmware_clock_code=%d firmware_echo=%dMHz fw=%d hw=%d asics=%d",
++           baikal->miner_id, info->clock, msg.data[3], msg.data[3] << 1,
++           msg.data[0], msg.data[1], msg.data[4]);
++    baikal_log_protocol_msg("GET_INFO", info->clock, &msg);
+     return (true);
+ }
+ 
+@@ -430,6 +444,7 @@ static bool baikal_setoption(struct cgpu_info *baikal, uint16_t clk, uint8_t mod
+     int amount;
+     int sent_clock_code;
+     int previous_clock_code;
++    bool log_protocol;
+     struct baikal_info *info = baikal->device_data;
+     struct miner_info *miner = &info->miners[baikal->miner_id];
+     baikal_msg msg = {0, };
+@@ -438,6 +453,7 @@ static bool baikal_setoption(struct cgpu_info *baikal, uint16_t clk, uint8_t mod
+     msg.cmd         = BAIKAL_SET_OPTION;
+     sent_clock_code = baikal_clock_command_code(clk);
+     previous_clock_code = miner->sent_clock_code;
++    log_protocol = (previous_clock_code == 0 || previous_clock_code != sent_clock_code);
+     msg.data[0] = sent_clock_code;
+     msg.data[1] = mode;
+     msg.data[2] = temp;
+@@ -459,6 +475,13 @@ static bool baikal_setoption(struct cgpu_info *baikal, uint16_t clk, uint8_t mod
+         return (false);
+     }
+ 
++    if (log_protocol) {
++        applog(LOG_NOTICE,
++               "BK-B SET_OPTION request ASC %d requested=%dMHz sent_code=%d mode=%u cutoff=%u fan=%u",
++               baikal->miner_id, (int)clk, sent_clock_code, mode, temp, fanspeed);
++        baikal_log_protocol_msg("SET_OPTION", clk, &msg);
++    }
++
+     mutex_unlock(baikal->mutex);
+ 
+     miner->sent_clock_code = sent_clock_code;
+--- a/driver-baikals.c
++++ b/driver-baikals.c
+@@ -41,6 +41,15 @@ static int baikal_clock_command_code(uint16_t clk)
+     return (clk == 0) ? 0 : ((clk / 10) % 20) + 2;
+ }
+ 
++static void baikal_log_protocol_msg(const char *label, int requested_clock, const baikal_msg *msg)
++{
++    applog(LOG_NOTICE,
++           "BK-B %s reply requested=%d miner_id=%d cmd=0x%02x param=0x%02x dest=0x%02x len=%u data[0..6]=%02x %02x %02x %02x %02x %02x %02x",
++           label, requested_clock, msg->miner_id, msg->cmd, msg->param, msg->dest, (unsigned int)msg->len,
++           msg->data[0], msg->data[1], msg->data[2], msg->data[3],
++           msg->data[4], msg->data[5], msg->data[6]);
++}
++
+ static void baikal_record_clock(struct miner_info *miner, struct baikal_info *info, int firmware_clock_code)
+ {
+     miner->reported_clock_code = firmware_clock_code;
+@@ -260,6 +269,8 @@ static int baikal_readmsg(struct cgpu_info *baikal, baikal_msg *msg, int size)
+     msg->cmd        = buf[pos++];
+     msg->param      = buf[pos++];
+     msg->dest       = buf[pos++];
++    memset(msg->data, 0, sizeof(msg->data));
++    msg->len = 0;
+ 
+     for (len = 0; pos < amount - 2; len++, pos += 2) {
+         msg->data[len] = buf[pos + 1];
+@@ -396,6 +407,12 @@ static bool baikal_getinfo(struct cgpu_info *baikal)
+     miner->working      = true;
+     miner->overheated   = false;
+ 
++    applog(LOG_NOTICE,
++           "BK-B GET_INFO decoded ASC %d requested=%d firmware_clock_code=%d firmware_echo=%dMHz fw=%d hw=%d asics=%d",
++           baikal->miner_id, info->clock, msg.data[3], msg.data[3] << 1,
++           msg.data[0], msg.data[1], msg.data[4]);
++    baikal_log_protocol_msg("GET_INFO", info->clock, &msg);
++
+     return (true);
+ }
+ 
+@@ -405,6 +422,7 @@ static bool baikal_setoption(struct cgpu_info *baikal, uint16_t clk, uint8_t mod
+     int amount;
+     int sent_clock_code;
+     int previous_clock_code;
++    bool log_protocol;
+     struct baikal_info *info = baikal->device_data;
+     struct miner_info *miner = &info->miners[baikal->miner_id];
+     baikal_msg msg = {0, };
+@@ -413,6 +431,7 @@ static bool baikal_setoption(struct cgpu_info *baikal, uint16_t clk, uint8_t mod
+     msg.cmd         = BAIKAL_SET_OPTION;
+     sent_clock_code = baikal_clock_command_code(clk);
+     previous_clock_code = miner->sent_clock_code;
++    log_protocol = (previous_clock_code == 0 || previous_clock_code != sent_clock_code);
+     msg.data[0] = sent_clock_code;
+     msg.data[1] = mode;
+     msg.data[2] = temp;
+@@ -434,6 +453,13 @@ static bool baikal_setoption(struct cgpu_info *baikal, uint16_t clk, uint8_t mod
+         return (false);
+     }
+ 
++    if (log_protocol) {
++        applog(LOG_NOTICE,
++               "BK-B SET_OPTION request ASC %d requested=%dMHz sent_code=%d mode=%u cutoff=%u fan=%u",
++               baikal->miner_id, (int)clk, sent_clock_code, mode, temp, fanspeed);
++        baikal_log_protocol_msg("SET_OPTION", clk, &msg);
++    }
++
+     mutex_unlock(baikal->mutex);
+ 
+     miner->sent_clock_code = sent_clock_code;

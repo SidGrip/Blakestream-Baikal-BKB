@@ -1,0 +1,27 @@
+<style>
+  .terminal-page { margin-top: 16px; }
+  .terminal-toolbar { margin-bottom: 10px; }
+  .terminal-toolbar .text-muted { margin-left: 10px; }
+  .terminal-frame-wrap {
+    height: calc(100vh - 245px);
+    min-height: 460px;
+    border: 1px solid #2b3642;
+    background: #000;
+  }
+  #shellinaboxframe {
+    width: 100%;
+    height: 100%;
+    border: 0;
+    display: block;
+  }
+</style>
+
+<div class="terminal-page">
+  <div class="terminal-toolbar">
+    <button type="button" class="btn btn-default btn-sm" ng-click="terminalOpenWindow()">Open in new window</button>
+    <span class="text-muted">{{terminalUrl}}</span>
+  </div>
+  <div id="shellinaboxdiv" class="terminal-frame-wrap">
+    <iframe id="shellinaboxframe" title="Shell terminal"></iframe>
+  </div>
+</div>

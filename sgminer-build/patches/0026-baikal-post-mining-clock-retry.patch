@@ -1,0 +1,237 @@
+--- a/driver-baikal.h
++++ b/driver-baikal.h
+@@ -17,9 +17,9 @@
+ #define BAIKAL_POOL_UNSET       (-1)
+ 
+ /* Hardware note: user MHz is quantized in baikal_setoption():
+- * msg.data[0] = (clk == 0) ? clk : ((clk / 10) % 20) + 2;
+- * The firmware only accepts discrete PLL steps. The 260-500 range is
+- * the supported UI range, not a guarantee of 1 MHz resolution. */
++ * msg.data[0] = clamp((clk / 10) - 18, 8, 32).
++ * The firmware only accepts discrete PLL steps. The 260-500 range is the
++ * supported UI range, not a guarantee of 1 MHz resolution. */
+ #define BAIKAL_CLK_MIN  		(260)
+ #define BAIKAL_CLK_MAX		    (500)
+ 
+@@ -81,6 +81,10 @@
+     int     reported_clock;
+     int     reported_clock_code;
+     int     sent_clock_code;
++    bool    clock_retry_pending;
++    bool    clock_retry_done;
++    uint8_t clock_retry_failures;
++    time_t  clock_retry_last_time;
+     int     bbg;
+     bool    working;
+     bool    overheated;
+--- a/driver-baikalu.c
++++ b/driver-baikalu.c
+@@ -40,6 +40,8 @@
+ 
+ #define BAIKAL_FAN_APPLY_INTERVAL_SEC 30
+ #define BAIKAL_FAN_FAILURE_BACKOFF_SEC 60
++#define BAIKAL_CLOCK_RETRY_DELAY_SEC 5
++#define BAIKAL_CLOCK_RETRY_MAX_FAILURES 2
+ 
+ static int baikal_clock_command_code(uint16_t clk)
+ {
+@@ -120,6 +122,14 @@
+     miner->clock = info->clock;
+ }
+ 
++static void baikal_schedule_clock_retry(struct miner_info *miner)
++{
++    miner->clock_retry_pending = true;
++    miner->clock_retry_done = false;
++    miner->clock_retry_failures = 0;
++    miner->clock_retry_last_time = 0;
++}
++
+ static void baikal_sanitize_temps(int *recovertemp, int *cutofftemp)
+ {
+     if (*recovertemp < BAIKAL_TEMP_MIN) {
+@@ -539,17 +549,24 @@
+ }
+ 
+ 
+-static bool baikal_setoption(struct cgpu_info *baikal, uint16_t clk, uint8_t mode, uint8_t temp, uint8_t fanspeed)
++static bool baikal_setoption_for_miner(struct cgpu_info *baikal, int miner_id,
++                                       uint16_t clk, uint8_t mode, uint8_t temp,
++                                       uint8_t fanspeed)
+ {
+     int amount;
+     int sent_clock_code;
+     int previous_clock_code;
+     bool log_protocol;
+     struct baikal_info *info = baikal->device_data;
+-    struct miner_info *miner = &info->miners[baikal->miner_id];
++    struct miner_info *miner;
+     baikal_msg msg = {0, };
+ 
+-    msg.miner_id    = baikal->miner_id;
++    if (!baikal_pin_index_valid(miner_id) || miner_id >= info->miner_count)
++        return false;
++
++    miner = &info->miners[miner_id];
++
++    msg.miner_id    = miner_id;
+     msg.cmd         = BAIKAL_SET_OPTION;
+     baikal_log_raw_clock_experiment_build();
+     sent_clock_code = baikal_experiment_clock_code(baikal_clock_command_code(clk), clk);
+@@ -579,7 +596,7 @@
+     if (log_protocol) {
+         applog(LOG_NOTICE,
+                "BK-B SET_OPTION request ASC %d requested=%dMHz sent_code=%d mode=%u cutoff=%u fan=%u",
+-               baikal->miner_id, (int)clk, sent_clock_code, mode, temp, fanspeed);
++               miner_id, (int)clk, sent_clock_code, mode, temp, fanspeed);
+         baikal_log_protocol_msg("SET_OPTION", clk, &msg);
+     }
+ 
+@@ -588,12 +605,67 @@
+     miner->sent_clock_code = sent_clock_code;
+     if (previous_clock_code != sent_clock_code) {
+         applog(LOG_NOTICE, "BK-B sent PLL code %d for requested %d MHz on ASC %d",
+-               sent_clock_code, (int)clk, baikal->miner_id);
++               sent_clock_code, (int)clk, miner_id);
+     }
+ 
+     return (true);
+ }
+ 
++static bool baikal_setoption(struct cgpu_info *baikal, uint16_t clk, uint8_t mode,
++                             uint8_t temp, uint8_t fanspeed)
++{
++    return baikal_setoption_for_miner(baikal, baikal->miner_id, clk, mode, temp, fanspeed);
++}
++
++static void baikal_apply_clock_retry(struct cgpu_info *baikal, int miner_id)
++{
++    struct baikal_info *info = baikal->device_data;
++    struct miner_info *miner;
++    time_t now;
++
++    if (!baikal_pin_index_valid(miner_id) || miner_id >= info->miner_count)
++        return;
++
++    miner = &info->miners[miner_id];
++    if (!miner->clock_retry_pending || miner->clock_retry_done || !miner->working)
++        return;
++
++    if (miner->clock_retry_failures >= BAIKAL_CLOCK_RETRY_MAX_FAILURES) {
++        miner->clock_retry_pending = false;
++        applog(LOG_WARNING, "BK-B post-mining clock retry abandoned on ASC %d after %u failures",
++               miner_id, (unsigned int)miner->clock_retry_failures);
++        return;
++    }
++
++    now = time(NULL);
++    if (miner->clock_retry_last_time != 0 &&
++        now - miner->clock_retry_last_time < BAIKAL_CLOCK_RETRY_DELAY_SEC)
++        return;
++
++    miner->clock_retry_last_time = now;
++    applog(LOG_NOTICE,
++           "BK-B post-mining clock retry ASC %d requested=%dMHz sent_code=%d current_echo=%dMHz fan=%u",
++           miner_id, info->clock, miner->sent_clock_code, miner->reported_clock,
++           (unsigned int)info->fanspeed);
++
++    if (baikal_setoption_for_miner(baikal, miner_id, info->clock,
++                                  to_baikal_algorithm(baikal->algorithm.type),
++                                  info->cutofftemp, info->fanspeed) == true) {
++        miner->clock_retry_pending = false;
++        miner->clock_retry_done = true;
++        applog(LOG_NOTICE,
++               "BK-B post-mining clock retry OK ASC %d requested=%dMHz sent_code=%d current_echo=%dMHz",
++               miner_id, info->clock, miner->sent_clock_code, miner->reported_clock);
++        return;
++    }
++
++    miner->clock_retry_failures++;
++    applog(LOG_WARNING,
++           "BK-B post-mining clock retry failed ASC %d requested=%dMHz failure=%u/%u",
++           miner_id, info->clock, (unsigned int)miner->clock_retry_failures,
++           (unsigned int)BAIKAL_CLOCK_RETRY_MAX_FAILURES);
++}
++
+ static void baikal_queue_fan(struct baikal_info *info, uint8_t fan)
+ {
+     mutex_lock(&baikal_fan_lock);
+@@ -768,6 +840,7 @@
+             tmp = usb_free_cgpu(tmp);
+             continue;
+         }
++        baikal_schedule_clock_retry(miner);
+ 
+         if (!add_cgpu(tmp)) {
+             tmp = usb_free_cgpu(tmp);
+@@ -868,6 +941,7 @@
+     if (baikal_setoption(baikal, clock, to_baikal_algorithm(default_profile.algorithm.type), cutofftemp, fanspeed) != true) {
+         goto out;
+     }
++    baikal_schedule_clock_retry(miner);
+ 
+     if (!add_cgpu(baikal)) {
+         goto out;
+@@ -936,6 +1010,9 @@
+     root = api_add_int(root, "ReportedClock", &miner->reported_clock, false);
+     root = api_add_int(root, "ReportedClockCode", &miner->reported_clock_code, false);
+     root = api_add_int(root, "SentClockCode", &miner->sent_clock_code, false);
++    root = api_add_bool(root, "ClockRetryPending", &miner->clock_retry_pending, false);
++    root = api_add_bool(root, "ClockRetryDone", &miner->clock_retry_done, false);
++    root = api_add_uint8(root, "ClockRetryFailures", &miner->clock_retry_failures, false);
+     root = api_add_uint8(root, "FanPercent", &fan_percent, true);
+     root = api_add_bool(root, "FanPending", &fan_pending, true);
+     root = api_add_uint8(root, "PendingFanPercent", &pending_fan_percent, true);
+@@ -1230,6 +1307,10 @@
+     struct miner_info *miner;
+     baikal_msg msg = {0, };
+     int i;
++    bool board_requested_work;
++    bool board_refill_allowed;
++    bool board_retry_allowed;
++    struct thr_info *t;
+ 
+     for (i = 0; i < info->miner_count; i++) {
+         miner = &info->miners[i];
+@@ -1254,23 +1335,24 @@
+             mutex_unlock(baikal->mutex);
+ 
+             miner->temp = msg.data[6];
++            board_requested_work = ((msg.param & 0x02) != 0);
++            t = mining_thr[miner->thr_id];
++            board_refill_allowed = (!t || !t->cgpu || t->cgpu->deven != DEV_DISABLED);
++            board_retry_allowed = (t && t->cgpu && t->cgpu->deven != DEV_DISABLED);
+ 
+             if (msg.param & 0x01) {
+                 baikal_checknonce(baikal, &msg);
+             }
+ 
+-            if (msg.param & 0x02) {
++            if (board_requested_work) {
+                 /* PATCH 5: skip auto-refill for administratively disabled
+                  * miners. Patch 1 only covered baikal_update_work; this is
+                  * the OTHER work-push path. Without this skip, the firmware
+                  * keeps requesting more work via the result-poll bit and
+                  * the disabled board hashes forever. With this skip the
+                  * FIFO drains naturally and the board goes truly idle. */
+-                {
+-                    struct thr_info *_t = mining_thr[miner->thr_id];
+-                    if (!_t || !_t->cgpu || _t->cgpu->deven != DEV_DISABLED) {
+-                        baikal_send_work(baikal, i);
+-                    }
++                if (board_refill_allowed) {
++                    baikal_send_work(baikal, i);
+                 }
+             }
+ 
+@@ -1285,6 +1367,10 @@
+                 miner->overheated = false;
+             }
+ 
++            if (board_requested_work && board_retry_allowed) {
++                baikal_apply_clock_retry(baikal, i);
++            }
++
+             cgsleep_ms(1);
+         }
+     }

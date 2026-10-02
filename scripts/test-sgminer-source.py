@@ -1,0 +1,126 @@
+#!/usr/bin/env python3
+"""Exercise the bundled source and patch path without network or compilation."""
+
+import os
+from pathlib import Path
+import shutil
+import subprocess
+import tempfile
+import unittest
+
+
+ROOT = Path(__file__).resolve().parent.parent
+PIN = '3cde8deca53f83ac65bc685b988166bd17930753'
+
+
+class BundledSourceTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(prefix='bkb offline source ')
+        self.addCleanup(self.temp.cleanup)
+        self.work = Path(self.temp.name)
+        self.env = os.environ.copy()
+        for key in ('BKB_SGMINER_URL', 'BKB_SGMINER_SRC', 'GIT_DIR',
+                    'GIT_WORK_TREE', 'GIT_OBJECT_DIRECTORY',
+                    'GIT_ALTERNATE_OBJECT_DIRECTORIES'):
+            self.env.pop(key, None)
+        self.env.update(GIT_ALLOW_PROTOCOL='file', GIT_TERMINAL_PROMPT='0',
+                        GIT_CONFIG_NOSYSTEM='1', GIT_CONFIG_GLOBAL=os.devnull)
+
+    def run_command(self, args, success=True):
+        result = subprocess.run(
+            [str(arg) for arg in args], cwd=str(self.work), env=self.env,
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            universal_newlines=True)
+        if success:
+            self.assertEqual(result.returncode, 0, result.stdout)
+        else:
+            self.assertNotEqual(result.returncode, 0, result.stdout)
+        return result.stdout
+
+    def fetch(self, source, root=ROOT, success=True, extra=()):
+        return self.run_command(
+            ['bash', root / 'sgminer-build/fetch-baseline.sh', '--src', source]
+            + list(extra), success=success)
+
+    def fixture(self, bundle=True):
+        root = self.work / 'relocated repo'
+        folder = root / 'sgminer-build'
+        (folder / 'vendor').mkdir(parents=True)
+        for name in ('fetch-baseline.sh', 'UPSTREAM-PIN'):
+            shutil.copy2(ROOT / 'sgminer-build' / name, folder / name)
+        if bundle:
+            shutil.copy2(ROOT / 'sgminer-build/vendor/sgminer-baikal.bundle',
+                         folder / 'vendor/sgminer-baikal.bundle')
+        return root
+
+    def test_offline_restore_and_all_patches(self):
+        source = self.work / 'source with spaces'
+        restored = self.fetch(source)
+        self.assertIn('offline', restored)
+        self.assertEqual(self.run_command(
+            ['git', '-C', source, 'rev-parse', 'HEAD']).strip(), PIN)
+        self.run_command(['git', '-C', source, 'fsck', '--full'])
+        self.assertFalse((source / '.git/objects/info/alternates').exists())
+        self.assertEqual(self.run_command(
+            ['git', '-C', source, 'status', '--porcelain']), '')
+        self.assertTrue((source / 'LICENSE').is_file())
+        self.assertTrue((source / 'driver-baikalu.c').is_file())
+        self.assertTrue((source / 'submodules/jansson').is_dir())
+        self.assertTrue((source / 'submodules/libusb-bk').is_dir())
+        self.assertNotIn('160000 ', self.run_command(
+            ['git', '-C', source, 'ls-tree', '-r', 'HEAD']))
+
+        apply = ['bash', ROOT / 'sgminer-build/apply-patches.sh', '--src', source]
+        self.assertIn('applied 34 patches; checksums match', self.run_command(apply))
+        self.assertIn('patches already applied', self.run_command(apply))
+        # Re-preparing an existing checkout must preserve its patched files.
+        self.assertIn('already at', self.fetch(source))
+        self.assertIn('patches already applied', self.run_command(apply))
+
+    def test_relocated_repo_and_relative_destination(self):
+        root = self.fixture()
+        self.fetch('relative source', root=root)
+        self.assertTrue((self.work / 'relative source/driver-baikalu.c').is_file())
+
+    def test_missing_bundle_fails_before_creating_destination(self):
+        root = self.fixture(bundle=False)
+        source = self.work / 'missing source'
+        output = self.fetch(source, root=root, success=False)
+        self.assertIn('missing bundled sgminer source', output)
+        self.assertFalse(source.exists())
+
+    def test_corrupt_bundle_fails_before_creating_destination(self):
+        root = self.fixture()
+        with (root / 'sgminer-build/vendor/sgminer-baikal.bundle').open('ab') as handle:
+            handle.write(b'corrupt')
+        source = self.work / 'corrupt source'
+        output = self.fetch(source, root=root, success=False)
+        self.assertIn('failed SHA-256 verification', output)
+        self.assertFalse(source.exists())
+
+    def test_existing_files_and_wrong_commit_are_not_overwritten(self):
+        source = self.work / 'source'
+        source.mkdir()
+        marker = source / 'keep.txt'
+        marker.write_text('keep this file')
+        self.assertIn('refusing to replace', self.fetch(source, success=False))
+        self.assertEqual(marker.read_text(), 'keep this file')
+
+        checkout = self.work / 'wrong commit'
+        self.fetch(checkout)
+        self.run_command(['git', '-C', checkout, 'checkout', '--detach', 'HEAD^'])
+        before = self.run_command(['git', '-C', checkout, 'rev-parse', 'HEAD'])
+        self.assertIn('refusing to modify', self.fetch(checkout, success=False))
+        self.assertEqual(before, self.run_command(
+            ['git', '-C', checkout, 'rev-parse', 'HEAD']))
+
+    def test_explicit_source_override_still_requires_pin(self):
+        source = self.work / 'explicit source'
+        bundle = ROOT / 'sgminer-build/vendor/sgminer-baikal.bundle'
+        self.fetch(source, extra=('--url', bundle))
+        self.assertEqual(self.run_command(
+            ['git', '-C', source, 'rev-parse', 'HEAD']).strip(), PIN)
+
+
+if __name__ == '__main__':
+    unittest.main(verbosity=2)

@@ -1,0 +1,581 @@
+From: Blakestream-GaintB V2.2
+Subject: [PATCH] baikal: name the clock-table selector clock index
+
+Rename the clock-table selector without changing the numbers sent on the
+wire. Options become baikal-experimental-clock-index and
+baikal-board-clock-index. API readback uses RequestedClockIndex and
+SentClockIndex. C names for those table indices use clock_index or
+clock_indices. MHz fields stay MHz. Wire code 0 stays the fan-only
+command and is not a table index. The stock display echo still does not
+prove the ASIC PLL locked.
+
+---
+--- a/config_parser.c
++++ b/config_parser.c
+@@ -680,14 +680,14 @@
+ #ifdef USE_BAIKAL
+     /* Check before object/array recursion, and do not enter uninitialized
+      * miner cleanup when rejecting a startup configuration. */
+-    if (empty_string(parentkey) && strcmp(key, "baikal-experimental-pll") == 0 &&
++    if (empty_string(parentkey) && strcmp(key, "baikal-experimental-clock-index") == 0 &&
+             !json_is_true(val) && !json_is_false(val)) {
+-        fprintf(stderr, "baikal-experimental-pll must be a JSON boolean\n");
++        fprintf(stderr, "baikal-experimental-clock-index must be a JSON boolean\n");
+         exit(EXIT_FAILURE);
+     }
+-    if (empty_string(parentkey) && strcmp(key, "baikal-board-pll") == 0 &&
++    if (empty_string(parentkey) && strcmp(key, "baikal-board-clock-index") == 0 &&
+             !json_is_string(val)) {
+-        fprintf(stderr, "baikal-board-pll must be a JSON string\n");
++        fprintf(stderr, "baikal-board-clock-index must be a JSON string\n");
+         exit(EXIT_FAILURE);
+     }
+ #endif
+@@ -717,18 +717,18 @@
+ #ifdef USE_BAIKAL
+             /* These two keys must not be skipped when a config file contains
+              * a wrong JSON type. Other options keep the historical skip. */
+-            if (strcmp(optname, "--baikal-experimental-pll") == 0) {
++            if (strcmp(optname, "--baikal-experimental-clock-index") == 0) {
+                 if (json_is_true(val))
+-                    opt_baikal_experimental_pll = true;
++                    opt_baikal_experimental_clock_index = true;
+                 else if (json_is_false(val))
+-                    opt_baikal_experimental_pll = false;
++                    opt_baikal_experimental_clock_index = false;
+                 else {
+-                    fprintf(stderr, "baikal-experimental-pll must be a JSON boolean\n");
++                    fprintf(stderr, "baikal-experimental-clock-index must be a JSON boolean\n");
+                     exit(EXIT_FAILURE);
+                 }
+-            } else if (strcmp(optname, "--baikal-board-pll") == 0) {
++            } else if (strcmp(optname, "--baikal-board-clock-index") == 0) {
+                 if (!json_is_string(val)) {
+-                    fprintf(stderr, "baikal-board-pll must be a JSON string\n");
++                    fprintf(stderr, "baikal-board-clock-index must be a JSON string\n");
+                     exit(EXIT_FAILURE);
+                 }
+                 err = opt->cb_arg(json_string_value(val), opt->u.arg);
+--- a/driver-baikal.h
++++ b/driver-baikal.h
+@@ -17,7 +17,7 @@
+ #define BAIKAL_WORK_FIFO        (200)
+ #define BAIKAL_POOL_UNSET       (-1)
+ 
+-/* Public clock labels are not a PLL-index formula. Normal mode sends
++/* Public clock labels are not a clock-index formula. Normal mode sends
+  * index 30 for the validated 400 MHz label. Indices 8..32 are raw selector
+  * values, not measured MHz. The stock GET_INFO display table is a separate
+  * lookup. The 260-500 range remains the legacy UI label range. */
+@@ -122,8 +122,8 @@
+     int board_clocks[BAIKAL_MAXMINERS];
+     bool board_clock_overrides[BAIKAL_MAXMINERS];
+     bool clock_mode_global;
+-    bool experimental_pll;
+-    int board_pll[3];
++    bool experimental_clock_index;
++    int board_clock_indices[3];
+     uint32_t clock_generation;
+     uint32_t clock_verified_generation;
+     bool global_clock_pending;
+@@ -192,7 +192,7 @@
+ void baikal_pin_failover(struct cgpu_info *cgpu, int pool_no);
+ void baikal_clear_failover_pin(struct cgpu_info *cgpu);
+ int baikal_user_failover_pool(const struct cgpu_info *cgpu);
+-int baikal_requested_pll_index(const struct baikal_info *info, int miner_id);
++int baikal_requested_clock_index(const struct baikal_info *info, int miner_id);
+ 
+ 
+ #endif /* __DEVICE_BAIKAL_H__ */
+--- a/driver-baikals.c
++++ b/driver-baikals.c
+@@ -513,7 +513,7 @@
+ 
+     miner->sent_clock_code = sent_clock_code;
+     if (previous_clock_code != sent_clock_code) {
+-        applog(LOG_NOTICE, "BK-B sent PLL code %d for requested %d MHz on ASC %d",
++        applog(LOG_NOTICE, "BK-B sent clock code %d for requested %d MHz on ASC %d",
+                sent_clock_code, (int)clk, baikal->miner_id);
+     }
+ 
+@@ -765,7 +765,7 @@
+     root = api_add_int(root, "RequestedClock", &info->clock, false);
+     root = api_add_int(root, "ReportedClock", &miner->reported_clock, false);
+     root = api_add_int(root, "ReportedClockCode", &miner->reported_clock_code, false);
+-    root = api_add_int(root, "SentClockCode", &miner->sent_clock_code, false);
++    root = api_add_int(root, "SentClockIndex", &miner->sent_clock_code, false);
+     root = api_add_uint8(root, "FanPercent", &info->fanspeed, false);
+     root = api_add_int(root, "HWV", (int *)&miner->hw_ver, false);
+     root = api_add_int(root, "FWV", (int *)&miner->fw_ver, false);
+--- a/driver-baikalu.c
++++ b/driver-baikalu.c
+@@ -100,9 +100,10 @@
+ {
+     /*
+      * Public clock labels must come from accepted-work validation, not arithmetic.
+-     * Factory startup uses PLL index 30, so normal mode treats that as the sole
++     * Factory startup uses clock index 30, so normal mode treats that as the sole
+      * public 400 MHz candidate. This function does not map raw indices.
+-     * The old (MHz/10)-18 formula is not used.
++     * The old (MHz/10)-18 formula is not used. A zero argument still returns
++     * wire code 0, which is fan-only and not a clock-table index.
+      */
+     if (clk == 0)
+         return 0;
+@@ -152,7 +153,7 @@
+     long code;
+ 
+     /* Fan/thermal zero and a refused code stay unchanged. The environment
+-     * hook must not substitute a different PLL index. */
++     * hook must not substitute a different clock index. */
+     if (computed_code <= 0)
+         return computed_code;
+ 
+@@ -161,12 +162,12 @@
+         return computed_code;
+ 
+     if (*raw < '0' || *raw > '9') {
+-        quit(1, "BK-B raw clock experiment refused: BAIKAL_RAW_CLOCK_CODE=%s does not match computed PLL code %d",
++        quit(1, "BK-B raw clock experiment refused: BAIKAL_RAW_CLOCK_CODE=%s does not match computed clock index %d",
+              raw, computed_code);
+     }
+     code = strtol(raw, &endptr, 10);
+     if (!endptr || *endptr != '\0' || code != (long)computed_code) {
+-        quit(1, "BK-B raw clock experiment refused: BAIKAL_RAW_CLOCK_CODE=%s does not match computed PLL code %d for requested %d",
++        quit(1, "BK-B raw clock experiment refused: BAIKAL_RAW_CLOCK_CODE=%s does not match computed clock index %d for requested %d",
+              raw, computed_code, (int)clk);
+     }
+     return computed_code;
+@@ -176,7 +177,7 @@
+ #endif
+ }
+ 
+-static int baikal_parse_pll_value(const char **cursor, int *out)
++static int baikal_parse_clock_index_value(const char **cursor, int *out)
+ {
+     const char *p;
+     int value = 0;
+@@ -201,66 +202,67 @@
+     return 0;
+ }
+ 
+-char *baikal_parse_board_pll(const char *arg, int index_out[3])
++char *baikal_parse_board_clock_indices(const char *arg, int index_out[3])
+ {
+     const char *p = arg;
+     int i;
+ 
+     if (!arg || !index_out || *arg == '\0')
+-        return "baikal-board-pll must be three integers 8..32 separated by colons";
++        return "baikal-board-clock-index must be three integers 8..32 separated by colons";
+     for (i = 0; i < 3; i++) {
+         if (i > 0) {
+             if (*p != ':')
+-                return "baikal-board-pll must be three integers 8..32 separated by colons";
++                return "baikal-board-clock-index must be three integers 8..32 separated by colons";
+             p++;
+         }
+-        if (baikal_parse_pll_value(&p, &index_out[i]) != 0)
+-            return "baikal-board-pll values must be integers 8..32 with no sign, decimal, or leading zero";
++        if (baikal_parse_clock_index_value(&p, &index_out[i]) != 0)
++            return "baikal-board-clock-index values must be integers 8..32 with no sign, decimal, or leading zero";
+     }
+     if (*p != '\0')
+-        return "baikal-board-pll must be three integers 8..32 separated by colons";
++        return "baikal-board-clock-index must be three integers 8..32 separated by colons";
+     return NULL;
+ }
+ 
+-char *baikal_experimental_pll_config_error(void)
++char *baikal_experimental_clock_index_config_error(void)
+ {
+     int parsed[3];
+     int i;
+     bool have;
+ 
+-    if (opt_baikal_board_pll && opt_baikal_board_pll[0] == '\0')
+-        return "baikal-board-pll is malformed";
+-    have = opt_baikal_board_pll != NULL;
++    if (opt_baikal_board_clock_index && opt_baikal_board_clock_index[0] == '\0')
++        return "baikal-board-clock-index is malformed";
++    have = opt_baikal_board_clock_index != NULL;
+ 
+-    if (!opt_baikal_experimental_pll && !have)
++    if (!opt_baikal_experimental_clock_index && !have)
+         return NULL;
+-    if (opt_baikal_experimental_pll && !have)
+-        return "baikal-experimental-pll requires baikal-board-pll";
+-    if (!opt_baikal_experimental_pll && have)
+-        return "baikal-board-pll requires baikal-experimental-pll";
++    if (opt_baikal_experimental_clock_index && !have)
++        return "baikal-experimental-clock-index requires baikal-board-clock-index";
++    if (!opt_baikal_experimental_clock_index && have)
++        return "baikal-board-clock-index requires baikal-experimental-clock-index";
+     if (!opt_baikal_clock_mode || strcmp(opt_baikal_clock_mode, "individual") != 0)
+-        return "baikal-experimental-pll requires explicit baikal-clock-mode individual";
+-    if (baikal_parse_board_pll(opt_baikal_board_pll, parsed) != NULL)
+-        return "baikal-board-pll is malformed";
++        return "baikal-experimental-clock-index requires explicit baikal-clock-mode individual";
++    if (baikal_parse_board_clock_indices(opt_baikal_board_clock_index, parsed) != NULL)
++        return "baikal-board-clock-index is malformed";
+     for (i = 0; i < 3; i++) {
+-        if (parsed[i] != opt_baikal_board_pll_index[i] ||
++        if (parsed[i] != opt_baikal_board_clock_indices[i] ||
+                 parsed[i] < 8 || parsed[i] > 32)
+-            return "baikal-board-pll does not match the parsed indices";
++            return "baikal-board-clock-index does not match the parsed indices";
+     }
+     return NULL;
+ }
+ 
+-static int baikal_command_pll_index(const struct baikal_info *info, int miner_id,
++static int baikal_command_clock_index(const struct baikal_info *info, int miner_id,
+                                     uint16_t clk)
+ {
+     int index;
+ 
++    /* Wire code 0 is fan-only. It is not clock-table index 0. */
+     if (clk == 0)
+         return 0;
+-    if (info && info->experimental_pll) {
++    if (info && info->experimental_clock_index) {
+         if (info->clock_mode_global || miner_id < 0 || miner_id > 2)
+             return -1;
+-        index = info->board_pll[miner_id];
++        index = info->board_clock_indices[miner_id];
+         if (index < 8 || index > 32)
+             return -1;
+         return index;
+@@ -268,13 +270,13 @@
+     return baikal_clock_command_code(clk);
+ }
+ 
+-int baikal_requested_pll_index(const struct baikal_info *info, int miner_id)
++int baikal_requested_clock_index(const struct baikal_info *info, int miner_id)
+ {
+-    if (!info || !info->experimental_pll || miner_id < 0 || miner_id > 2)
++    if (!info || !info->experimental_clock_index || miner_id < 0 || miner_id > 2)
+         return 0;
+-    if (info->board_pll[miner_id] < 8 || info->board_pll[miner_id] > 32)
++    if (info->board_clock_indices[miner_id] < 8 || info->board_clock_indices[miner_id] > 32)
+         return 0;
+-    return info->board_pll[miner_id];
++    return info->board_clock_indices[miner_id];
+ }
+ 
+ static void baikal_log_protocol_msg(const char *label, int requested_clock, const baikal_msg *msg)
+@@ -1432,10 +1434,10 @@
+         return false;
+ 
+     miner = &info->miners[miner_id];
+-    sent_clock_code = baikal_command_pll_index(info, miner_id, clk);
++    sent_clock_code = baikal_command_clock_index(info, miner_id, clk);
+     if (sent_clock_code < 0) {
+         applog(LOG_ERR,
+-               "BK-B refusing SET_OPTION ASC %d: experimental PLL index is not valid for this board",
++               "BK-B refusing SET_OPTION ASC %d: experimental clock index is not valid for this board",
+                miner_id);
+         return false;
+     }
+@@ -1491,7 +1493,7 @@
+     if (clk != 0) {
+         baikal_diag_note_acked(info, miner_id, sent_clock_code);
+         if (previous_clock_code != sent_clock_code) {
+-            applog(LOG_NOTICE, "BK-B sent PLL code %d for requested %d MHz on ASC %d",
++            applog(LOG_NOTICE, "BK-B sent clock index %d for requested %d MHz on ASC %d",
+                    sent_clock_code, (int)clk, miner_id);
+         }
+     }
+@@ -1509,9 +1511,9 @@
+     struct baikal_info *info = baikal->device_data;
+     baikal_msg msg = {0, };
+ 
+-    if (info->experimental_pll || opt_baikal_experimental_pll) {
++    if (info->experimental_clock_index || opt_baikal_experimental_clock_index) {
+         applog(LOG_ERR,
+-               "BK-B refusing bridge-global SET_OPTION while experimental PLL is enabled");
++               "BK-B refusing bridge-global SET_OPTION while experimental clock index is enabled");
+         return false;
+     }
+ 
+@@ -1542,7 +1544,7 @@
+     msg.len = 4;
+ 
+     applog(LOG_NOTICE,
+-           "BK-B bridge-global SET_OPTION request requested=%dMHz pll_index=%d mode=%u cutoff=%u fan=%u dest=1 targets=12",
++           "BK-B bridge-global SET_OPTION request requested=%dMHz clock_index=%d mode=%u cutoff=%u fan=%u dest=1 targets=12",
+            (int)clk, sent_clock_code, mode, temp, fanspeed);
+ 
+     if (clk != 0) {
+@@ -1627,9 +1629,9 @@
+ 
+     miner->clock_retry_last_time = now;
+     retry_clock = baikal_configured_clock_for_miner(info, miner_id);
+-    retry_clock_code = baikal_command_pll_index(info, miner_id, (uint16_t)retry_clock);
++    retry_clock_code = baikal_command_clock_index(info, miner_id, (uint16_t)retry_clock);
+     applog(LOG_NOTICE,
+-           "BK-B post-mining clock retry ASC %d requested=%dMHz pll_index=%d bridge_status_echo=%dMHz fan=%u",
++           "BK-B post-mining clock retry ASC %d requested=%dMHz clock_index=%d bridge_status_echo=%dMHz fan=%u",
+            miner_id, retry_clock, retry_clock_code, miner->reported_clock,
+            (unsigned int)info->fanspeed);
+ 
+@@ -1637,7 +1639,7 @@
+                                          to_baikal_algorithm(baikal->algorithm.type),
+                                          info->cutofftemp, info->fanspeed);
+     applog(host_ack ? LOG_NOTICE : LOG_WARNING,
+-           "BK-B post-mining SET_OPTION ASC %d requested=%dMHz pll_index=%d host_ack=%s",
++           "BK-B post-mining SET_OPTION ASC %d requested=%dMHz clock_index=%d host_ack=%s",
+            miner_id, retry_clock, retry_clock_code, host_ack ? "yes" : "no");
+ 
+     expected_clock = baikal_bridge_echo_from_command_code(retry_clock_code);
+@@ -1646,7 +1648,7 @@
+         echo_ok = getinfo_ok && expected_clock > 0 &&
+                   miner->reported_clock == expected_clock;
+         applog(echo_ok ? LOG_NOTICE : LOG_WARNING,
+-               "BK-B post-mining GET_INFO ASC %d requested=%dMHz pll_index=%d get_info=%s bridge_status_code=%d bridge_status_echo=%dMHz expected_echo=%dMHz match=%s",
++               "BK-B post-mining GET_INFO ASC %d requested=%dMHz clock_index=%d get_info=%s bridge_status_code=%d bridge_status_echo=%dMHz expected_echo=%dMHz match=%s",
+                miner_id, retry_clock, retry_clock_code,
+                getinfo_ok ? "yes" : "no", miner->reported_clock_code,
+                miner->reported_clock, expected_clock, echo_ok ? "yes" : "no");
+@@ -1659,14 +1661,14 @@
+         miner->clock_retry_pending = false;
+         miner->clock_retry_done = true;
+         applog(LOG_NOTICE,
+-               "BK-B post-mining clock retry OK ASC %d requested=%dMHz pll_index=%d bridge_status_echo=%dMHz",
++               "BK-B post-mining clock retry OK ASC %d requested=%dMHz clock_index=%d bridge_status_echo=%dMHz",
+                miner_id, retry_clock, retry_clock_code, miner->reported_clock);
+         return;
+     }
+ 
+     miner->clock_retry_failures++;
+     applog(LOG_WARNING,
+-           "BK-B post-mining clock retry failed ASC %d requested=%dMHz pll_index=%d host_ack=%s get_info=%s bridge_status_echo=%dMHz expected_echo=%dMHz failure=%u/%u",
++           "BK-B post-mining clock retry failed ASC %d requested=%dMHz clock_index=%d host_ack=%s get_info=%s bridge_status_echo=%dMHz expected_echo=%dMHz failure=%u/%u",
+            miner_id, retry_clock, retry_clock_code,
+            host_ack ? "yes" : "no", getinfo_ok ? "yes" : "no",
+            miner->reported_clock, expected_clock,
+@@ -1716,7 +1718,7 @@
+     if (!pending || miner->clock_retry_pending || !miner->working)
+         return;
+ 
+-    clock_code = baikal_command_pll_index(info, miner_id, (uint16_t)requested_clock);
++    clock_code = baikal_command_clock_index(info, miner_id, (uint16_t)requested_clock);
+     host_ack = baikal_setoption_for_miner(
+         baikal, miner_id, (uint16_t)requested_clock,
+         to_baikal_algorithm(baikal->algorithm.type),
+@@ -1746,7 +1748,7 @@
+     mutex_unlock(&info->clock_lock);
+ 
+     applog(applied ? LOG_NOTICE : LOG_WARNING,
+-           "BK-B same-clock reapply ASC %d requested=%dMHz pll_index=%d host_ack=%s get_info=%s bridge_status_echo=%dMHz expected_echo=%dMHz result=%s",
++           "BK-B same-clock reapply ASC %d requested=%dMHz clock_index=%d host_ack=%s get_info=%s bridge_status_echo=%dMHz expected_echo=%dMHz result=%s",
+            miner_id, requested_clock, clock_code,
+            host_ack ? "yes" : "no", getinfo_ok ? "yes" : "no",
+            miner->reported_clock, expected_clock,
+@@ -1791,7 +1793,7 @@
+     if (!info->clock_mode_global)
+         return;
+ 
+-    if (info->experimental_pll || opt_baikal_experimental_pll) {
++    if (info->experimental_clock_index || opt_baikal_experimental_clock_index) {
+         bool refused;
+ 
+         mutex_lock(&info->clock_lock);
+@@ -1801,7 +1803,7 @@
+         mutex_unlock(&info->clock_lock);
+         if (refused) {
+             applog(LOG_ERR,
+-                   "BK-B refusing global clock generation while experimental PLL is enabled");
++                   "BK-B refusing global clock generation while experimental clock index is enabled");
+         }
+         return;
+     }
+@@ -1842,7 +1844,7 @@
+     mutex_unlock(&info->clock_lock);
+ 
+     applog(LOG_NOTICE,
+-           "BK-B global clock generation %u start requested=%dMHz pll_index=%d active_boards=%d transport=%s attempt=%u/%u",
++           "BK-B global clock generation %u start requested=%dMHz clock_index=%d active_boards=%d transport=%s attempt=%u/%u",
+            (unsigned int)generation, info->clock, clock_code, active_count,
+            bridge_global ? "bridge-global-dest1" : "compatible-per-board-dest0",
+            (unsigned int)(failures + 1),
+@@ -1922,7 +1924,7 @@
+         if (!active[i])
+             continue;
+         applog(success ? LOG_NOTICE : LOG_WARNING,
+-               "BK-B global generation %u ASC %d requested=%dMHz pll_index=%d transport=%s host_ack=%s get_info=%s bridge_status_echo=%dMHz expected_echo=%dMHz match=%s command_verified=%s",
++               "BK-B global generation %u ASC %d requested=%dMHz clock_index=%d transport=%s host_ack=%s get_info=%s bridge_status_echo=%dMHz expected_echo=%dMHz match=%s command_verified=%s",
+                (unsigned int)generation, i, info->clock, clock_code,
+                bridge_global ? "bridge-global-dest1" : "compatible-per-board-dest0",
+                ack[i] ? "yes" : "no", readback[i] ? "yes" : "no",
+@@ -2182,28 +2184,28 @@
+ }
+ 
+ 
+-static void baikal_install_experimental_pll(struct baikal_info *info)
++static void baikal_install_experimental_clock_indices(struct baikal_info *info)
+ {
+     int i;
+ 
+-    info->experimental_pll = false;
++    info->experimental_clock_index = false;
+     for (i = 0; i < 3; i++)
+-        info->board_pll[i] = 0;
+-    /* Disabled mode never keeps a previously parsed raw index. Global mode
++        info->board_clock_indices[i] = 0;
++    /* Disabled mode never keeps a previously parsed clock index. Global mode
+      * does not receive per-board indices either. */
+-    if (!opt_baikal_experimental_pll || info->clock_mode_global)
++    if (!opt_baikal_experimental_clock_index || info->clock_mode_global)
+         return;
+     for (i = 0; i < 3; i++) {
+-        if (opt_baikal_board_pll_index[i] < 8 || opt_baikal_board_pll_index[i] > 32) {
+-            quit(1, "baikal-board-pll index %d is outside 8..32",
+-                 opt_baikal_board_pll_index[i]);
++        if (opt_baikal_board_clock_indices[i] < 8 || opt_baikal_board_clock_indices[i] > 32) {
++            quit(1, "baikal-board-clock-index value %d is outside 8..32",
++                 opt_baikal_board_clock_indices[i]);
+         }
+-        info->board_pll[i] = opt_baikal_board_pll_index[i];
++        info->board_clock_indices[i] = opt_baikal_board_clock_indices[i];
+     }
+-    info->experimental_pll = true;
++    info->experimental_clock_index = true;
+     applog(LOG_NOTICE,
+-           "BK-B experimental PLL indices ASC0=%d ASC1=%d ASC2=%d; not calibrated MHz (public clock label %d)",
+-           info->board_pll[0], info->board_pll[1], info->board_pll[2], info->clock);
++           "BK-B experimental clock indices ASC0=%d ASC1=%d ASC2=%d; not calibrated MHz (public clock label %d)",
++           info->board_clock_indices[0], info->board_clock_indices[1], info->board_clock_indices[2], info->clock);
+ }
+ 
+ static struct cgpu_info* baikal_detect_one(struct libusb_device *dev, struct usb_find_devices *found)
+@@ -2301,7 +2303,7 @@
+                "BK-B per-board applied clocks configured: ASC0=%dMHz ASC1=%dMHz ASC2=%dMHz (global request=%dMHz)",
+                board_clock0, board_clock1, board_clock2, clock);
+     }
+-    baikal_install_experimental_pll(info);
++    baikal_install_experimental_clock_indices(info);
+ 
+     baikal->device_data = info;
+     baikal->name        = strdup("BKLU");
+@@ -2370,7 +2372,7 @@
+ 
+ static void baikal_detect(void)
+ {
+-    char *err = baikal_experimental_pll_config_error();
++    char *err = baikal_experimental_clock_index_config_error();
+ 
+     if (err)
+         quit(1, "%s", err);
+@@ -2407,8 +2409,8 @@
+     uint8_t clock_reapply_failures;
+     bool clock_reapply_pending;
+     int requested_clock = baikal_configured_clock_for_miner(info, cgpu->miner_id);
+-    int requested_pll_index = baikal_requested_pll_index(info, cgpu->miner_id);
+-    bool experimental_clock = info->experimental_pll;
++    int requested_clock_index = baikal_requested_clock_index(info, cgpu->miner_id);
++    bool experimental_clock = info->experimental_clock_index;
+     uint32_t clock_generation;
+     uint32_t verified_generation;
+     bool global_clock_pending;
+@@ -2450,12 +2452,13 @@
+     root = api_add_int(root, "ReportedClockCode", &miner->reported_clock_code, false);
+     root = api_add_int(root, "BridgeStatusEcho", &miner->reported_clock, false);
+     root = api_add_int(root, "BridgeStatusEchoCode", &miner->reported_clock_code, false);
+-    root = api_add_int(root, "SentClockCode", &miner->sent_clock_code, false);
+-    /* RequestedPLLIndex is 0 when experimental mode is off. SentClockCode
+-     * stays the code that was sent (30 for the public 400 label). Neither
+-     * field, nor BridgeStatusEcho, proves the ASIC PLL locked. */
++    root = api_add_int(root, "SentClockIndex", &miner->sent_clock_code, false);
++    /* RequestedClockIndex is 0 when experimental mode is off. SentClockIndex
++     * reports the selector that was sent (30 for the public 400 label).
++     * Wire code 0 remains fan-only and is not a table index. Neither field,
++     * nor BridgeStatusEcho, proves the ASIC PLL locked. */
+     root = api_add_bool(root, "ExperimentalClock", &experimental_clock, true);
+-    root = api_add_int(root, "RequestedPLLIndex", &requested_pll_index, true);
++    root = api_add_int(root, "RequestedClockIndex", &requested_clock_index, true);
+     root = api_add_string(root, "ClockMode", clock_mode, true);
+     root = api_add_uint(root, "ClockGeneration", &clock_generation, true);
+     root = api_add_uint(root, "VerifiedClockGeneration", &verified_generation, true);
+--- a/miner.h
++++ b/miner.h
+@@ -1190,11 +1190,11 @@
+ extern char *opt_baikal_board_clocks;
+ extern char *opt_baikal_clock_mode;
+ extern bool opt_baikal_bridge_global;
+-extern bool opt_baikal_experimental_pll;
+-extern char *opt_baikal_board_pll;
+-extern int opt_baikal_board_pll_index[3];
+-char *baikal_parse_board_pll(const char *arg, int index_out[3]);
+-char *baikal_experimental_pll_config_error(void);
++extern bool opt_baikal_experimental_clock_index;
++extern char *opt_baikal_board_clock_index;
++extern int opt_baikal_board_clock_indices[3];
++char *baikal_parse_board_clock_indices(const char *arg, int index_out[3]);
++char *baikal_experimental_clock_index_config_error(void);
+ //enum cl_kernels opt_baikal_kernel;
+ //enum cl_kernels select_kernel(char *arg);
+ #endif 
+--- a/sgminer.c
++++ b/sgminer.c
+@@ -181,9 +181,9 @@
+ char *opt_baikal_board_clocks = NULL;
+ char *opt_baikal_clock_mode = NULL;
+ bool opt_baikal_bridge_global = false;
+-bool opt_baikal_experimental_pll = false;
+-char *opt_baikal_board_pll = NULL;
+-int opt_baikal_board_pll_index[3];
++bool opt_baikal_experimental_clock_index = false;
++char *opt_baikal_board_clock_index = NULL;
++int opt_baikal_board_clock_indices[3];
+ //enum cl_kernels opt_baikal_kernel = KL_X11;
+ //char *opt_baikal_algo = X11_KERNNAME;
+ static int total_algo;
+@@ -1371,20 +1371,20 @@
+     return (NULL);
+ }
+ 
+-static char* set_baikal_board_pll(const char *arg)
++static char* set_baikal_board_clock_index(const char *arg)
+ {
+     int parsed[3];
+-    char *err = baikal_parse_board_pll(arg, parsed);
++    char *err = baikal_parse_board_clock_indices(arg, parsed);
+ 
+     if (err) {
+         /* Option parsing precedes USB/thread initialization. */
+         fprintf(stderr, "%s\n", err);
+         exit(EXIT_FAILURE);
+     }
+-    opt_baikal_board_pll_index[0] = parsed[0];
+-    opt_baikal_board_pll_index[1] = parsed[1];
+-    opt_baikal_board_pll_index[2] = parsed[2];
+-    opt_set_charp(arg, &opt_baikal_board_pll);
++    opt_baikal_board_clock_indices[0] = parsed[0];
++    opt_baikal_board_clock_indices[1] = parsed[1];
++    opt_baikal_board_clock_indices[2] = parsed[2];
++    opt_set_charp(arg, &opt_baikal_board_clock_index);
+     return (NULL);
+ }
+ #endif
+@@ -2054,13 +2054,13 @@
+                     opt_set_bool, &opt_baikal_bridge_global,
+                     "Use one bridge-global SET_OPTION transaction in global clock mode"),
+ 
+-    OPT_WITHOUT_ARG("--baikal-experimental-pll",
+-                    opt_set_bool, &opt_baikal_experimental_pll,
+-                    "Enable experimental per-board PLL indices 8-32 (requires individual clock mode)"),
+-
+-    OPT_WITH_ARG("--baikal-board-pll",
+-                 set_baikal_board_pll, NULL, NULL,
+-                 "Experimental PLL indices board0:board1:board2, each 8-32, not MHz"),
++    OPT_WITHOUT_ARG("--baikal-experimental-clock-index",
++                    opt_set_bool, &opt_baikal_experimental_clock_index,
++                    "Enable experimental per-board clock indices 8-32 (requires individual clock mode)"),
++
++    OPT_WITH_ARG("--baikal-board-clock-index",
++                 set_baikal_board_clock_index, NULL, NULL,
++                 "Experimental clock indices board0:board1:board2, each 8-32, not MHz"),
+ 
+     OPT_WITHOUT_ARG("--enable-nicehashsma",
+                     opt_set_bool, &opt_enable_nicehash_sma,

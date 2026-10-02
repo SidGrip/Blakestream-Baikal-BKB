@@ -1,209 +1,333 @@
-# Blakestream-GaintB v2.1
+# Blakestream-GaintB v2.2
 
-Custom controller firmware for the **Baikal BK-B Multi** ("Giant B") ASIC miner — a fork of Baikal's factory image, rebranded for Blakestream and substantially extended with a patched mining client, true per-board pool routing, automatic same-algo failover, hardened launcher, and a security-audited Scripta UI.
+Custom Orange Pi controller software for the **Baikal BK-B Multi (Giant B)**,
+with per-board pool routing, same-algorithm failover, adjustable Index controls,
+accepted-work monitoring, and a light/dark Scripta dashboard.
 
-If you flash this image onto a BK-B's Orange Pi controller, you get a miner that boots up Blakestream-branded with no pre-set pools — you add your own through the web UI on first login. The dashboard lets you do things the factory firmware never could, like pinning specific hash boards to specific pools and seeing per-board hashrate over time.
+**[Download Blakestream-GaintB-v2.2.img.xz](https://bootstrap.blakestream.io/firmware/Blakestream-GaintB-v2.2.img.xz)**
 
----
+Controller release **V2.2** and optional STM32 bridge firmware **V1** have
+separate version numbers. Writing the SD image does not flash the bridge.
+The image starts without configured pools; add your own pool and worker.
 
-## ⚠️ Use at your own risk
+- [Installation](#install)
+- [Dashboard and settings](#using-the-dashboard)
+- [Adjustable clocks](#adjustable-clocks)
+- [Technical guide](TECHNICAL-GUIDE.md)
+- [Build instructions](BUILD.md) and [QA coverage](QA.md)
 
-**This is community-built firmware for a discontinued ASIC. There is no warranty, no support contract, and no vendor to fall back on.** By flashing it, you accept all responsibility for what happens to your hardware and any mining you do with it.
+## Use at your own risk
 
-Specifically, you should understand and accept that:
+This is independent community software for aging hardware. It is not endorsed
+or supported by Baikal Miner and comes with **no warranty**. Flashing, changing
+clocks, overheating, power interruptions, or software faults can cause data loss,
+hardware damage, or an unbootable device. Temperature controls and rollback
+mechanisms reduce some risks; they cannot guarantee recovery or electrical safety.
 
-- **The Baikal BK-B Multi is end-of-life.** Baikal Miner shut down in 2018. Replacement parts, official support, and original firmware downloads are no longer available from the manufacturer.
-- **You will void any remaining warranty** by flashing third-party firmware. There almost certainly isn't one on a 2018 ASIC, but be explicit: this firmware is not endorsed, signed, or supported by Baikal Miner or any successor.
-- **Bricking is possible.** A bad flash, a power cut mid-write, or an unforeseen bug can leave the controller unbootable. Recovery means writing the factory `.img` back to the SD card. **Keep a known-good copy of the original `PiZero_GB_180105_V1.0.img` before you start.**
-- **Hashing hardware can fail.** The BKLU boards are 8 years old. Heat, capacitor wear, and PSU stress are real. The temperature watchdog included here helps, but it is no substitute for monitoring your rig.
-- **Mining is financially risky.** Pool downtime, network forks, electricity costs, coin price moves, and pool-side disputes can all reduce or wipe out earnings. None of the changes in this firmware mitigate those risks — they only change *how* the miner is configured.
-- **The new code paths in v2 are recent.** Per-ASC routing, the v2 applier, and the failover policy have been validated on a single live device but have not had months of production soak time. You may hit edge cases. If anything feels wrong, roll back to factory firmware and report what you saw.
-- **No telemetry, no auto-update.** This firmware does not phone home and does not pull updates. You are responsible for tracking releases manually if you want fixes.
+Keep a known-good factory `PiZero_GB_180105_V1.0.img`, a spare SD card, and a
+recovery plan before making changes. An SD rollback does not undo an STM32
+bridge flash. See [Bridge firmware and recovery](#bridge-firmware-and-recovery).
+Short lab tests are not long-term hardware qualification or guaranteed mining
+performance. Mining costs and returns remain your responsibility.
 
-If any of that is unacceptable for your situation — or you don't have a way to recover a bricked Orange Pi — **don't flash this image.** Stick with the factory firmware.
+This image inherits an old controller OS and known factory credentials. Keep
+the dashboard, SSH, and miner API on a trusted network, not exposed to the
+Internet. Automatic software updates have been removed; updates are manual.
+The project is licensed under [GPLv3](https://www.gnu.org/licenses/gpl-3.0.html),
+including its warranty disclaimer and limitations of liability.
 
-By using this image you agree that the authors and contributors of this project are not liable for any damages, lost coins, hardware failure, electrical hazard, or other consequences of running it.
+## Features
 
-This project is licensed under **GPLv3**. The licence ([full text](https://www.gnu.org/licenses/gpl-3.0.html)) explicitly states there is **no warranty**:
-
-> THERE IS NO WARRANTY FOR THE PROGRAM, TO THE EXTENT PERMITTED BY APPLICABLE LAW. EXCEPT WHEN OTHERWISE STATED IN WRITING THE COPYRIGHT HOLDERS AND/OR OTHER PARTIES PROVIDE THE PROGRAM "AS IS" WITHOUT WARRANTY OF ANY KIND.
-
----
-
-## What's new in v2.1
-
-- **Memory leak fix.** A long-standing bug in the upstream sgminer-baikal algorithm code leaked roughly 1.5 MB per minute in production, eventually filling the Pi Zero's 198 MB of RAM and triggering the Linux out-of-memory killer about every 85 minutes. v2.0's factory cron watchdog masked this — it respawned the miner within 30 seconds — so mining kept going, but every cycle was a brief hashrate dip and the dashboard's "Miner DOWN" banner flickered. v2.1 patches the leak. The miner now runs indefinitely with stable memory use (RSS ~5 MB).
-- All v2.0 features unchanged: per-board pool routing, explicit per-board failover, per-board hashrate graphs, pool history, dark/light themes, temperature watchdog, auto-updater removed.
-- Recommended upgrade for everyone running v2.0.
-
----
-
-## 🔑 Default credentials (CHANGE IMMEDIATELY)
-
-This image keeps the **factory Baikal default credentials** unchanged. They are well-known and trivially scannable on any network. Anyone with LAN access to a freshly-flashed device can log in as root.
-
-| Service | Username | Default password | How to change |
-|---|---|---|---|
-| Web UI (Scripta) | n/a | **`baikal`** | Settings tab → "Web password" field → click **Save password** |
-| SSH | `root` | **`baikal`** | SSH in once and run `passwd`. (You can also do this from the Terminal tab inside the dashboard.) |
-
-**On a fresh flash, the very first thing you should do is change BOTH passwords**, before connecting the device to any network you don't fully control. If you skip this step, treat the device as compromised by default.
-
-We chose to keep the factory defaults rather than rotate them so:
-- Documentation stays simple (no per-image generated password to look up).
-- Existing Baikal users get an experience they recognise.
-- There's no false sense of security from a "different but still hardcoded" password.
-
----
-
-## What's different vs the original Baikal firmware
-
-|  | Original Baikal firmware | Blakestream-GaintB v2.1 |
-|---|---|---|
-| **Out of the box** | Pre-set for old Baikal default pools (Decred, Sia, LBRY, Pascal, Vcash) | Starts empty — you add your own Blakecoin pool and worker name on first login |
-| **Mine each of the 3 boards to a different pool** | No — all 3 boards share one pool | Yes — pick any pool per board |
-| **Backup pool if your main pool dies** | No — it just keeps retrying the dead pool forever | Yes — pick a backup per board, automatic switch when your main pool dies, automatic switch back when it recovers |
-| **Idle button actually stops the board** | No — the board kept running quietly underneath | Yes |
-| **Auto-shutdown if a board overheats** | No | Yes — turns off above 80 °C, turns back on once it cools to 70 °C |
-| **Live hashrate graph per board** | One chart for all 3 boards combined | One chart per board, with Hour / Day / Week views |
-| **Pool performance history** | No | Yes — accepted vs rejected shares per pool over the last hour, day, or week |
-| **Save/restore your settings** | Read-only; can't remove the junk presets it ships with | Name, rename, delete backups; junk presets hidden |
-| **Light & dark theme** | Baikal blue/grey only | Toggle in the header, choice remembered in your browser |
-| **Built-in auto-updater that could overwrite files** | Present | Removed for safety |
-
----
+- **Per-board pools and failover:** assign each board a primary and optional
+  same-algorithm backup pool; idle boards without silently refilling their work.
+- **Clocks & Fan:** Global or Individual Index selection, compact Default buttons,
+  read-only estimated GH/s and MHz, shared temperature limits, and fan controls.
+- **Measured work:** separate modeled Estimate from Accepted 15m/1h rates,
+  with per-board graphs and share/error counters. Index tests keep graphs visible.
+- **Network settings:** Dynamic (DHCP) or Static IPv4 with timed confirmation
+  and automatic rollback of unconfirmed changes.
+- **Application backups:** settings, pools, clock profiles, baselines, personal
+  measurements, and chart/event history, with import/export and guarded restore.
+- **Diagnostics:** board health, logs, measured rates, pool network probes,
+  recorder controls, and guarded firmware tools under Dev Tools.
+- **Patched sgminer:** fixes for upstream debug-buffer leaks, board routing,
+  clock coordination, and diagnostics. These fixes do not guarantee freedom
+  from other memory-pressure or runtime faults.
 
 ## Hardware
 
-The **BK-B Multi** is a discontinued multi-algorithm ASIC supporting Blake256R14, **Blake256R8** (what Blakecoin uses), Blake2B, Lbry, and Pascal. It carries 3 BKLU hash boards exposed through a single STM32F407 USB bridge — meaning **one** sgminer instance sees all 3 boards as ASCs `0`/`1`/`2`.
+The BK-B Multi has three BKLU hash boards behind one STM32F407 USB bridge.
+One sgminer process sees logical boards **0 / 1 / 2**. The controller is an
+Orange Pi Zero-class SBC using the factory Armbian/Ubuntu 16.04 armhf base.
+The factory kernel and bootloader are retained; the SD overlay changes userspace.
 
-The controller is an **Orange Pi Zero**-class SBC running Armbian/Ubuntu 16.04 (armhf, kernel 3.4.39 Allwinner sun8i). Software stack:
-
-- **Scripta** — web management UI by Lateral Factory (GPLv3)
-- **sgminer-baikal** — fork of sgminer with the Baikal ASIC USB driver
-- **lighttpd + PHP-FastCGI** — web server, docroot `/var/www/`
-
-The factory kernel, ASIC USB drivers, and bootloader are unchanged; everything we modify is in userspace.
-
----
+The hardware supports Blake256R14, Blake256R8, Blake2B, Lbry, and Pascal.
+The bundled clock-performance examples are for **`blake256r8` only**. They
+must not be reused as measured results for other algorithms.
 
 ## Install
 
-### 1. Download
+### 1. Download and verify
 
-Project info & download links: **https://explorer.blakestream.io/baikal-bkb**
+Download **[Blakestream-GaintB-v2.2.img.xz](https://bootstrap.blakestream.io/firmware/Blakestream-GaintB-v2.2.img.xz)**.
+Compare its SHA-256 with the checksum supplied with the release before flashing:
 
-Direct download (~900 MB compressed):
-
-```
-https://bootstrap.blakestream.io/firmware/Blakestream-GaintB-v2.1.img.xz
-```
-
-Most flashing tools ([BalenaEtcher](https://etcher.balena.io/), [Raspberry Pi Imager](https://www.raspberrypi.com/software/)) accept the `.xz` directly without manual decompression. If you want to verify before flashing:
-
-```
-sha256sum Blakestream-GaintB-v2.1.img.xz
-# compare against the published sha listed on explorer.blakestream.io/baikal-bkb
+```bash
+sha256sum Blakestream-GaintB-v2.2.img.xz
 ```
 
-### 2. Flash
+Computing a hash alone does not verify the file; compare it with the expected
+release hash. Source and build details are in [BUILD.md](BUILD.md).
 
-You need an SD card **≥ 8 GB** and a card reader.
+### 2. Write the SD card
 
-**Option A — [BalenaEtcher](https://etcher.balena.io/) / [Raspberry Pi Imager](https://www.raspberrypi.com/software/) (graphical, easiest)**
-- Open Etcher → "Flash from file" → pick `Blakestream-GaintB-v2.1.img.xz` → select SD card → Flash. Etcher handles `.xz` decompression automatically.
+Use an SD card of **at least 8 GB** and a card reader. A graphical disk-image
+writer can write the image; decompress it first if the tool does not accept `.xz`.
 
-**Option B — `dd` on Linux/macOS (command line)**
-```
-xz -d Blakestream-GaintB-v2.1.img.xz
-sudo dd if=Blakestream-GaintB-v2.1.img of=/dev/sdX bs=4M status=progress conv=fsync
+For the Linux command-line method, identify the SD card with `lsblk` and unmount
+its mounted partitions first. **The following command erases the entire target
+device. Verify the device path, not a partition path, before running it.**
+
+```bash
+xz -dk Blakestream-GaintB-v2.2.img.xz
+sudo dd if=Blakestream-GaintB-v2.2.img of=/dev/sdX bs=4M status=progress conv=fsync
 sync
 ```
-Replace `/dev/sdX` with your actual SD card device (`lsblk` to find it).
 
-> ### ⚠️ STOP — TRIPLE-CHECK YOUR DEVICE PATH
-> **`dd` will silently and permanently overwrite anything you point it at.** Pointing it at the wrong drive will destroy your system disk, an external backup, or any other connected media — with no confirmation prompt and no recovery. Run `lsblk` immediately before and after inserting the SD card so you can see exactly which device appeared.
+Replace `/dev/sdX` with the SD card's actual device. Never use a system or backup
+drive as the target. Safely eject the card after writing completes.
 
-### 3. Boot
+### 3. Boot and secure access
 
-1. Insert the flashed SD card into the BK-B's Orange Pi controller slot.
-2. Power on the BK-B (PSU + ASIC power).
-3. Wait ~60 seconds for the device to come up and grab a DHCP lease.
-4. Find its IP on your LAN — check your router's DHCP leases page, or run `arp -a` / `nmap -sn 192.168.1.0/24`. The device's hostname is `blakestream-gaintb`.
+1. With the miner powered off, insert the SD card into the controller.
+2. Connect Ethernet, power on, and allow the controller to boot and obtain DHCP.
+3. Find `blakestream-gaintb` in your router's DHCP leases and open
+   `http://<device-ip>/` on your trusted LAN.
+4. Log in, then change the web password under **Settings > Scripta > Web password**
+   using **Save password**.
+5. Verify and change Linux account credentials through an authenticated SSH
+   session. Do not assume the web-password change secured every OS account.
 
-### 4. First login & setup
+The image inherits the factory credentials:
 
-1. Browse to `http://<device-ip>/`.
-2. Log in with **`baikal`** (factory default).
-3. **Change the password immediately** — Settings tab → Web password fields → Save password.
-4. **Change the SSH password** — Terminal tab (inside the dashboard) → run `passwd` → set a new one.
-5. Set your **timezone** — Settings tab → Timezone dropdown → click Update. This drives both the device clock and every timestamp shown on the dashboard.
-6. Add your **pool** — Miner tab → "Add Pool" → fill in the URL (`stratum+tcp://<host>:<port>`), worker name, password, algorithm (`blake256r8` for Blakecoin). Save.
-7. Assign **boards to the pool** — Status tab → for each board (0/1/2), pick the pool from the dropdown → Apply. You can pin all three to the same pool, or mix-and-match across multiple pools you've added.
-8. Watch the per-board hashrate cards on the Status tab — within a couple of minutes you should see ~60 GH/s per active board.
+| Service | Username | Default password |
+| --- | --- | --- |
+| Web UI | Password-only login | `baikal` |
+| SSH | `root` | `baikal` |
 
-### 5. (Optional) Failover — give each board a backup pool
+Run `passwd` as the account whose password you intend to change, or use the
+appropriate administrator command for another account. The inherited web-password
+handler also invokes a Linux-password helper; verify SSH access separately.
+Do not leave factory credentials in use.
 
-Failover is per-board and explicit: for each board you pick **one** primary pool and (optionally) **one** backup pool. If the primary stops responding, that board switches to its backup within seconds; when the primary recovers, the board switches back automatically. You don't have to do anything.
+### 4. Configure mining
 
-To set it up:
+1. Under **Settings > Scripta**, choose the display timezone and **Save Settings**.
+   The controller's system clock, logs, and scheduled jobs remain in UTC.
+2. Under **Miner > Pools**, add the pool URL, worker, password, and algorithm.
+   Use `blake256r8` for Blakecoin, then **Save Pool**.
+3. On **Status**, assign each board its primary pool and click **Apply & restart**.
+4. Check startup chip counts, temperatures, and advancing accepted shares.
+   Accepted-rate displays need at least five observed minutes and sufficient
+   accepted work after settling. They are not instant clock measurements.
 
-1. **Add at least two pools** on the Miner tab — one to use as the primary, one as the backup. Both must use the same algorithm (e.g. two `blake256r8` pools for Blakecoin).
-2. On the **Status tab**, the pool column header is a dropdown. Switch it from **MAIN POOL** to **FAILOVER**.
-3. For each board, pick which pool should be its backup, then click **Apply & Restart**.
+For a backup pool, add another pool with the same algorithm. On Status, switch
+the pool-column selector from **MAIN POOL** to **FAILOVER**, choose a backup for
+each board, and **Apply & restart**. The controller switches to that backup
+when the primary is unavailable and returns when the primary recovers.
+If neither configured route is usable, the board stops hashing. Check board
+failover indicators and **Failover History** rather than treating a pool's
+connection status as proof that a particular board is using it.
 
-The dropdown only shows pools that match that board's primary algorithm, so you can't accidentally pair a Blakecoin primary with a Decred backup. Leave a board's backup as `— none —` if you don't want one.
+## Using the dashboard
 
-When a board is running on its backup, you'll see a yellow **FAILOVER** chip on its hashrate card and the **Active** column flips to **True**. If both the primary and the backup are dead at the same time, that board stops hashing.
+**Miner** has **Pools / Clocks & Fan / SGMINER** submenus. **Settings** has
+**Scripta / Mining / Network / Wi-Fi**; remote-control settings remain under Mining.
+Opening Miner starts at Pools; opening Settings starts at Scripta.
+Switching these submenus does not save or discard the current form draft.
+Explicitly reloading settings or leaving the page can discard unsaved edits.
 
-### 6. Rolling back
+**Status:** per-board charts, pool assignments, chip counts, temperatures, and
+mining counters. Click **Clock / Index** to change that column's display. Estimate
+is distinct from measured Accepted 15m/1h. A partial-window tooltip reports how
+much observed time contributed to the rate. Rejected and HW Errors show counts,
+with percentages on hover or keyboard focus. The theme toggle is in the header.
+Dark mode is the first-visit default; a saved light-mode choice is retained.
+The icon beside Logout identifies the miner's default-route connection as
+Ethernet or Wi-Fi; it is not an Internet or pool-health test.
 
-If anything breaks, write the original `PiZero_GB_180105_V1.0.img` factory image back to the SD card with the same `dd`/Etcher steps. Power-cycle the BK-B.
+**History:** Pool History, Failover History, and Clock History retain their
+separate views. Graph interval and point-count controls are under Settings >
+Scripta.
 
----
+**Network:** Settings > Network shows the current mode, address/prefix, gateway,
+and DNS. Dynamic (DHCP) is the initial choice without a saved profile; a router
+reservation is still DHCP. Static exposes editable address, prefix, gateway,
+and DNS fields. After **Apply Network Settings**, reconnect as needed and choose
+**Keep Settings** within three minutes, or **Revert**. Unconfirmed changes roll
+back automatically. Logging in does not confirm a change; a pending transaction
+redirects a successful login to Network for explicit confirmation.
 
-## Using the dashboard day to day
+**Wi-Fi:** Settings > Wi-Fi has a radio **Off / On** control, network scanning,
+manual SSID entry, and saved-network removal. A fresh image starts **Off**;
+the selected radio state survives reboot. Open and WPA/WPA2-PSK networks require
+a compatible adapter and installed driver. Wi-Fi settings do not change the
+wired connection. Wireless passwords are not included in application backups.
 
-**Live hashrate per board** — the Status tab shows three cards, one per board. Click Hour / Day / Week to change the time range. Numbers update every minute. If the charts are slowing your browser down you can turn them off in Settings → "Charts" (the miner keeps running and recording in the background).
+**Thermal protection:** Clocks & Fan has shared **Recover Temp / Cutoff Temp**
+defaults of **40 / 55 C**, applied through the miner's temperature controls. A separate host
+watchdog polls every 30 seconds, with defaults of disable at **80 C** and recover
+at **70 C** in `/opt/scripta/etc/temp-config.json`. It changes the board mask and
+restarts the miner, temporarily interrupting the other boards too. The two sets
+of limits are not the same setting; changing the clock form does not edit the
+watchdog file. Neither mechanism replaces working cooling or operator monitoring.
 
-**Heat protection** — if a board climbs over 80 °C the firmware shuts it off automatically and a red bar appears in the dashboard. It comes back on once it cools to 70 °C. (Thresholds are not currently adjustable.)
+**Dev Tools:** enable it under Settings > Scripta. In Logs, use the Measured Rates
+row's **view** action for personal measurements; viewing another log returns to
+the text-log viewer. Measured Rates defaults to RAM, with optional SD storage;
+both use a 2 MiB database limit. The Board selector filters All, 0, 1, or 2.
+Download report exports a readable text table; JSON exports the summary. Both
+downloads follow the selected board. The history list scrolls within a bounded
+area. Write buffer commits pending measurements to the selected storage, not a
+download. RAM history is lost on reboot. Board replaced is beside each board
+heading under **Dev Tools > Boards** and requires confirmation before clearing
+that board's measured history.
 
-**Pool History tab** — see how each pool has performed (accepted vs rejected shares) over the last hour, day, or week.
+### Backups
 
-**Restart the miner** — Status tab → click **restart miner**. Use this after changing pool assignments, or if anything looks stuck.
+On **Backup**, enter a name and click **Backup**, or use **Export current
+configuration** for a download. Saved archives can be restored, exported,
+imported, renamed, or deleted.
 
-**Backups** — Backup tab → type a name → click Save. This snapshots all your saved pools, board assignments, and Scripta settings. One-click restore. Take one before making changes you might want to undo.
+Backups include application settings, the web password hash, pools and assignments,
+clock profiles, fan/temperature settings, public and personal baseline data,
+measured rates, and supported chart/event history. **Keep exports private:**
+they contain credentials. Export a copy off the miner before replacing its SD card.
 
----
+This is an application backup, not a disk image. It excludes OS identity,
+firmware binaries and verification records, raw diagnostic logs, and pending
+network changes. Restore restarts the miner after success. Restored network data
+is staged for **Settings > Network > Review Restored Network**, not applied
+automatically. Review, Apply, and Keep Settings remain separate steps.
+See [Application Backups](TECHNICAL-GUIDE.md#application-backups) for limits and
+recovery behavior.
 
-## If something goes wrong
+## Adjustable clocks
 
-| What you see | Most likely cause | What to do |
-|---|---|---|
-| Dashboard says **Miner DOWN** but boards feel warm | The mining process died or hasn't started yet | Click **restart miner** on the Status tab. If still down after a minute, reboot the device. |
-| One board shows **0 GH/s** | The board overheated and got auto-disabled, OR its pool (and any backup) is unreachable | Check the temperature column. Check the pool is online. Try assigning that board to a different pool. |
-| **Charts flat at zero** | Just booted (no data collected yet), or charts are turned off in Settings | Give it 5 minutes after boot. Check Settings → Charts is on. |
-| **Web UI password lost** | n/a | Log in over SSH (`ssh root@<device-ip>`, password `baikal` if never changed) and reset it. Open a terminal and follow the comments in `/opt/scripta/etc/uipasswd`. |
-| **Can't find the device on the network** | DHCP didn't give it an address yet, or you're on the wrong subnet | Wait a minute after power-on. Check your router's DHCP leases page for hostname `blakestream-gaintb`. |
+Enable **Adjustable Clocks** under Settings > Scripta to use the guarded custom
+bridge path, then open **Miner > Clocks & Fan**. Only **Index** is editable.
+**Est. GH/s** and **Est. MHz** are read-only previews beside it.
 
----
+- **Global:** one Index selection for all three boards. Estimated GH/s is the
+  combined total, with a per-board average; it is not a measured all-board result.
+- **Individual:** a separate Index input and estimated GH/s/MHz for each board.
+- **Default:** stages **Index 30 / nominal 400 MHz** for that scope. It does not
+  apply until **Save Clock Settings** is confirmed.
+- **Supported input range:** Index **8..32** on verified V1 firmware. Index 33/34 are
+  not supported by the current host and V1 table.
 
-## Source code & rebuilding from source
+Non-default selections use the raw-index path. Non-default Global sends the
+same setting through individual board commands; it does not use the separate
+bridge-global transport. Changing a draft or selecting Default does not change
+the running clock. The save button's amber pulse marks unsaved clock changes.
 
-This firmware is GPLv3. Full source for every modified component is in the public repository alongside this README. If you want to rebuild the image yourself (verify the binary, modify it, port to a different Baikal model), the build steps and source layout live in [`BUILD.md`](BUILD.md).
+The bundled `blake256r8` examples cover Index 8..32 with at least one completed
+30-minute observation per index. This is limited screening, not qualification
+of every board. Compatible examples are shared across the UI, not represented
+as measurements of the user's hardware. Missing compatible data shows
+**Unavailable**. Personal measurement history is stored separately.
 
-In short: clone the repo, fetch the upstream `sgminer-baikal` source, apply the numbered patches in `sgminer-build/patches/`, then run the `01-fetch.sh` … `06-compress.sh` script chain. You'll need a Linux host with `losetup`, `xz`, `rsync`, and `sudo`.
+**MHz estimates are performance-equivalent, not measured frequency.** The
+nominal 400 MHz default is an anchor, not independent frequency verification.
+Accepted work, errors, temperature, and operating context are recorded; these
+short trials do not establish power efficiency, long-term stability, or safe
+overclocking. See the [technical guide](TECHNICAL-GUIDE.md#linked-clock-controls)
+for calculation, provenance, and validation limits, or the
+[Index baseline table](CLOCK-BASELINE.md) for the recorded GH/s and estimated MHz.
 
----
+### Bridge firmware and recovery
 
-## Licensing & attribution
+The SD image and STM32 firmware are separate:
 
-This project incorporates and modifies the following GPLv3 software, with full source preserved:
+| Component | Update method | Recovery |
+| --- | --- | --- |
+| Orange Pi controller | Write the SD image | Rewrite a known-good SD image |
+| STM32F407 USB bridge | Explicit, confirmed DFU flash | Guarded stock revert or manual ROM DFU recovery |
 
-- **Scripta** by **Lateral Factory** — https://www.latera.lt/scripta/
-- **sgminer-baikal** — https://github.com/baikalminer (and community forks)
-- **Baikal multi-algo-miner** Orange Pi controller bits — https://github.com/baikalminer/multi-algo-miner
+On the first boot of a freshly written SD image, a read-only, double-read
+check identifies the installed bridge before the web UI and miner watchdog
+start. Verified current Custom V1 enables Adjustable Clocks at the normal
+400 MHz / Index 30 default. Stock leaves Adjustable Clocks disabled. Auto Fan
+and Dev Tools retain their factory defaults. This check never flashes firmware.
+Later boots preserve saved settings and do not repeat the check. Unknown
+firmware or a failed check leaves clocks disabled; the result is retained in
+`/opt/scripta/etc/bkb-firmware-firstboot.json` and the read log in
+`/opt/scripta/var/firmware-firstboot.log`.
 
-All modifications are released under **GPLv3**. Modified Scripta files are in `overlay/var/www/` and `overlay/opt/scripta/`. sgminer modifications are in `sgminer-build/patches/` as a numbered patch series. Original `LICENSE` files are preserved everywhere.
+First-time custom bridge installation requires a confirmed flash. Subsequent
+Adjustable Clocks enable/disable changes are software-only; **Revert to Stock**
+is a separate flash operation. Guards take a pre-flash backup, verify readback,
+and attempt rollback on mismatch. They cannot guarantee recovery from a power
+failure or hardware fault.
 
-This is an independent community project. Not affiliated with or endorsed by Lateral Factory, Baikal Miner, or any successor entity.
+Allow about **170 seconds** for a flash, including safety backups, writing,
+readback verification, and restarting mining. Dev Tools shows elapsed and
+estimated total time, starting with a **164-second lab baseline** and learning
+separate estimates from successful stock and V1 flashes on your miner.
+The estimate is not a timeout; **do not power off** while
+the operation is running.
+
+Writes target application flash, not the ROM bootloader or option bytes.
+Manual recovery may require access to BOOT0/NRST and working USB hardware.
+Read [the flashing and recovery guide](firmware-custom/flash/README.md) before
+flashing. Replacing the SD image alone does **not** restore stock bridge firmware.
+
+## Troubleshooting
+
+| Symptom | Check |
+| --- | --- |
+| Miner DOWN | Inspect launcher/miner logs and pool DNS before restarting; repeated failures need diagnosis, not repeated blind restarts. |
+| One board has no accepted work | Check enabled state, chip counts, temperature, pool assignment, and primary/backup availability. |
+| Accepted rate or Index-test graph is empty | Allow settling and at least five observed minutes; check recorder status, API availability, and context changes under Dev Tools. |
+| Cannot find the controller | Check Ethernet, router DHCP leases, subnet, and any pending static-change rollback. |
+| Forgotten web password | Use an existing authorized SSH session/account or a known-good recovery backup; do not assume factory credentials still work. |
+
+## Source and rebuilding
+
+This repository contains the controller/web overlay, bundled upstream host-miner
+source, a numbered patch series, and custom bridge patch source. See
+[BUILD.md](BUILD.md) for prerequisites, image assembly, and separate host/bridge
+build recipes, and [QA.md](QA.md) for tests and hardware-validation limits.
+The [scripts index](scripts/README.md) lists the available tools. The
+[Technical Guide](TECHNICAL-GUIDE.md) covers controller behavior and recovery.
+
+The host miner is based on
+[cod3gen/sgminer-baikal](https://github.com/cod3gen/sgminer-baikal), pinned to
+`3cde8deca53f83ac65bc685b988166bd17930753` in
+[UPSTREAM-PIN](sgminer-build/UPSTREAM-PIN), with 33 applied patches. The complete
+upstream source is included as a verified [Git bundle](sgminer-build/vendor/README.md)
+for offline source preparation. Build tools, packages, and the factory SD image
+are separate prerequisites.
+
+The inherited version string `sgminer 5.6.2-BK_cod3gen_MOD` does not mean the
+Blakestream patches are absent. Build provenance is documented in
+[BUILD-SOURCE.md](sgminer-build/BUILD-SOURCE.md). Image assembly copies the current
+overlay, including its supplied binaries; it does not rebuild sgminer or STM32
+firmware automatically. Hardware signals are documented in the
+[logic-analyzer pinout](BKB-LOGIC-ANALYZER-PINOUT.md).
+
+## Licensing and attribution
+
+This project incorporates and modifies GPLv3 software:
+
+- **Scripta** by **Lateral Factory**: https://www.latera.lt/scripta/
+- **sgminer-baikal**, the cod3gen community host-miner baseline:
+  https://github.com/cod3gen/sgminer-baikal
+- **Baikal multi-algo-miner** controller software:
+  https://github.com/baikalminer/multi-algo-miner
+
+Modifications are released under **GPLv3**. Scripta/controller changes are in
+`overlay/var/www/` and `overlay/opt/scripta/`; sgminer changes are in
+`sgminer-build/patches/`. Preserve upstream license and copyright notices.
+This is an independent project, not affiliated with or endorsed by those authors
+or organizations.

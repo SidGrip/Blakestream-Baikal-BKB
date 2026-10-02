@@ -1,0 +1,13 @@
+{
+  "algorithm": "blake256r8",
+  "hw_policy": "logged-budget-10-v1",
+  "max_temp": 50,
+  "legs": [
+    {"name": "ref-before", "indices": [30, 30, 30], "warmup_seconds": 180, "measurement_seconds": 1800},
+    {"name": "screen-29-28-27", "indices": [29, 28, 27], "warmup_seconds": 180, "measurement_seconds": 1800},
+    {"name": "screen-26-25-24", "indices": [26, 25, 24], "warmup_seconds": 180, "measurement_seconds": 1800},
+    {"name": "screen-23-22-21", "indices": [23, 22, 21], "warmup_seconds": 180, "measurement_seconds": 1800},
+    {"name": "screen-20-19-18", "indices": [20, 19, 18], "warmup_seconds": 180, "measurement_seconds": 1800},
+    {"name": "ref-after", "indices": [30, 30, 30], "warmup_seconds": 180, "measurement_seconds": 1800}
+  ]
+}

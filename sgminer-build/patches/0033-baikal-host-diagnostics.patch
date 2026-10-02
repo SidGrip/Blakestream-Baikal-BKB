@@ -1,0 +1,4321 @@
+--- a/driver-baikalu.c
++++ b/driver-baikalu.c
+@@ -26,10 +26,62 @@
+ #include "driver-baikal.h"
+ #include "compat.h"
+ #include "algorithm.h"
++#include "sph/sph_sha2.h"
++#include <errno.h>
++#include <fcntl.h>
++#include <sys/stat.h>
++
++/* Part of this translation unit. configure does not regenerate Makefile.in,
++ * so a new sgminer object would not be linked. */
++#include "baikal-diag.c"
++
++#if BAIKAL_MAXUNIT != BAIKAL_DIAG_UNITS || BAIKAL_MAXASICS != BAIKAL_DIAG_CHIPS
++#error "BK-B diag grid must match the driver asic table"
++#endif
+ 
+ int thecounter = 0; // Added for debug 26.03.18
+ 
+ static int api_clock = BAIKAL_CLK_DEF;
++
++static void baikal_diag_hash_executable(char out[65])
++{
++    static const char hex[] = "0123456789abcdef";
++    sph_sha256_context ctx;
++    unsigned char buf[4096], digest[32];
++    struct stat before, after;
++    FILE *fp;
++    size_t n, total = 0;
++    int i, valid;
++
++    out[0] = '\0';
++    fp = fopen("/proc/self/exe", "rb");
++    if (!fp)
++        return;
++    if (fstat(fileno(fp), &before) != 0 || !S_ISREG(before.st_mode) ||
++            before.st_size <= 0 || before.st_size > 64 * 1024 * 1024) {
++        fclose(fp);
++        return;
++    }
++    sph_sha256_init(&ctx);
++    while ((n = fread(buf, 1, sizeof(buf), fp)) != 0) {
++        total += n;
++        if (total > (size_t)before.st_size)
++            break;
++        sph_sha256(&ctx, buf, n);
++    }
++    valid = !ferror(fp) && total == (size_t)before.st_size &&
++        fstat(fileno(fp), &after) == 0 && before.st_dev == after.st_dev &&
++        before.st_ino == after.st_ino && before.st_size == after.st_size &&
++        before.st_mtime == after.st_mtime;
++    if (fclose(fp) != 0 || !valid)
++        return;
++    sph_sha256_close(&ctx, digest);
++    for (i = 0; i < 32; i++) {
++        out[i * 2] = hex[digest[i] >> 4];
++        out[i * 2 + 1] = hex[digest[i] & 15];
++    }
++    out[64] = '\0';
++}
+ static pthread_mutex_t baikal_pin_lock = PTHREAD_MUTEX_INITIALIZER;
+ static pthread_mutex_t baikal_fan_lock = PTHREAD_MUTEX_INITIALIZER;
+ static bool baikal_pin_state_ready;
+@@ -124,6 +176,14 @@
+ 
+ static void baikal_log_protocol_msg(const char *label, int requested_clock, const baikal_msg *msg)
+ {
++    if (!msg || msg->len < 7) {
++        applog(LOG_NOTICE,
++               "BK-B %s reply requested=%d miner_id=%d cmd=0x%02x param=0x%02x dest=0x%02x len=%u",
++               label, requested_clock, msg ? msg->miner_id : -1,
++               msg ? msg->cmd : 0, msg ? msg->param : 0, msg ? msg->dest : 0,
++               msg ? (unsigned int)msg->len : 0);
++        return;
++    }
+     applog(LOG_NOTICE,
+            "BK-B %s reply requested=%d miner_id=%d cmd=0x%02x param=0x%02x dest=0x%02x len=%u data[0..6]=%02x %02x %02x %02x %02x %02x %02x",
+            label, requested_clock, msg->miner_id, msg->cmd, msg->param, msg->dest, (unsigned int)msg->len,
+@@ -172,9 +232,7 @@
+ 
+     mutex_lock(&info->clock_lock);
+     if (!info->global_clock_pending || info->global_clock_inflight) {
+-        info->clock_generation++;
+-        if (info->clock_generation == 0)
+-            info->clock_generation = 1;
++        baikal_diag_bump_u32(&info->clock_generation);
+     }
+     info->global_clock_pending = true;
+     info->global_clock_failures = 0;
+@@ -265,6 +323,8 @@
+     cgpu->failover_pool_no = user_failover_pool_no;
+ }
+ 
++static void baikal_diag_note_route(struct cgpu_info *cgpu);
++
+ void baikal_pin_pool(struct cgpu_info *cgpu, int pool_no)
+ {
+     if (!cgpu || !baikal_pin_index_valid(cgpu->miner_id))
+@@ -278,12 +338,14 @@
+     mutex_unlock(&baikal_pin_lock);
+ 
+     baikal_sync_pool_state(cgpu, pool_no, pool_no, false);
++    baikal_diag_note_route(cgpu);
+ }
+ 
+ void baikal_clear_pool_pin(struct cgpu_info *cgpu)
+ {
+     if (!cgpu || !baikal_pin_index_valid(cgpu->miner_id)) {
+         baikal_sync_pool_state(cgpu, BAIKAL_POOL_UNSET, BAIKAL_POOL_UNSET, false);
++        baikal_diag_note_route(cgpu);
+         return;
+     }
+ 
+@@ -297,6 +359,7 @@
+ 
+     baikal_sync_pool_state(cgpu, BAIKAL_POOL_UNSET, BAIKAL_POOL_UNSET, false);
+     cgpu->failover_pool_no = BAIKAL_POOL_UNSET;
++    baikal_diag_note_route(cgpu);
+ }
+ 
+ void baikal_pin_failover(struct cgpu_info *cgpu, int pool_no)
+@@ -338,6 +401,7 @@
+ 
+     if (!cgpu || !baikal_pin_index_valid(cgpu->miner_id)) {
+         baikal_sync_pool_state(cgpu, primary_pool_no, pool_no, failover_active);
++        baikal_diag_note_route(cgpu);
+         return;
+     }
+ 
+@@ -349,6 +413,7 @@
+     mutex_unlock(&baikal_pin_lock);
+ 
+     baikal_sync_pool_state(cgpu, primary_pool_no, pool_no, failover_active);
++    baikal_diag_note_route(cgpu);
+ }
+ 
+ int baikal_primary_pool(const struct cgpu_info *cgpu)
+@@ -366,6 +431,81 @@
+     return cgpu ? cgpu->pool_failover_active : false;
+ }
+ 
++static void baikal_diag_note_route(struct cgpu_info *cgpu)
++{
++    struct baikal_info *info;
++    struct pool *pool = NULL;
++    char endpoint[BAIKAL_DIAG_ID_LEN];
++    char worker[BAIKAL_DIAG_ID_LEN];
++    int pool_no;
++    int miner_id;
++
++    if (!cgpu || !cgpu->drv || cgpu->drv->drv_id != DRIVER_baikalu)
++        return;
++    info = cgpu->device_data;
++    if (!info)
++        return;
++    miner_id = cgpu->miner_id;
++    pthread_mutex_lock(&info->diag_lock);
++    if (!info->diag_ready || miner_id < 0 || miner_id >= info->miner_count ||
++            miner_id >= BAIKAL_MAXMINERS) {
++        pthread_mutex_unlock(&info->diag_lock);
++        return;
++    }
++    pthread_mutex_unlock(&info->diag_lock);
++
++    pool_no = baikal_effective_pool(cgpu);
++    endpoint[0] = '\0';
++    worker[0] = '\0';
++    if (pool_no >= 0 && pool_no < total_pools && pools)
++        pool = pools[pool_no];
++    if (pool) {
++        pthread_mutex_lock(&pool->pool_lock);
++        baikal_diag_clean_endpoint(pool->rpc_url, endpoint, sizeof(endpoint));
++        snprintf(worker, sizeof(worker), "%s", pool->rpc_user ? pool->rpc_user : "");
++        pthread_mutex_unlock(&pool->pool_lock);
++    }
++
++    pthread_mutex_lock(&info->diag_lock);
++    if (info->diag_ready && miner_id >= 0 && miner_id < info->miner_count &&
++            miner_id < BAIKAL_MAXMINERS) {
++        baikal_diag_observe_route(&info->miners[miner_id].diag_activity,
++                                  pool_no, endpoint, worker);
++    }
++    pthread_mutex_unlock(&info->diag_lock);
++}
++
++void baikal_diag_note_enable(struct cgpu_info *cgpu, int enabled)
++{
++    struct baikal_info *info;
++    int miner_id;
++
++    if (!cgpu || !cgpu->drv || cgpu->drv->drv_id != DRIVER_baikalu)
++        return;
++    info = cgpu->device_data;
++    if (!info)
++        return;
++    miner_id = cgpu->miner_id;
++    pthread_mutex_lock(&info->diag_lock);
++    if (info->diag_ready && miner_id >= 0 && miner_id < info->miner_count &&
++            miner_id < BAIKAL_MAXMINERS) {
++        baikal_diag_observe_enable(&info->miners[miner_id].diag_activity, enabled);
++    }
++    pthread_mutex_unlock(&info->diag_lock);
++}
++
++void baikal_diag_note_pools_touched(void)
++{
++    int i;
++
++    for (i = 0; i < total_devices; i++) {
++        struct cgpu_info *cgpu = get_devices(i);
++
++        if (cgpu)
++            baikal_diag_note_route(cgpu);
++    }
++}
++
+ static bool baikal_routed_miner_has_no_work_target(struct thr_info *thr)
+ {
+     struct cgpu_info *cgpu = thr ? thr->cgpu : NULL;
+@@ -404,66 +544,550 @@
+            base_work->pool->pool_no == effective_pool_no;
+ }
+ 
+-static int baikal_sendmsg(struct cgpu_info *baikal, baikal_msg *msg)
++static int baikal_diag_miner_ok(const struct baikal_info *info, int miner_id)
+ {
+-    int err;
+-    int i, pos = 0;
+-    int amount;
+-    uint8_t buf[512] = {0, };
++    return info && miner_id >= 0 && miner_id < info->miner_count &&
++           miner_id < BAIKAL_MAXMINERS;
++}
++
++static void baikal_diag_add_usb(struct baikal_info *info, int miner_id, int tx)
++{
++    if (!baikal_diag_miner_ok(info, miner_id))
++        return;
++    pthread_mutex_lock(&info->diag_lock);
++    if (tx)
++        info->miners[miner_id].diag.usb_tx_error++;
++    else
++        info->miners[miner_id].diag.usb_rx_error++;
++    pthread_mutex_unlock(&info->diag_lock);
++}
++
++static void baikal_diag_add_short(struct baikal_info *info, int miner_id)
++{
++    if (!baikal_diag_miner_ok(info, miner_id))
++        return;
++    pthread_mutex_lock(&info->diag_lock);
++    info->miners[miner_id].diag.short_reply++;
++    pthread_mutex_unlock(&info->diag_lock);
++}
+ 
+-    buf[pos++] = ':';
+-    buf[pos++] = msg->miner_id;
+-    buf[pos++] = msg->cmd;
+-    buf[pos++] = msg->param;
+-    buf[pos++] = msg->dest;
++static uint32_t baikal_diag_generation(const struct baikal_info *info, int miner_id)
++{
++    /* Atomic snapshot. Do not take clock_lock while the USB mutex is held. */
++    if (!info)
++        return 0;
++    if (!info->clock_mode_global && miner_id >= 0 && miner_id < BAIKAL_MAXMINERS)
++        return baikal_diag_load_u32(&info->miners[miner_id].clock_generation);
++    return baikal_diag_load_u32(&info->clock_generation);
++}
++
++static int baikal_diag_clamp_u16(int value)
++{
++    if (value < 0)
++        return 0;
++    if (value > 65535)
++        return 65535;
++    return value;
++}
++
++static void baikal_trace_note_tx(struct baikal_info *info, const baikal_msg *msg,
++                                 const uint8_t *buf, int outlen,
++                                 const struct baikal_diag_xfer *tx)
++{
++    int n;
++    int enabled;
+ 
+-    for (i = 0; i < msg->len; i++, pos += 2) {
+-        buf[pos + 1] = msg->data[i];
++    if (!info || !msg || !tx)
++        return;
++    info->trace_tx_valid = 1;
++    info->trace_tx_len = 0;
++    info->trace_tx_status = tx->status;
++    info->trace_tx_intended = tx->intended;
++    info->trace_tx_transferred = tx->transferred;
++    info->trace_mono_us = baikal_diag_mono_us();
++    info->trace_generation = baikal_diag_generation(info, msg->miner_id);
++    info->trace_board = msg->miner_id;
++    info->trace_cmd = msg->cmd;
++    info->trace_work_idx = msg->param;
++    info->trace_expect_valid = 1;
++    info->trace_expect_miner = msg->miner_id;
++    info->trace_expect_cmd = msg->cmd;
++    info->trace_min_data = 0;
++    enabled = baikal_diag_trace_enabled(&info->trace);
++    n = outlen;
++    if (n > BAIKAL_DIAG_TX_MAX)
++        n = BAIKAL_DIAG_TX_MAX;
++    if (n < 0)
++        n = 0;
++    if (enabled && buf && n > 0) {
++        memcpy(info->trace_tx, buf, (size_t)n);
++        info->trace_tx_len = n;
+     }
++}
++
++static void baikal_trace_commit(struct cgpu_info *baikal, const uint8_t *rx, int rx_len,
++                                int rx_status, int rx_transferred, int rx_intended,
++                                uint8_t flags,
++                                uint8_t ack_miner, uint8_t ack_cmd,
++                                uint8_t ack_param, uint8_t ack_dest)
++{
++    struct baikal_info *info = baikal ? baikal->device_data : NULL;
++    struct baikal_diag_trace_rec rec;
++    int board;
++    int attempted = -1;
++    int acked = -1;
+ 
+-    buf[pos++] = '\r';
+-    buf[pos++] = '\n';
++    if (!info || !info->trace_tx_valid)
++        return;
++    board = info->trace_board;
++    if (baikal_diag_trace_enabled(&info->trace)) {
++        pthread_mutex_lock(&info->diag_lock);
++        if (baikal_diag_miner_ok(info, board)) {
++            attempted = info->miners[board].diag.attempted_clock_code;
++            acked = info->miners[board].sent_clock_code;
++        }
++        pthread_mutex_unlock(&info->diag_lock);
+ 
+-    err = usb_write(baikal, (char *)buf, pos, &amount, C_BAIKAL_SEND);
+-    if (err < 0) {
+-        applog(LOG_ERR, "baikal_sendmsg error(%d)\n", err);
+-        return (err);
++        memset(&rec, 0, sizeof(rec));
++        rec.mono_us = info->trace_mono_us ? info->trace_mono_us : baikal_diag_mono_us();
++        rec.generation = info->trace_generation;
++        rec.tx_len = (uint16_t)info->trace_tx_len;
++        rec.tx = info->trace_tx_len ? info->trace_tx : NULL;
++        rec.tx_status = info->trace_tx_status;
++        rec.tx_intended = (uint16_t)baikal_diag_clamp_u16(info->trace_tx_intended);
++        rec.tx_transferred = (uint16_t)baikal_diag_clamp_u16(info->trace_tx_transferred);
++        if (rx && rx_len > 0) {
++            if (rx_len > BAIKAL_DIAG_RX_MAX)
++                rx_len = BAIKAL_DIAG_RX_MAX;
++            rec.rx_len = (uint16_t)rx_len;
++            rec.rx = rx;
++        }
++        rec.rx_status = rx_status;
++        rec.rx_transferred = (uint16_t)baikal_diag_clamp_u16(rx_transferred);
++        rec.rx_intended = (uint16_t)baikal_diag_clamp_u16(rx_intended);
++        rec.attempted_clock_code = attempted;
++        rec.acked_clock_code = acked;
++        rec.board = info->trace_board;
++        rec.cmd = info->trace_cmd;
++        rec.work_idx = info->trace_work_idx;
++        rec.flags = flags;
++        rec.ack_miner = ack_miner;
++        rec.ack_cmd = ack_cmd;
++        rec.ack_param = ack_param;
++        rec.ack_dest = ack_dest;
++        baikal_diag_trace_append(&info->trace, &rec);
+     }
++    info->trace_tx_valid = 0;
++    info->trace_expect_valid = 0;
++    info->trace_min_data = 0;
++}
+ 
+-    return (amount);
++static void baikal_trace_arm_read(struct baikal_info *info, int min_data)
++{
++    if (info && info->trace_tx_valid)
++        info->trace_min_data = min_data;
+ }
+ 
++static const char *baikal_diag_export_path(void)
++{
++    struct stat st;
+ 
+-static int baikal_readmsg(struct cgpu_info *baikal, baikal_msg *msg, int size)
++    if (lstat("/run/blakestream", &st) == 0 && S_ISDIR(st.st_mode))
++        return "/run/blakestream/bkb-diag-trace.bin";
++    return "/tmp/bkb-diag-trace.bin";
++}
++
++static int baikal_diag_write_all(int fd, const void *buf, size_t len)
+ {
+-    int err;
+-    int amount;
+-    int len, pos = 1;
+-    uint8_t buf[128] = {0, };
++    const uint8_t *p = buf;
++    size_t off = 0;
+ 
+-    err = usb_read_once(baikal, (char *)buf, size, &amount, C_BAIKAL_READ);
+-    if (err < 0 || amount < 7) {
+-        return (err);
++    while (off < len) {
++        ssize_t n = write(fd, p + off, len - off);
++
++        if (n < 0)
++            return -1;
++        if (n == 0)
++            return -1;
++        off += (size_t)n;
+     }
++    return 0;
++}
+ 
+-    if ((buf[0] != ':') || (buf[amount - 2] != '\r') || (buf[amount - 1] != '\n')) {
+-        return (-1);
++static int baikal_diag_export_trace(struct baikal_info *info, char *err, size_t err_len)
++{
++    uint8_t *payload = NULL;
++    uint32_t payload_len = 0;
++    struct baikal_diag_trace_meta meta_info;
++    char meta[512];
++    char tmp[160];
++    const char *path;
++    int meta_len;
++    int tmp_len;
++    int fd = -1;
++
++    if (!info) {
++        snprintf(err, err_len, "diag export missing device");
++        return -1;
++    }
++    path = baikal_diag_export_path();
++    memset(&meta_info, 0, sizeof(meta_info));
++    if (baikal_diag_trace_copy(&info->trace, &payload, &payload_len, &meta_info.live,
++                               &meta_info.overwritten, &meta_info.dropped,
++                               &meta_info.recorded, &meta_info.capacity,
++                               &meta_info.enabled) != 0) {
++        snprintf(err, err_len, "diag export copy failed");
++        return -1;
++    }
++    meta_info.used = payload_len;
++    if (payload_len > BAIKAL_DIAG_TRACE_BYTES ||
++            meta_info.capacity > BAIKAL_DIAG_TRACE_BYTES) {
++        free(payload);
++        snprintf(err, err_len, "diag export over cap");
++        return -1;
++    }
++    meta_len = baikal_diag_trace_meta_line(meta, sizeof(meta), &meta_info,
++                                           info->diag_pid, (long)info->diag_start_unix);
++    if (meta_len < 0 || meta_len >= (int)sizeof(meta)) {
++        free(payload);
++        snprintf(err, err_len, "diag export metadata failed");
++        return -1;
++    }
++    tmp_len = snprintf(tmp, sizeof(tmp), "%s.%d.tmp", path, info->diag_pid);
++    if (tmp_len < 0 || tmp_len >= (int)sizeof(tmp)) {
++        free(payload);
++        snprintf(err, err_len, "diag export path failed");
++        return -1;
++    }
++    fd = open(tmp, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0644);
++    if (fd < 0 && errno == EEXIST) {
++        unlink(tmp);
++        fd = open(tmp, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0644);
++    }
++    if (fd < 0) {
++        free(payload);
++        snprintf(err, err_len, "diag export open failed");
++        return -1;
++    }
++    if (baikal_diag_write_all(fd, "BKBTRACE1\n", 10) != 0 ||
++            baikal_diag_write_all(fd, meta, (size_t)meta_len) != 0 ||
++            (payload_len && baikal_diag_write_all(fd, payload, payload_len) != 0)) {
++        close(fd);
++        unlink(tmp);
++        free(payload);
++        snprintf(err, err_len, "diag export write failed");
++        return -1;
++    }
++    if (baikal_diag_sync_close(fd) != 0) {
++        unlink(tmp);
++        free(payload);
++        snprintf(err, err_len, "diag export close failed");
++        return -1;
++    }
++    if (rename(tmp, path) != 0) {
++        unlink(tmp);
++        free(payload);
++        snprintf(err, err_len, "diag export rename failed");
++        return -1;
++    }
++    free(payload);
++    pthread_mutex_lock(&info->diag_lock);
++    snprintf(info->diag_export_path, sizeof(info->diag_export_path), "%s", path);
++    pthread_mutex_unlock(&info->diag_lock);
++    return 0;
++}
++
++static void baikal_diag_note_attempt(struct baikal_info *info, int miner_id, int clock_code)
++{
++    if (!baikal_diag_miner_ok(info, miner_id))
++        return;
++    pthread_mutex_lock(&info->diag_lock);
++    info->miners[miner_id].diag.attempted_clock_code = clock_code;
++    pthread_mutex_unlock(&info->diag_lock);
++}
++
++static void baikal_diag_note_acked(struct baikal_info *info, int miner_id, int clock_code)
++{
++    if (!baikal_diag_miner_ok(info, miner_id))
++        return;
++    pthread_mutex_lock(&info->diag_lock);
++    info->miners[miner_id].sent_clock_code = clock_code;
++    pthread_mutex_unlock(&info->diag_lock);
++}
++
++static void baikal_diag_lock_hash(void)
++{
++    mutex_lock(&hash_lock);
++}
++
++static void baikal_diag_unlock_hash(void)
++{
++    mutex_unlock(&hash_lock);
++}
++
++static void baikal_diag_lock_stats(void)
++{
++    mutex_lock(&stats_lock);
++}
++
++static void baikal_diag_unlock_stats(void)
++{
++    mutex_unlock(&stats_lock);
++}
++
++struct baikal_diag_share_load_ctx {
++    struct cgpu_info *cg;
++    struct timeval now;
++    uint64_t mono_us;
++};
++
++static void baikal_diag_load_share(struct baikal_diag_share_raw *raw, void *user)
++{
++    struct baikal_diag_share_load_ctx *ctx = user;
++    struct cgpu_info *cg = ctx ? ctx->cg : NULL;
++
++    if (!raw || !cg)
++        return;
++    raw->accepted = cg->accepted;
++    raw->rejected = cg->rejected;
++    raw->hw = cg->hw_errors;
++    raw->diff_accepted = cg->diff_accepted;
++    raw->diff_rejected = cg->diff_rejected;
++    raw->start_sec = (int64_t)cg->dev_start_tv.tv_sec;
++    raw->start_usec = (long)cg->dev_start_tv.tv_usec;
++    cgtime(&ctx->now);
++    ctx->mono_us = baikal_diag_mono_us();
++}
++
++static void baikal_diag_observe_all(struct cgpu_info *baikal)
++{
++    struct baikal_info *info = baikal ? baikal->device_data : NULL;
++    int i;
++
++    if (!info)
++        return;
++    /* Serialize capture and publication, not formatting or USB traffic. */
++    pthread_mutex_lock(&info->diag_sample_lock);
++    for (i = 0; i < info->miner_count && i < BAIKAL_MAXMINERS; i++) {
++        struct miner_info *miner = &info->miners[i];
++        struct thr_info *thr = NULL;
++        struct cgpu_info *cg = NULL;
++        struct pool *pool = NULL;
++        char endpoint[BAIKAL_DIAG_ID_LEN];
++        char worker[BAIKAL_DIAG_ID_LEN];
++        struct baikal_diag_stat_sample sample;
++        int pool_no = BAIKAL_POOL_UNSET;
++        int enabled = 0;
++        uint64_t stat_epoch, route_epoch, enable_epoch;
++        uint32_t generation;
++
++        endpoint[0] = '\0';
++        worker[0] = '\0';
++        if (mining_thr && miner->thr_id >= 0 && miner->thr_id < mining_threads)
++            thr = mining_thr[miner->thr_id];
++        cg = (thr && thr->cgpu) ? thr->cgpu : NULL;
++        if (!cg)
++            continue;
++        pthread_mutex_lock(&info->diag_lock);
++        stat_epoch = miner->diag_activity.stat_epoch;
++        route_epoch = miner->diag_activity.route_epoch;
++        enable_epoch = miner->diag_activity.enable_epoch;
++        generation = baikal_diag_generation(info, i);
++        pthread_mutex_unlock(&info->diag_lock);
++        enabled = cg->deven != DEV_DISABLED;
++        pool_no = baikal_effective_pool(cg);
++        if (pool_no >= 0 && pool_no < total_pools && pools)
++            pool = pools[pool_no];
++        if (pool) {
++            pthread_mutex_lock(&pool->pool_lock);
++            baikal_diag_clean_endpoint(pool->rpc_url, endpoint, sizeof(endpoint));
++            snprintf(worker, sizeof(worker), "%s", pool->rpc_user ? pool->rpc_user : "");
++            pthread_mutex_unlock(&pool->pool_lock);
++        }
++        {
++            struct baikal_diag_share_view share;
++            struct baikal_diag_share_load_ctx ctx;
++            int elapsed_valid = 0;
++            double elapsed = 0;
++
++            memset(&share, 0, sizeof(share));
++            memset(&ctx, 0, sizeof(ctx));
++            ctx.cg = cg;
++            baikal_diag_copy_share(&share, baikal_diag_load_share, &ctx,
++                                   baikal_diag_lock_hash, baikal_diag_unlock_hash,
++                                   baikal_diag_lock_stats, baikal_diag_unlock_stats);
++            elapsed = baikal_diag_device_elapsed(share.start_sec, share.start_usec,
++                                                 (int64_t)ctx.now.tv_sec, (long)ctx.now.tv_usec,
++                                                 &elapsed_valid);
++            /* BK-B leaves dev_start_tv unset. Use a captured monotonic
++             * process interval instead of the asynchronously cached total_secs. */
++            if (!elapsed_valid && info->diag_start_mono_us != 0 &&
++                    ctx.mono_us >= info->diag_start_mono_us) {
++                elapsed = (ctx.mono_us - info->diag_start_mono_us) / 1000000.0;
++                if (elapsed < 1.0)
++                    elapsed = 1.0;
++                elapsed_valid = 1;
++            }
++            if (!share.valid)
++                elapsed_valid = 0;
++            memset(&sample, 0, sizeof(sample));
++            sample.accepted = share.accepted;
++            sample.rejected = share.rejected;
++            sample.hw = share.hw;
++            sample.diff_accepted = share.diff_accepted;
++            sample.diff_rejected = share.diff_rejected;
++            sample.device_start_sec = share.start_sec > 0 ? (uint64_t)share.start_sec : 0;
++
++            pthread_mutex_lock(&info->diag_lock);
++            if (stat_epoch != miner->diag_activity.stat_epoch ||
++                    route_epoch != miner->diag_activity.route_epoch ||
++                    enable_epoch != miner->diag_activity.enable_epoch ||
++                    generation != baikal_diag_generation(info, i)) {
++                miner->diag_activity.share_valid = 0;
++                miner->diag_activity.elapsed_valid = 0;
++                pthread_mutex_unlock(&info->diag_lock);
++                continue;
++            }
++            sample.local_nonce = miner->nonce;
++            sample.local_error = miner->error;
++            baikal_diag_observe_route(&miner->diag_activity, pool_no, endpoint, worker);
++            baikal_diag_observe_enable(&miner->diag_activity, enabled);
++            baikal_diag_observe_stats(&miner->diag_activity, &sample);
++            miner->diag_activity.share_valid = share.valid;
++            miner->diag_activity.elapsed_valid = elapsed_valid;
++            miner->diag_activity.device_elapsed_sec = elapsed;
++            miner->diag.snap_mono_us = ctx.mono_us;
++            pthread_mutex_unlock(&info->diag_lock);
++        }
++    }
++    pthread_mutex_unlock(&info->diag_sample_lock);
++}
++
++static struct work *baikal_diag_get_work(struct baikal_info *info, struct miner_info *miner,
++                                         struct thr_info *thr)
++{
++    uint64_t t0 = baikal_diag_mono_us();
++    struct work *work = get_work(thr, miner->thr_id);
++    uint64_t dt = baikal_diag_mono_us() - t0;
++
++    pthread_mutex_lock(&info->diag_lock);
++    baikal_diag_note_duration(&miner->diag.work_wait_us_sum, &miner->diag.work_wait_us_max,
++                              &miner->diag.work_wait_count, dt);
++    pthread_mutex_unlock(&info->diag_lock);
++    return work;
++}
++
++static int baikal_sendmsg(struct cgpu_info *baikal, baikal_msg *msg)
++{
++    int err;
++    int amount = 0;
++    int outlen = 0;
++    uint8_t buf[BAIKAL_DIAG_TX_MAX];
++    struct baikal_info *info = baikal->device_data;
++    struct baikal_diag_xfer tx;
++
++    memset(buf, 0, sizeof(buf));
++    if (baikal_diag_encode_tx(msg->miner_id, msg->cmd, msg->param, msg->dest,
++                              msg->data, (int)msg->len, buf, (int)sizeof(buf),
++                              &outlen) != 0) {
++        applog(LOG_ERR, "baikal_sendmsg encode error\n");
++        return -1;
++    }
++
++    err = usb_write(baikal, (char *)buf, outlen, &amount, C_BAIKAL_SEND);
++    baikal_diag_classify_tx(err, amount, outlen, &tx);
++    if (info)
++        baikal_trace_note_tx(info, msg, buf, outlen, &tx);
++    if (tx.caller_rc < 0) {
++        if (info) {
++            if (tx.count_usb)
++                baikal_diag_add_usb(info, msg->miner_id, 1);
++            baikal_trace_commit(baikal, NULL, 0, 0, 0, 0, tx.flags, 0, 0, 0, 0);
++        }
++        applog(LOG_ERR, "baikal_sendmsg error(%d)\n", tx.caller_rc);
++        return tx.caller_rc;
++    }
++
++    if (info && msg->cmd == BAIKAL_SEND_WORK &&
++            baikal_diag_miner_ok(info, msg->miner_id)) {
++        pthread_mutex_lock(&info->diag_lock);
++        info->miners[msg->miner_id].diag.work_sends++;
++        pthread_mutex_unlock(&info->diag_lock);
+     }
++    return tx.caller_rc;
++}
+ 
+-    msg->miner_id   = buf[pos++];
+-    msg->cmd        = buf[pos++];
+-    msg->param      = buf[pos++];
+-    msg->dest       = buf[pos++];
++
++static int baikal_readmsg(struct cgpu_info *baikal, baikal_msg *msg, int size)
++{
++    int err;
++    int amount = 0;
++    int dlen = -1;
++    uint8_t buf[BAIKAL_DIAG_RX_MAX];
++    uint8_t miner = 0, cmd = 0, param = 0, dest = 0;
++    struct baikal_info *info = baikal->device_data;
++    int decoded;
++    int mismatch = 0;
++    int min_data = 0;
++    int expect_reply;
++    struct baikal_diag_xfer rx;
++    int board;
++
++    if (size > (int)sizeof(buf))
++        size = (int)sizeof(buf);
++    if (size < 7)
++        size = 7;
++    memset(buf, 0, sizeof(buf));
+     memset(msg->data, 0, sizeof(msg->data));
+     msg->len = 0;
+-
+-    for (len = 0; pos < amount - 2; len++, pos += 2) {
+-        msg->data[len] = buf[pos + 1];
++    if (info) {
++        info->diag_frame_flags = 0;
++        info->diag_frame_decoded = 0;
++        min_data = info->trace_min_data;
+     }
+ 
+-    msg->len = len;
++    err = usb_read_once(baikal, (char *)buf, size, &amount, C_BAIKAL_READ);
++    expect_reply = info && info->trace_tx_valid;
++    board = info ? info->trace_board : -1;
++    if (err >= 0 && amount >= 7) {
++        decoded = baikal_diag_decode_rx(buf, amount, &miner, &cmd, &param, &dest,
++                                        msg->data, (int)sizeof(msg->data), &dlen);
++        if (decoded < 0)
++            dlen = -1;
++        else {
++            msg->miner_id = miner;
++            msg->cmd = cmd;
++            msg->param = param;
++            msg->dest = dest;
++            msg->len = (uint32_t)dlen;
++            if (info)
++                info->diag_frame_decoded = 1;
++            if (info && info->trace_expect_valid &&
++                    (cmd != (uint8_t)info->trace_expect_cmd ||
++                     (info->trace_expect_cmd == BAIKAL_RESET
++                        ? miner >= BAIKAL_MAXMINERS
++                        : miner != (uint8_t)info->trace_expect_miner)))
++                mismatch = 1;
++        }
++    }
+ 
+-    return (amount);
++    baikal_diag_classify_rx(err, amount, size, dlen, mismatch, min_data, &rx);
++    if (info)
++        info->diag_frame_flags = rx.flags;
++    if (expect_reply) {
++        if (rx.count_usb)
++            baikal_diag_add_usb(info, board, 0);
++        else if (rx.count_short)
++            baikal_diag_add_short(info, board);
++        baikal_trace_commit(baikal, amount > 0 ? buf : NULL,
++                            amount > 0 ? amount : 0,
++                            rx.status, rx.transferred, rx.intended, rx.flags,
++                            rx.frame_ok || info->diag_frame_decoded ? miner : 0,
++                            rx.frame_ok || info->diag_frame_decoded ? cmd : 0,
++                            rx.frame_ok || info->diag_frame_decoded ? param : 0,
++                            rx.frame_ok || info->diag_frame_decoded ? dest : 0);
++    }
++    return rx.caller_rc;
+ }
+ 
+ static void baikal_cleanup(struct cgpu_info *baikal)
+@@ -510,6 +1134,12 @@
+     usb_uninit(baikal);
+ 
+     if (baikal->device_data) {
++        pthread_mutex_lock(&info->diag_lock);
++        info->diag_ready = 0;
++        pthread_mutex_unlock(&info->diag_lock);
++        baikal_diag_trace_free(&info->trace);
++        pthread_mutex_destroy(&info->diag_lock);
++        pthread_mutex_destroy(&info->diag_sample_lock);
+         pthread_mutex_destroy(&info->clock_lock);
+         free(baikal->device_data);
+         baikal->device_data = NULL;
+@@ -548,13 +1178,25 @@
+         return (false);
+     }
+ 
++    baikal_trace_arm_read(info, 0);
++    /* RESET discovers all boards. Its reply names the last board visited,
++     * not necessarily the board in the request; param carries the count. */
+     amount = baikal_readmsg(baikal, &msg, 7);
+-    if (amount < 0) {
++    if (amount < 7) {
++        applog(LOG_ERR,
++               "BK-B RESET rejected bytes=%d decoded=%d flags=0x%02x reply=%u/%u/%u/%u len=%u",
++               amount, info->diag_frame_decoded, info->diag_frame_flags,
++               msg.miner_id, msg.cmd, msg.param, msg.dest, (unsigned)msg.len);
+         mutex_unlock(baikal->mutex);
+         return (false);
+     }
+ 
+     info->miner_count = msg.param;
++    if (info->miner_count < 1 || info->miner_count > BAIKAL_MAXMINERS) {
++        applog(LOG_ERR, "BK-B RESET returned invalid board count %d", info->miner_count);
++        mutex_unlock(baikal->mutex);
++        return false;
++    }
+ 
+     mutex_unlock(baikal->mutex);
+ 
+@@ -580,27 +1222,62 @@
+     msg.len         = 0;
+ 
+     amount = baikal_sendmsg(baikal, &msg);
+-    if (amount < 0)
++    if (amount < 0) {
++        pthread_mutex_lock(&info->diag_lock);
++        baikal_diag_mark_info_failed(&miner->diag);
++        pthread_mutex_unlock(&info->diag_lock);
+         return (false);
++    }
+ 
++    baikal_trace_arm_read(info, BAIKAL_DIAG_GETINFO_MIN);
+     amount = baikal_readmsg(baikal, &msg, 21);
+-    if (amount < 0)
++    if (!baikal_diag_accept_frame(amount)) {
++        pthread_mutex_lock(&info->diag_lock);
++        baikal_diag_mark_info_failed(&miner->diag);
++        if (info->diag_frame_flags & BAIKAL_DIAG_F_MISMATCH)
++            miner->diag.reply_mismatch++;
++        else if (info->diag_frame_decoded &&
++                 (info->diag_frame_flags & BAIKAL_DIAG_F_SHORT))
++            miner->diag.short_reply++;
++        pthread_mutex_unlock(&info->diag_lock);
+         return (false);
++    }
+ 
+     if (msg.miner_id != miner_id || msg.cmd != BAIKAL_GET_INFO) {
++        pthread_mutex_lock(&info->diag_lock);
++        miner->diag.last_info_ok = 0;
++        miner->diag.reply_mismatch++;
++        pthread_mutex_unlock(&info->diag_lock);
+         applog(LOG_WARNING,
+                "BK-B GET_INFO reply mismatch ASC %d reply_miner_id=%d cmd=0x%02x",
+                miner_id, msg.miner_id, msg.cmd);
+         return (false);
+     }
+ 
+-    miner->fw_ver       = msg.data[0];
+-    miner->hw_ver       = msg.data[1];
+-    miner->bbg          = msg.data[2];
+-    baikal_record_clock(miner, info, miner_id, msg.data[3]);
+-    miner->asic_count   = msg.data[4];
+-    miner->asic_count_r = msg.data[5];
+-    miner->asic_ver     = msg.data[6];
++    {
++        uint8_t fw, hw, bbg, clock_code, asic_count, asic_count_r, asic_ver;
++
++        if (!baikal_diag_getinfo_fields(msg.data, (int)msg.len, &fw, &hw, &bbg,
++                                        &clock_code, &asic_count, &asic_count_r,
++                                        &asic_ver)) {
++            pthread_mutex_lock(&info->diag_lock);
++            miner->diag.last_info_ok = 0;
++            miner->diag.short_reply++;
++            pthread_mutex_unlock(&info->diag_lock);
++            return (false);
++        }
++        pthread_mutex_lock(&info->diag_lock);
++        miner->fw_ver = fw;
++        miner->hw_ver = hw;
++        miner->bbg = bbg;
++        miner->asic_count = asic_count;
++        miner->asic_count_r = asic_count_r;
++        miner->asic_ver = asic_ver;
++        miner->diag.info_valid = 1;
++        miner->diag.last_info_ok = 1;
++        pthread_mutex_unlock(&info->diag_lock);
++        baikal_record_clock(miner, info, miner_id, clock_code);
++    }
+     applog(LOG_NOTICE,
+            "BK-B GET_INFO decoded ASC %d requested=%d bridge_status_code=%d bridge_status_echo=%dMHz fw=%d hw=%d asics=%d",
+            miner_id, baikal_configured_clock_for_miner(info, miner_id),
+@@ -667,12 +1344,16 @@
+     msg.dest        = 0;
+     msg.len         = 4;
+ 
++    if (clk != 0)
++        baikal_diag_note_attempt(info, miner_id, sent_clock_code);
++
+     amount = baikal_sendmsg(baikal, &msg);
+     if (amount < 0)
+         return (false);
+ 
++    baikal_trace_arm_read(info, 0);
+     amount = baikal_readmsg(baikal, &msg, 7);
+-    if (amount < 0)
++    if (amount < 7)
+         return (false);
+ 
+     if (msg.miner_id != miner_id || msg.cmd != BAIKAL_SET_OPTION ||
+@@ -691,7 +1372,7 @@
+     }
+ 
+     if (clk != 0) {
+-        miner->sent_clock_code = sent_clock_code;
++        baikal_diag_note_acked(info, miner_id, sent_clock_code);
+         if (previous_clock_code != sent_clock_code) {
+             applog(LOG_NOTICE, "BK-B sent PLL code %d for requested %d MHz on ASC %d",
+                    sent_clock_code, (int)clk, miner_id);
+@@ -734,12 +1415,18 @@
+            "BK-B bridge-global SET_OPTION request requested=%dMHz pll_index=%d mode=%u cutoff=%u fan=%u dest=1 targets=12",
+            (int)clk, sent_clock_code, mode, temp, fanspeed);
+ 
++    if (clk != 0) {
++        for (i = 0; i < info->miner_count; i++)
++            baikal_diag_note_attempt(info, i, sent_clock_code);
++    }
++
+     amount = baikal_sendmsg(baikal, &msg);
+     if (amount < 0)
+         return false;
+ 
++    baikal_trace_arm_read(info, 0);
+     amount = baikal_readmsg(baikal, &msg, 7);
+-    if (amount < 0)
++    if (amount < 7)
+         return false;
+ 
+     if (msg.miner_id != 0 || msg.cmd != BAIKAL_SET_OPTION ||
+@@ -753,7 +1440,7 @@
+     baikal_log_protocol_msg("SET_OPTION bridge-global", clk, &msg);
+     if (clk != 0) {
+         for (i = 0; i < info->miner_count; i++)
+-            info->miners[i].sent_clock_code = sent_clock_code;
++            baikal_diag_note_acked(info, i, sent_clock_code);
+     }
+     return true;
+ }
+@@ -838,9 +1525,7 @@
+     if (host_ack && getinfo_ok && echo_ok) {
+         baikal_mark_applied_clock(miner, retry_clock);
+         miner->command_verified = true;
+-        miner->clock_generation++;
+-        if (miner->clock_generation == 0)
+-            miner->clock_generation = 1;
++        baikal_diag_bump_u32(&miner->clock_generation);
+         miner->clock_retry_pending = false;
+         miner->clock_retry_done = true;
+         applog(LOG_NOTICE,
+@@ -918,9 +1603,7 @@
+     if (applied) {
+         baikal_mark_applied_clock(miner, requested_clock);
+         miner->command_verified = true;
+-        miner->clock_generation++;
+-        if (miner->clock_generation == 0)
+-            miner->clock_generation = 1;
++        baikal_diag_bump_u32(&miner->clock_generation);
+         if (miner->pending_clock_reapply_valid &&
+                 miner->pending_clock_reapply_mhz == requested_clock)
+             miner->pending_clock_reapply_valid = false;
+@@ -980,7 +1663,7 @@
+ 
+     mutex_lock(&info->clock_lock);
+     pending = info->global_clock_pending;
+-    generation = info->clock_generation;
++    generation = baikal_diag_load_u32(&info->clock_generation);
+     failures = info->global_clock_failures;
+     if (pending && info->global_clock_inflight)
+         pending = false;
+@@ -1005,7 +1688,7 @@
+     bridge_global = opt_baikal_bridge_global;
+     mutex_lock(&info->clock_lock);
+     if (!info->global_clock_pending || info->global_clock_inflight ||
+-            info->clock_generation != generation) {
++            baikal_diag_load_u32(&info->clock_generation) != generation) {
+         mutex_unlock(&info->clock_lock);
+         return;
+     }
+@@ -1052,13 +1735,13 @@
+     mutex_unlock(baikal->mutex);
+ 
+     mutex_lock(&info->clock_lock);
+-    if (info->clock_generation != generation) {
++    if (baikal_diag_load_u32(&info->clock_generation) != generation) {
+         info->global_clock_inflight = false;
+         mutex_unlock(&info->clock_lock);
+         applog(LOG_WARNING,
+                "BK-B global clock generation %u completed stale; newer generation %u is pending",
+                (unsigned int)generation,
+-               (unsigned int)info->clock_generation);
++               (unsigned int)baikal_diag_load_u32(&info->clock_generation));
+         return;
+     }
+     if (success) {
+@@ -1069,7 +1752,7 @@
+             miner = &info->miners[i];
+             baikal_mark_applied_clock(miner, info->clock);
+             miner->command_verified = true;
+-            miner->clock_generation = generation;
++            baikal_diag_store_u32(&miner->clock_generation, generation);
+             miner->clock_retry_pending = false;
+             miner->clock_retry_done = true;
+         }
+@@ -1082,7 +1765,7 @@
+             info->global_clock_pending = false;
+             for (i = 0; i < info->miner_count; i++) {
+                 if (active[i])
+-                    info->miners[i].clock_generation = generation;
++                    baikal_diag_store_u32(&info->miners[i].clock_generation, generation);
+             }
+         }
+     }
+@@ -1186,7 +1869,41 @@
+     long value;
+ 
+     if (!option || strcmp(option, "help") == 0) {
+-        snprintf(replybuf, 256, "fan|pwm,<percent 0-100> | reapply-clock,<configured board MHz>");
++        snprintf(replybuf, 256,
++                 "fan|pwm,<percent 0-100> | reapply-clock,<configured board MHz> | diag-trace,on|off|clear|export");
++        return replybuf;
++    }
++
++    if (strcmp(option, "diag-trace") == 0) {
++        char why[128];
++
++        if (!setting || *setting == '\0') {
++            snprintf(replybuf, 256, "missing diag-trace op");
++            return replybuf;
++        }
++        if (strcmp(setting, "on") == 0) {
++            if (baikal_diag_trace_set(&info->trace, 1) != 0) {
++                snprintf(replybuf, 256, "diag-trace enable failed");
++                return replybuf;
++            }
++            return NULL;
++        }
++        if (strcmp(setting, "off") == 0) {
++            baikal_diag_trace_set(&info->trace, 0);
++            return NULL;
++        }
++        if (strcmp(setting, "clear") == 0) {
++            baikal_diag_trace_clear(&info->trace);
++            return NULL;
++        }
++        if (strcmp(setting, "export") == 0) {
++            if (baikal_diag_export_trace(info, why, sizeof(why)) != 0) {
++                snprintf(replybuf, 256, "%s", why);
++                return replybuf;
++            }
++            return NULL;
++        }
++        snprintf(replybuf, 256, "diag-trace op must be on, off, clear, or export");
+         return replybuf;
+     }
+ 
+@@ -1253,6 +1970,8 @@
+     mutex_lock(baikal->mutex);
+ 
+     amount = baikal_sendmsg(baikal, &msg);
++    if (amount >= 0)
++        baikal_trace_commit(baikal, NULL, 0, 0, 0, 0, BAIKAL_DIAG_F_TX_ONLY, 0, 0, 0, 0);
+     mutex_unlock(baikal->mutex);
+ 
+     return (true);
+@@ -1285,6 +2004,8 @@
+ 
+         miner = &info->miners[tmp->miner_id];
+         memset(miner, 0, sizeof(struct miner_info));
++        baikal_diag_counters_init(&miner->diag);
++        baikal_diag_activity_init(&miner->diag_activity);
+         miner->clock = baikal_configured_clock_for_miner(info, tmp->miner_id);
+         cgtimer_time(&miner->start_time);
+         if (baikal_getinfo(tmp) == false) {
+@@ -1330,6 +2051,8 @@
+     int board_clock2    = 0;
+     int board_index;
+ 
++    applog(LOG_INFO, "BK-B USB device matched; starting bridge detection");
++
+ #if BAIKAL_ENABLE_SETCLK
+     if (opt_baikal_options != NULL) {
+         int opt0 = 0;
+@@ -1376,6 +2099,15 @@
+ 
+     info = (struct baikal_info *)calloc(1, sizeof(struct baikal_info));
+     pthread_mutex_init(&info->clock_lock, NULL);
++    pthread_mutex_init(&info->diag_lock, NULL);
++    pthread_mutex_init(&info->diag_sample_lock, NULL);
++    info->diag_ready = 1;
++    baikal_diag_trace_init(&info->trace);
++    info->diag_pid = (int)getpid();
++    info->diag_start_unix = time(NULL);
++    info->diag_start_mono_us = baikal_diag_mono_us();
++    /* Hash the running inode once; the unprivileged recorder cannot open it. */
++    baikal_diag_hash_executable(info->diag_host_sha256);
+     info->clock         = clock;
+     info->cutofftemp    = (uint8_t)cutofftemp;
+     info->fanspeed      = (uint8_t)fanspeed;
+@@ -1408,10 +2140,13 @@
+ 
+     miner = &info->miners[baikal->miner_id];
+     memset(miner, 0, sizeof(struct miner_info));
++    baikal_diag_counters_init(&miner->diag);
++    baikal_diag_activity_init(&miner->diag_activity);
+     miner->clock = baikal_configured_clock_for_miner(info, baikal->miner_id);
+     cgtimer_time(&miner->start_time);
+ 
+     if (!usb_init(baikal, dev, found)) {
++        applog(LOG_ERR, "BK-B USB initialization failed");
+         goto out;
+     }
+ 
+@@ -1447,7 +2182,7 @@
+         baikal_queue_global_clock_generation(info);
+         applog(LOG_NOTICE,
+                "BK-B clock mode global: queued generation %u at %dMHz for all active boards",
+-               (unsigned int)info->clock_generation, info->clock);
++               (unsigned int)baikal_diag_load_u32(&info->clock_generation), info->clock);
+     } else {
+         applog(LOG_NOTICE,
+                "BK-B clock mode individual: ASC0=%dMHz ASC1=%dMHz ASC2=%dMHz",
+@@ -1515,9 +2250,11 @@
+     clock_reapply_failures = miner->clock_reapply_failures;
+     clock_reapply_pending = miner->pending_clock_reapply_valid;
+     clock_generation = info->clock_mode_global
+-        ? info->clock_generation : miner->clock_generation;
++        ? baikal_diag_load_u32(&info->clock_generation)
++        : baikal_diag_load_u32(&miner->clock_generation);
+     verified_generation = info->clock_mode_global
+-        ? info->clock_verified_generation : miner->clock_generation;
++        ? info->clock_verified_generation
++        : baikal_diag_load_u32(&miner->clock_generation);
+     global_clock_pending = info->global_clock_pending;
+     global_clock_inflight = info->global_clock_inflight;
+     mutex_unlock(&info->clock_lock);
+@@ -1559,6 +2296,180 @@
+     root = api_add_int(root, "Effective Pool", &effective_pool_no, true);
+     root = api_add_bool(root, "Failover Active", &failover_active, true);
+ 
++    /* Stats formatting stays outside diag_lock and trace.lock. The fixed
++     * 8192-byte stats buffer is not bounds-checked, so these grids stay
++     * decimal comma lists rather than nested objects. */
++    {
++        struct baikal_diag_trace_meta tmeta;
++        uint32_t nonce_grid[BAIKAL_DIAG_UNITS][BAIKAL_DIAG_CHIPS];
++        uint32_t error_grid[BAIKAL_DIAG_UNITS][BAIKAL_DIAG_CHIPS];
++        char nonces[768];
++        char errors[768];
++        char export_path[128];
++        uint64_t snap;
++        uint64_t start_mono;
++        uint64_t uptime_us = 0;
++        uint64_t start_unix;
++        uint64_t invalid_id, invalid_workidx, missing_work, algo_mismatch;
++        uint64_t short_reply, reply_mismatch, work_requests, work_sends;
++        uint64_t skip_overheat, skip_no_target, skip_disabled, skip_empty;
++        uint64_t usb_tx_error, usb_rx_error;
++        uint64_t work_wait_us_sum, work_wait_us_max, work_wait_count;
++        uint64_t ack_latency_us_sum, ack_latency_us_max, ack_latency_count;
++        uint64_t request_to_ack_us_sum, request_to_ack_us_max, request_to_ack_count;
++        uint64_t poll_gap_us_max, poll_gap_us_last, snap_mono_us;
++        uint64_t stat_epoch, route_epoch, enable_epoch;
++        uint64_t diag_accepted = 0, diag_rejected = 0, diag_hw = 0;
++        double diag_diff_accepted = 0, diag_diff_rejected = 0, diag_device_elapsed = 0;
++        uint64_t trace_live = 0, trace_used = 0, trace_capacity = 0;
++        uint64_t trace_overwritten = 0, trace_dropped = 0, trace_recorded = 0;
++        int startup_success, asic_version, attempted_clock_code, board;
++        int info_valid, last_info_ok, last_result_ok, pid, trace_enabled = 0;
++        int diag_share_valid = 0, diag_elapsed_valid = 0;
++        int unit, chip;
++
++        baikal_diag_observe_all(cgpu);
++        memset(nonce_grid, 0, sizeof(nonce_grid));
++        memset(error_grid, 0, sizeof(error_grid));
++        export_path[0] = '\0';
++        nonces[0] = '\0';
++        errors[0] = '\0';
++        pthread_mutex_lock(&info->diag_lock);
++        snap = miner->diag.snap_mono_us;
++        startup_success = miner->asic_count_r;
++        asic_version = miner->asic_ver;
++        attempted_clock_code = miner->diag.attempted_clock_code;
++        board = cgpu->miner_id;
++        info_valid = miner->diag.info_valid;
++        last_info_ok = miner->diag.last_info_ok;
++        last_result_ok = miner->diag.last_result_ok;
++        invalid_id = miner->diag.invalid_id;
++        invalid_workidx = miner->diag.invalid_workidx;
++        missing_work = miner->diag.missing_work;
++        algo_mismatch = miner->diag.algo_mismatch;
++        short_reply = miner->diag.short_reply;
++        reply_mismatch = miner->diag.reply_mismatch;
++        work_requests = miner->diag.work_requests;
++        work_sends = miner->diag.work_sends;
++        skip_overheat = miner->diag.skip_overheat;
++        skip_no_target = miner->diag.skip_no_target;
++        skip_disabled = miner->diag.skip_disabled;
++        skip_empty = miner->diag.skip_empty;
++        usb_tx_error = miner->diag.usb_tx_error;
++        usb_rx_error = miner->diag.usb_rx_error;
++        work_wait_us_sum = miner->diag.work_wait_us_sum;
++        work_wait_us_max = miner->diag.work_wait_us_max;
++        work_wait_count = miner->diag.work_wait_count;
++        ack_latency_us_sum = miner->diag.ack_latency_us_sum;
++        ack_latency_us_max = miner->diag.ack_latency_us_max;
++        ack_latency_count = miner->diag.ack_latency_count;
++        request_to_ack_us_sum = miner->diag.request_to_ack_us_sum;
++        request_to_ack_us_max = miner->diag.request_to_ack_us_max;
++        request_to_ack_count = miner->diag.request_to_ack_count;
++        poll_gap_us_max = miner->diag.poll_gap_us_max;
++        poll_gap_us_last = miner->diag.poll_gap_us_last;
++        snap_mono_us = miner->diag.snap_mono_us;
++        stat_epoch = miner->diag_activity.stat_epoch;
++        route_epoch = miner->diag_activity.route_epoch;
++        enable_epoch = miner->diag_activity.enable_epoch;
++        diag_accepted = miner->diag_activity.stat_sample.accepted;
++        diag_rejected = miner->diag_activity.stat_sample.rejected;
++        diag_hw = miner->diag_activity.stat_sample.hw;
++        diag_diff_accepted = miner->diag_activity.stat_sample.diff_accepted;
++        diag_diff_rejected = miner->diag_activity.stat_sample.diff_rejected;
++        diag_device_elapsed = miner->diag_activity.device_elapsed_sec;
++        diag_share_valid = miner->diag_activity.share_valid &&
++            clock_generation == baikal_diag_generation(info, cgpu->miner_id);
++        diag_elapsed_valid = miner->diag_activity.elapsed_valid;
++        pid = info->diag_pid;
++        start_unix = (uint64_t)info->diag_start_unix;
++        start_mono = info->diag_start_mono_us;
++        snprintf(export_path, sizeof(export_path), "%s", info->diag_export_path);
++        for (unit = 0; unit < BAIKAL_DIAG_UNITS; unit++) {
++            for (chip = 0; chip < BAIKAL_DIAG_CHIPS; chip++) {
++                nonce_grid[unit][chip] = miner->asics[unit][chip].nonce;
++                error_grid[unit][chip] = miner->asics[unit][chip].error;
++            }
++        }
++        pthread_mutex_unlock(&info->diag_lock);
++
++        memset(&tmeta, 0, sizeof(tmeta));
++        if (baikal_diag_trace_meta(&info->trace, &tmeta) == 0) {
++            trace_enabled = tmeta.enabled;
++            trace_live = tmeta.live;
++            trace_used = tmeta.used;
++            trace_capacity = tmeta.capacity;
++            trace_overwritten = tmeta.overwritten;
++            trace_dropped = tmeta.dropped;
++            trace_recorded = tmeta.recorded;
++        }
++        if (baikal_diag_format_grid(nonce_grid, nonces, sizeof(nonces)) != 0)
++            nonces[0] = '\0';
++        if (baikal_diag_format_grid(error_grid, errors, sizeof(errors)) != 0)
++            errors[0] = '\0';
++        if (snap >= start_mono)
++            uptime_us = snap - start_mono;
++
++        root = api_add_int(root, "StartupSuccessCount", &startup_success, true);
++        root = api_add_int(root, "AsicVersion", &asic_version, true);
++        root = api_add_int(root, "AttemptedClockCode", &attempted_clock_code, true);
++        root = api_add_int(root, "DiagBoard", &board, true);
++        root = api_add_string(root, "LocalNoncesRaw", nonces, true);
++        root = api_add_string(root, "LocalErrorsRaw", errors, true);
++        root = api_add_uint64(root, "DiagInvalidId", &invalid_id, true);
++        root = api_add_uint64(root, "DiagInvalidWorkIdx", &invalid_workidx, true);
++        root = api_add_uint64(root, "DiagMissingWork", &missing_work, true);
++        root = api_add_uint64(root, "DiagAlgoMismatch", &algo_mismatch, true);
++        root = api_add_uint64(root, "DiagShortReply", &short_reply, true);
++        root = api_add_uint64(root, "DiagReplyMismatch", &reply_mismatch, true);
++        root = api_add_uint64(root, "DiagWorkRequests", &work_requests, true);
++        root = api_add_uint64(root, "DiagWorkSends", &work_sends, true);
++        root = api_add_uint64(root, "DiagSkipOverheat", &skip_overheat, true);
++        root = api_add_uint64(root, "DiagSkipNoTarget", &skip_no_target, true);
++        root = api_add_uint64(root, "DiagSkipDisabled", &skip_disabled, true);
++        root = api_add_uint64(root, "DiagSkipEmpty", &skip_empty, true);
++        root = api_add_uint64(root, "DiagUsbTxErrors", &usb_tx_error, true);
++        root = api_add_uint64(root, "DiagUsbRxErrors", &usb_rx_error, true);
++        root = api_add_uint64(root, "DiagWorkWaitUsSum", &work_wait_us_sum, true);
++        root = api_add_uint64(root, "DiagWorkWaitUsMax", &work_wait_us_max, true);
++        root = api_add_uint64(root, "DiagWorkWaitCount", &work_wait_count, true);
++        root = api_add_uint64(root, "DiagAckLatencyUsSum", &ack_latency_us_sum, true);
++        root = api_add_uint64(root, "DiagAckLatencyUsMax", &ack_latency_us_max, true);
++        root = api_add_uint64(root, "DiagAckLatencyCount", &ack_latency_count, true);
++        root = api_add_uint64(root, "DiagRequestToAckUsSum", &request_to_ack_us_sum, true);
++        root = api_add_uint64(root, "DiagRequestToAckUsMax", &request_to_ack_us_max, true);
++        root = api_add_uint64(root, "DiagRequestToAckCount", &request_to_ack_count, true);
++        root = api_add_uint64(root, "DiagPollGapUsMax", &poll_gap_us_max, true);
++        root = api_add_uint64(root, "DiagPollGapUsLast", &poll_gap_us_last, true);
++        root = api_add_uint64(root, "DiagSnapMonoUs", &snap_mono_us, true);
++        root = api_add_int(root, "DiagPid", &pid, true);
++        root = api_add_string(root, "DiagHostSha256", info->diag_host_sha256, true);
++        root = api_add_uint64(root, "DiagStartUnix", &start_unix, true);
++        root = api_add_uint64(root, "DiagUptimeUs", &uptime_us, true);
++        root = api_add_uint64(root, "DiagStatEpoch", &stat_epoch, true);
++        root = api_add_uint64(root, "DiagRouteEpoch", &route_epoch, true);
++        root = api_add_uint64(root, "DiagEnableEpoch", &enable_epoch, true);
++        root = api_add_int(root, "DiagInfoValid", &info_valid, true);
++        root = api_add_int(root, "DiagLastInfoOk", &last_info_ok, true);
++        root = api_add_int(root, "DiagLastResultOk", &last_result_ok, true);
++        root = api_add_uint64(root, "DiagAccepted", &diag_accepted, true);
++        root = api_add_uint64(root, "DiagRejected", &diag_rejected, true);
++        root = api_add_uint64(root, "DiagHwErrors", &diag_hw, true);
++        root = api_add_double(root, "DiagDiffAccepted", &diag_diff_accepted, true);
++        root = api_add_double(root, "DiagDiffRejected", &diag_diff_rejected, true);
++        root = api_add_double(root, "DiagDeviceElapsed", &diag_device_elapsed, true);
++        root = api_add_int(root, "DiagDeviceElapsedValid", &diag_elapsed_valid, true);
++        root = api_add_int(root, "DiagShareSnapValid", &diag_share_valid, true);
++        root = api_add_int(root, "DiagTraceEnabled", &trace_enabled, true);
++        root = api_add_uint64(root, "DiagTraceLive", &trace_live, true);
++        root = api_add_uint64(root, "DiagTraceUsed", &trace_used, true);
++        root = api_add_uint64(root, "DiagTraceCapacity", &trace_capacity, true);
++        root = api_add_uint64(root, "DiagTraceOverwritten", &trace_overwritten, true);
++        root = api_add_uint64(root, "DiagTraceDropped", &trace_dropped, true);
++        root = api_add_uint64(root, "DiagTraceRecorded", &trace_recorded, true);
++        root = api_add_string(root, "DiagTraceExport", export_path, true);
++    }
++
+     return (root);
+ }
+ 
+@@ -1566,6 +2477,7 @@
+ static void baikal_identify(struct cgpu_info *baikal)
+ {
+     int amount;
++    struct baikal_info *info = baikal->device_data;
+     baikal_msg msg = {0, };
+ 
+     msg.miner_id    = baikal->miner_id;
+@@ -1581,8 +2493,9 @@
+         return;
+     }
+ 
++    baikal_trace_arm_read(info, 0);
+     amount = baikal_readmsg(baikal, &msg, 7);
+-    if (amount < 0) {
++    if (amount < 7) {
+         mutex_unlock(baikal->mutex);
+         return;
+     }
+@@ -1604,48 +2517,79 @@
+ 
+ static void baikal_checknonce(struct cgpu_info *baikal, baikal_msg *msg)
+ {
+-    struct baikal_info *info = baikal->device_data;
+-    struct miner_info *miner = &info->miners[msg->miner_id];
+-    uint8_t work_idx, chip_id, unit_id;
+-    uint32_t nonce;
+-
+-    chip_id     = msg->data[4];
+-    work_idx    = msg->data[5];
+-    unit_id     = msg->data[7];
+-    nonce       = *((uint32_t *)msg->data);
++    struct baikal_info *info = baikal ? baikal->device_data : NULL;
++    struct miner_info *miner;
++    struct baikal_diag_nonce_in in;
++    struct baikal_diag_nonce_out out;
++    struct work *work = NULL;
++    struct thr_info *thr = NULL;
++    uint32_t nonce = 0;
++    int accepted = 0;
++    int submitted = 0;
++
++    if (!info || !msg || msg->miner_id >= info->miner_count ||
++            msg->miner_id >= BAIKAL_MAXMINERS)
++        return;
++
++    miner = &info->miners[msg->miner_id];
++    memset(&in, 0, sizeof(in));
++    in.data_len = (int)msg->len;
++    in.work_fifo = BAIKAL_WORK_FIFO;
++    if (msg->len >= BAIKAL_DIAG_RESULT_MIN) {
++        uint8_t chip = 0;
++        uint8_t work_idx = 0;
++        uint8_t unit = 0;
+ 
+-    if (work_idx >= BAIKAL_WORK_FIFO) {
+-        return;
++        if (!baikal_diag_result_fields(msg->data, (int)msg->len, &chip, &work_idx,
++                                       NULL, &unit, &nonce))
++            return;
++        in.unit_id = unit;
++        in.chip_id = chip;
++        in.work_idx = work_idx;
++        if (work_idx < BAIKAL_WORK_FIFO) {
++            work = miner->works[work_idx];
++            in.work_present = work != NULL;
++            /* A null pool is not a valid share. Classify it as an algorithm
++             * mismatch instead of indexing a null pool. */
++            in.algo_match = work && work->pool &&
++                work->pool->algorithm.type == baikal->algorithm.type;
++#if BAIKAL_CHECK_STALE
++            if (work && work->devflag == false)
++                in.work_present = 0;
++#endif
++        }
+     }
+ 
+-    if ((miner->works[work_idx] == NULL) || (baikal==NULL)) {
++    if (baikal_diag_classify_nonce(&in, &out) != 0)
+         return;
+-    }
+ 
+-#if BAIKAL_CHECK_STALE
+-    /* stale work */
+-    if (miner->works[work_idx]->devflag == false) {
+-        return;
++    if (out.submit && work && mining_thr && miner->thr_id >= 0 &&
++            miner->thr_id < mining_threads)
++        thr = mining_thr[miner->thr_id];
++    if (out.submit && work && thr) {
++        submitted = 1;
++        accepted = submit_nonce(thr, work, nonce) == true;
+     }
+-#endif
+ 
+-    /* check algorithm */
+-    if (miner->works[work_idx]->pool->algorithm.type != baikal->algorithm.type) {
+-		//applog(LOG_ERR, "? : %d[u:%d, c:%2d] : [%3d, %08x]", msg->miner_id, unit_id, chip_id, work_idx, nonce);
+-        return;
++    pthread_mutex_lock(&info->diag_lock);
++    baikal_diag_count_nonce(&miner->diag, &out);
++    if (submitted) {
++        if (accepted) {
++            miner->nonce++;
++            if (out.attribute)
++                miner->asics[out.unit][out.chip].nonce++;
++        } else {
++            miner->error++;
++            hw_errors_bkl++;
++            if (out.attribute)
++                miner->asics[out.unit][out.chip].error++;
++        }
+     }
++    pthread_mutex_unlock(&info->diag_lock);
+ 
+-    if (submit_nonce(mining_thr[miner->thr_id], miner->works[work_idx], nonce) == true) {
+-		//applog(LOG_ERR, "stale : %d[u:%d, c:%2d] : [%3d, %08x]", msg->miner_id, unit_id, chip_id, work_idx, nonce);
+-        miner->asics[unit_id][chip_id].nonce++;
+-        miner->nonce++;
+-    }
+-    else {
+-        applog(LOG_ERR, "hw error : %d[u:%d, c:%2d] : [%3d, %08x]", msg->miner_id, unit_id, chip_id, work_idx, nonce);
+-        miner->asics[unit_id][chip_id].error++;
+-		//miner->asics[unit_id][chip_id].nonce++;
+-        miner->error++;
+-        hw_errors_bkl++;
++    if (submitted && !accepted) {
++        applog(LOG_ERR, "hw error : %d[u:%d, c:%2d] : [%3d, %08x]",
++               msg->miner_id, out.unit, out.chip, in.work_idx, nonce);
+     }
+ }
+ 
+@@ -1660,15 +2604,22 @@
+     uint32_t target;
+     baikal_msg msg;
+     uint8_t algo;
++    int next_idx = 0;
+ 
+     /* Do not send */
+     if (miner->overheated == true) {
++        pthread_mutex_lock(&info->diag_lock);
++        miner->diag.skip_overheat++;
++        pthread_mutex_unlock(&info->diag_lock);
+         return (true);
+     }
+ 
+ 	mutex_lock(baikal->mutex);
+ 
+     if (baikal_routed_miner_has_no_work_target(thr)) {
++        pthread_mutex_lock(&info->diag_lock);
++        miner->diag.skip_no_target++;
++        pthread_mutex_unlock(&info->diag_lock);
+         baikal_discard_miner_work(miner);
+         mutex_unlock(baikal->mutex);
+         cgsleep_ms(50);
+@@ -1685,17 +2636,20 @@
+                 work = copy_work(base_work);
+                 work->thr_id = miner->thr_id;
+             } else {
+-                work = get_work(thr, miner->thr_id);
++                work = baikal_diag_get_work(info, miner, thr);
+             }
+         }
+         else {
+-            work = get_work(thr, miner->thr_id);            
++            work = baikal_diag_get_work(info, miner, thr);
+         }
+         miner->works[miner->work_idx] = work;
+         work->devflag = true;
+     }
+     work = miner->works[miner->work_idx];
+     if (work == NULL) {
++        pthread_mutex_lock(&info->diag_lock);
++        miner->diag.skip_empty++;
++        pthread_mutex_unlock(&info->diag_lock);
+         mutex_unlock(baikal->mutex);
+         cgsleep_ms(50);
+         return (true);
+@@ -1804,27 +2758,56 @@
+     msg.param       = miner->work_idx;
+     msg.dest        = 0;
+ 
+-    if (baikal_sendmsg(baikal, &msg) < 0) {
+-        applog(LOG_ERR, "baikal_send_work : sendmsg error[%d]", miner_id);
+-        mutex_unlock(baikal->mutex);
+-        return (false);
+-    }
++    {
++        uint64_t send_us = baikal_diag_mono_us();
++        uint64_t done_us;
++        int amount;
++        int send_amount;
++
++        next_idx = miner->work_idx;
++
++        send_amount = baikal_sendmsg(baikal, &msg);
++        if (send_amount < 0) {
++            applog(LOG_ERR, "baikal_send_work : sendmsg error[%d]", miner_id);
++            mutex_unlock(baikal->mutex);
++            return (false);
++        }
+ 
+-    if (baikal_readmsg(baikal, &msg, 7) < 0) {
+-        applog(LOG_ERR, "baikal_send_work : readmsg error[%d]", miner_id);
+-        mutex_unlock(baikal->mutex);
+-        return (false);
++        baikal_trace_arm_read(info, 0);
++        amount = baikal_readmsg(baikal, &msg, 7);
++        done_us = baikal_diag_mono_us();
++        if (baikal_diag_advance_work(send_amount, amount, msg.param,
++                                     miner->work_idx, BAIKAL_WORK_FIFO,
++                                     &next_idx) != 1) {
++            applog(LOG_ERR, "baikal_send_work : readmsg error[%d]", miner_id);
++            mutex_unlock(baikal->mutex);
++            return (false);
++        }
++
++        pthread_mutex_lock(&info->diag_lock);
++        if (done_us >= send_us) {
++            baikal_diag_note_duration(&miner->diag.ack_latency_us_sum,
++                                      &miner->diag.ack_latency_us_max,
++                                      &miner->diag.ack_latency_count,
++                                      done_us - send_us);
++        }
++        if (miner->diag_open_request_us != 0 &&
++                done_us >= miner->diag_open_request_us) {
++            baikal_diag_note_duration(&miner->diag.request_to_ack_us_sum,
++                                      &miner->diag.request_to_ack_us_max,
++                                      &miner->diag.request_to_ack_count,
++                                      done_us - miner->diag_open_request_us);
++        }
++        pthread_mutex_unlock(&info->diag_lock);
+     }
+ 
+-    /* SEND_WORK ACK param is a work index, not a firmware clock report. */
++    /* A full matching frame keeps the existing clock assignment.
++     * SEND_WORK ACK param is a work index, not a firmware clock.
++     * The next index comes only from baikal_diag_advance_work. */
+     miner->clock = miner->applied_clock_valid
+         ? miner->applied_clock
+         : baikal_configured_clock_for_miner(info, miner_id);
+-
+-    miner->work_idx++;
+-    if (miner->work_idx >= BAIKAL_WORK_FIFO) {
+-        miner->work_idx = 0;
+-    }
++    miner->work_idx = (uint8_t)next_idx;
+ 
+     if (miner->works[miner->work_idx] != NULL) {
+         free_work(miner->works[miner->work_idx]);
+@@ -1854,35 +2837,79 @@
+     for (i = 0; i < info->miner_count; i++) {
+         miner = &info->miners[i];
+         if (miner->working == true) {
++            int amount;
++            int frame_flags = 0;
++            int frame_decoded = 0;
++            int disposition;
++
+             msg.miner_id    = i;
+             msg.cmd         = BAIKAL_GET_RESULT;
+             msg.dest        = 0;
+             msg.len         = 0;
+ 
++            pthread_mutex_lock(&info->diag_lock);
++            baikal_diag_note_poll(&miner->diag, baikal_diag_mono_us());
++            pthread_mutex_unlock(&info->diag_lock);
++
+             mutex_lock(baikal->mutex);
+             if (baikal_sendmsg(baikal, &msg) < 0) {
+                 applog(LOG_ERR, "baikal_process_result : sendmsg error");
+                 mutex_unlock(baikal->mutex);
++                pthread_mutex_lock(&info->diag_lock);
++                miner->diag.last_result_ok = 0;
++                pthread_mutex_unlock(&info->diag_lock);
+                 return (false);
+             }
+ 
+-            if (baikal_readmsg(baikal, &msg, 23) < 0) {
++            baikal_trace_arm_read(info, BAIKAL_DIAG_RESULT_MIN);
++            amount = baikal_readmsg(baikal, &msg, 23);
++            frame_flags = info->diag_frame_flags;
++            frame_decoded = info->diag_frame_decoded;
++            mutex_unlock(baikal->mutex);
++
++            disposition = baikal_diag_result_disposition(
++                amount, frame_flags, frame_decoded,
++                msg.miner_id == (uint8_t)i,
++                msg.cmd == BAIKAL_GET_RESULT,
++                (int)msg.len, BAIKAL_DIAG_RESULT_MIN);
++            if (disposition == BAIKAL_DIAG_RESULT_ABORT) {
++                pthread_mutex_lock(&info->diag_lock);
++                miner->diag.last_result_ok = 0;
++                pthread_mutex_unlock(&info->diag_lock);
+                 applog(LOG_ERR, "baikal_process_result : readmsg error miner_id = %d", i);
+-                mutex_unlock(baikal->mutex);
+                 return (false);
+             }
+-            mutex_unlock(baikal->mutex);
++            if (disposition == BAIKAL_DIAG_RESULT_MISMATCH) {
++                pthread_mutex_lock(&info->diag_lock);
++                miner->diag.last_result_ok = 0;
++                miner->diag.reply_mismatch++;
++                pthread_mutex_unlock(&info->diag_lock);
++                cgsleep_ms(1);
++                continue;
++            }
++            if (disposition == BAIKAL_DIAG_RESULT_SHORT) {
++                pthread_mutex_lock(&info->diag_lock);
++                miner->diag.last_result_ok = 0;
++                miner->diag.short_reply++;
++                pthread_mutex_unlock(&info->diag_lock);
++            } else {
++                uint8_t temp_b = 0;
++
++                if (baikal_diag_result_fields(msg.data, (int)msg.len,
++                                              NULL, NULL, &temp_b, NULL, NULL))
++                    miner->temp = temp_b;
++                pthread_mutex_lock(&info->diag_lock);
++                miner->diag.last_result_ok = 1;
++                pthread_mutex_unlock(&info->diag_lock);
++                if (msg.param & 0x01)
++                    baikal_checknonce(baikal, &msg);
++            }
+ 
+-            miner->temp = msg.data[6];
+             board_requested_work = ((msg.param & 0x02) != 0);
+             t = mining_thr[miner->thr_id];
+             board_refill_allowed = (!t || !t->cgpu || t->cgpu->deven != DEV_DISABLED);
+             board_retry_allowed = (t && t->cgpu && t->cgpu->deven != DEV_DISABLED);
+ 
+-            if (msg.param & 0x01) {
+-                baikal_checknonce(baikal, &msg);
+-            }
+-
+             if (board_requested_work) {
+                 miner->clock_ready = board_retry_allowed;
+                 /* PATCH 5: skip auto-refill for administratively disabled
+@@ -1892,7 +2919,19 @@
+                  * the disabled board hashes forever. With this skip the
+                  * FIFO drains naturally and the board goes truly idle. */
+                 if (board_refill_allowed) {
++                    pthread_mutex_lock(&info->diag_lock);
++                    miner->diag.work_requests++;
++                    miner->diag_open_request_us = baikal_diag_mono_us();
++                    pthread_mutex_unlock(&info->diag_lock);
+                     baikal_send_work(baikal, i);
++                    pthread_mutex_lock(&info->diag_lock);
++                    miner->diag_open_request_us = 0;
++                    pthread_mutex_unlock(&info->diag_lock);
++                } else {
++                    pthread_mutex_lock(&info->diag_lock);
++                    miner->diag.work_requests++;
++                    miner->diag.skip_disabled++;
++                    pthread_mutex_unlock(&info->diag_lock);
+                 }
+             }
+ 
+@@ -1912,7 +2951,8 @@
+                     bool queue_new_generation = false;
+                     mutex_lock(&info->clock_lock);
+                     if (!info->global_clock_pending &&
+-                            miner->clock_generation != info->clock_generation)
++                            baikal_diag_load_u32(&miner->clock_generation) !=
++                            baikal_diag_load_u32(&info->clock_generation))
+                         queue_new_generation = true;
+                     mutex_unlock(&info->clock_lock);
+                     if (queue_new_generation)
+@@ -2141,6 +3181,33 @@
+ }
+ 
+ 
++static void baikal_zero_stats(struct cgpu_info *cgpu)
++{
++    struct baikal_info *info;
++    int miner_id;
++
++    /* zero_stats holds hash_lock and stats_lock. Only take diag_lock here
++     * so the epoch and cleared counters are one reset event. */
++    if (!cgpu || !cgpu->drv || cgpu->drv->drv_id != DRIVER_baikalu)
++        return;
++    info = cgpu->device_data;
++    if (!info)
++        return;
++    miner_id = cgpu->miner_id;
++    pthread_mutex_lock(&info->diag_lock);
++    if (info->diag_ready && miner_id >= 0 && miner_id < info->miner_count &&
++            miner_id < BAIKAL_MAXMINERS) {
++        baikal_diag_event_stats_reset(&info->miners[miner_id].diag_activity);
++    }
++    pthread_mutex_unlock(&info->diag_lock);
++}
++
++static void baikal_thread_enable(struct thr_info *thr)
++{
++    if (thr && thr->cgpu)
++        baikal_diag_note_enable(thr->cgpu, thr->cgpu->deven != DEV_DISABLED);
++}
++
+ struct device_drv baikalu_drv = {
+     .drv_id					= DRIVER_baikalu,
+     .dname					= "Baikal",
+@@ -2157,4 +3224,6 @@
+     //.flush_work             = baikal_update_work,
+     .scanwork				= baikal_scanhash,
+     .thread_shutdown        = baikal_shutdown,
++    .thread_enable          = baikal_thread_enable,
++    .zero_stats             = baikal_zero_stats,
+ };
+--- a/driver-baikal.h
++++ b/driver-baikal.h
+@@ -3,6 +3,7 @@
+ 
+ #include <time.h>
+ #include "miner.h"
++#include "baikal-diag.h"
+ 
+ #define BAIKAL_1751             (0x1)
+ #define BAIKAL_1772             (0x2)
+@@ -107,6 +108,9 @@
+     uint8_t work_idx;
+     struct work *works[BAIKAL_WORK_FIFO];
+     cgtimer_t start_time;
++    struct baikal_diag_counters diag;
++    struct baikal_diag_activity diag_activity;
++    uint64_t diag_open_request_us;
+ };
+ 
+ 
+@@ -132,9 +136,35 @@
+     time_t last_fanspeed_failure_time;
+     uint8_t recovertemp;
+     pthread_mutex_t clock_lock;
++    pthread_mutex_t diag_lock;
++    pthread_mutex_t diag_sample_lock;
++    int diag_ready;
+ 	pthread_t *process_thr;
+     struct miner_info miners[BAIKAL_MAXMINERS];    
+     uint8_t miner_type;
++    struct baikal_diag_trace trace;
++    int diag_pid;
++    char diag_host_sha256[65];
++    time_t diag_start_unix;
++    uint64_t diag_start_mono_us;
++    int trace_expect_valid;
++    int trace_expect_miner;
++    int trace_expect_cmd;
++    int trace_min_data;
++    int trace_tx_valid;
++    int trace_tx_len;
++    int trace_tx_status;
++    int trace_tx_intended;
++    int trace_tx_transferred;
++    uint32_t trace_generation;
++    uint64_t trace_mono_us;
++    uint8_t diag_frame_flags;
++    int diag_frame_decoded;
++    uint8_t trace_board;
++    uint8_t trace_cmd;
++    uint8_t trace_work_idx;
++    uint8_t trace_tx[BAIKAL_DIAG_TX_MAX];
++    char diag_export_path[128];
+ };
+ 
+ typedef struct {
+@@ -146,6 +176,8 @@
+     uint32_t    len;
+ } baikal_msg;
+ 
++void baikal_diag_note_enable(struct cgpu_info *cgpu, int enabled);
++void baikal_diag_note_pools_touched(void);
+ void baikal_pin_pool(struct cgpu_info *cgpu, int pool_no);
+ void baikal_clear_pool_pin(struct cgpu_info *cgpu);
+ void baikal_pin_failover(struct cgpu_info *cgpu, int pool_no);
+--- a/miner.h
++++ b/miner.h
+@@ -1238,6 +1238,7 @@
+ 
+ extern cglock_t control_lock;
+ extern pthread_mutex_t hash_lock;
++extern pthread_mutex_t stats_lock;
+ extern pthread_mutex_t console_lock;
+ extern cglock_t ch_lock;
+ extern pthread_rwlock_t mining_thr_lock;
+--- a/api.c
++++ b/api.c
+@@ -3350,6 +3350,7 @@
+     int asc;
+     int id;
+     int i;
++    int enabled_now = 0;
+ 
+     if (numasc == 0) {
+         message(io_data, MSG_ASCNON, 0, NULL, isjson);
+@@ -3402,11 +3403,15 @@
+         asc = thr->cgpu->sgminer_id;
+         if (asc == dev) {
+             cgpu->deven = DEV_ENABLED;
++            enabled_now = 1;
+             applog(LOG_DEBUG, "API: Pushing sem post to thread %d", thr->id);
+             cgsem_post(&thr->sem);
+         }
+     }
+ 
++    if (enabled_now)
++        baikal_diag_note_enable(cgpu, 1);
++
+     message(io_data, MSG_ASCENA, id, NULL, isjson);
+ }
+ 
+@@ -3449,6 +3454,7 @@
+     }
+ 
+     cgpu->deven = DEV_DISABLED;
++    baikal_diag_note_enable(cgpu, 0);
+ 
+     message(io_data, MSG_ASCDIS, id, NULL, isjson);
+ }
+--- a/sgminer.c
++++ b/sgminer.c
+@@ -4964,6 +4964,7 @@
+ 
+         //copy_time(&cgpu->dev_start_tv, &total_tv_start);
+         mutex_lock(&hash_lock);
++        mutex_lock(&stats_lock);
+         cgpu->total_mhashes = 0;
+         cgpu->accepted = 0;
+         cgpu->rejected = 0;
+@@ -4974,12 +4975,16 @@
+         cgpu->diff_accepted = 0;
+         cgpu->diff_rejected = 0;
+         cgpu->last_share_diff = 0;
++        if (cgpu->drv->drv_id == DRIVER_baikalu)
++            cgpu->drv->zero_stats(cgpu);
++        mutex_unlock(&stats_lock);
+         mutex_unlock(&hash_lock);
+ 
+         /* Don't take any locks in the driver zero stats function, as
+          * it's called async from everything else and we don't want to
+          * deadlock. */
+-        cgpu->drv->zero_stats(cgpu);
++        if (cgpu->drv->drv_id != DRIVER_baikalu)
++            cgpu->drv->zero_stats(cgpu);
+     }
+ }
+ 
+@@ -5509,6 +5514,9 @@
+         }
+         thr = mining_thr[selected];
+         cgpu->deven = DEV_ENABLED;
++#ifdef USE_BAIKAL
++        baikal_diag_note_enable(cgpu, 1);
++#endif
+         mt_enable(thr);
+         goto retry;
+     }
+@@ -5520,6 +5528,9 @@
+         }
+         cgpu = mining_thr[selected]->cgpu;
+         cgpu->deven = DEV_DISABLED;
++#ifdef USE_BAIKAL
++        baikal_diag_note_enable(cgpu, 0);
++#endif
+         goto retry;
+     }
+     else if (!strncasecmp(&input, "u", 1)) {
+@@ -6656,6 +6667,9 @@
+         if (!pool->rpc_url)
+             pool->rpc_url = strdup(pool->stratum_url);
+         pool->has_stratum = true;
++#ifdef USE_BAIKAL
++        baikal_diag_note_pools_touched();
++#endif
+         curl_easy_cleanup(curl);
+ 
+         goto retry_stratum;
+@@ -8716,6 +8730,9 @@
+         if (unlikely(hashes == -1)) {
+             applog(LOG_ERR, "%s %d failure, disabling!", drv->name, cgpu->device_id);            
+             cgpu->deven = DEV_DISABLED;
++#ifdef USE_BAIKAL
++            baikal_diag_note_enable(cgpu, 0);
++#endif
+             dev_error(cgpu, REASON_THREAD_ZERO_HASH);
+             event_notify("idle");
+             cgpu->shutdown = true;            
+@@ -9569,6 +9586,9 @@
+         quit(1, "Failed to malloc userpass");
+     snprintf(pool->rpc_userpass, siz, "%s:%s", pool->rpc_user, pool->rpc_pass);
+ 
++#ifdef USE_BAIKAL
++    baikal_diag_note_pools_touched();
++#endif
+     pool->testing = true;
+     pool->idle = true;
+     enable_pool(pool);
+--- /dev/null
++++ b/baikal-diag.c
+@@ -0,0 +1,1056 @@
++#include "baikal-diag.h"
++
++#include <stdlib.h>
++#include <string.h>
++#include <stdio.h>
++#include <time.h>
++#include <unistd.h>
++
++static void wr_u16(uint8_t *p, unsigned v)
++{
++    p[0] = (uint8_t)(v & 0xff);
++    p[1] = (uint8_t)((v >> 8) & 0xff);
++}
++
++static void wr_u32(uint8_t *p, unsigned v)
++{
++    p[0] = (uint8_t)(v & 0xff);
++    p[1] = (uint8_t)((v >> 8) & 0xff);
++    p[2] = (uint8_t)((v >> 16) & 0xff);
++    p[3] = (uint8_t)((v >> 24) & 0xff);
++}
++
++static void wr_u64(uint8_t *p, uint64_t v)
++{
++    int i;
++
++    for (i = 0; i < 8; i++)
++        p[i] = (uint8_t)((v >> (8 * i)) & 0xff);
++}
++
++static void wr_i32(uint8_t *p, int v)
++{
++    wr_u32(p, (unsigned)v);
++}
++
++static void wr_i16(uint8_t *p, int v)
++{
++    wr_u16(p, (unsigned)(uint16_t)(int16_t)v);
++}
++
++static unsigned rd_u16(const uint8_t *p)
++{
++    return (unsigned)p[0] | ((unsigned)p[1] << 8);
++}
++
++static unsigned rd_u32(const uint8_t *p)
++{
++    return (unsigned)p[0] | ((unsigned)p[1] << 8) |
++           ((unsigned)p[2] << 16) | ((unsigned)p[3] << 24);
++}
++
++static uint64_t rd_u64(const uint8_t *p)
++{
++    uint64_t v = 0;
++    int i;
++
++    for (i = 0; i < 8; i++)
++        v |= ((uint64_t)p[i]) << (8 * i);
++    return v;
++}
++
++static int rd_i32(const uint8_t *p)
++{
++    return (int)rd_u32(p);
++}
++
++static int rd_i16(const uint8_t *p)
++{
++    return (int)(int16_t)rd_u16(p);
++}
++
++int baikal_diag_classify_nonce(const struct baikal_diag_nonce_in *in,
++                               struct baikal_diag_nonce_out *out)
++{
++    if (!in || !out)
++        return -1;
++
++    memset(out, 0, sizeof(*out));
++    out->unit = in->unit_id;
++    out->chip = in->chip_id;
++
++    if (in->data_len < BAIKAL_DIAG_RESULT_MIN) {
++        out->kind = BAIKAL_DIAG_NONCE_SHORT;
++        return 0;
++    }
++    if (in->work_fifo <= 0 || in->work_idx < 0 || in->work_idx >= in->work_fifo) {
++        out->kind = BAIKAL_DIAG_NONCE_BAD_WORKIDX;
++        return 0;
++    }
++    if (!in->work_present) {
++        out->kind = BAIKAL_DIAG_NONCE_MISSING;
++        return 0;
++    }
++    if (!in->algo_match) {
++        out->kind = BAIKAL_DIAG_NONCE_ALGO;
++        return 0;
++    }
++
++    out->kind = BAIKAL_DIAG_NONCE_SUBMIT;
++    out->submit = 1;
++    out->attribute = (in->unit_id >= 0 && in->unit_id < BAIKAL_DIAG_UNITS &&
++                      in->chip_id >= 0 && in->chip_id < BAIKAL_DIAG_CHIPS);
++    out->invalid_id = !out->attribute;
++    return 0;
++}
++
++void baikal_diag_count_nonce(struct baikal_diag_counters *counters,
++                             const struct baikal_diag_nonce_out *out)
++{
++    if (!counters || !out)
++        return;
++
++    switch (out->kind) {
++    case BAIKAL_DIAG_NONCE_SHORT:
++        counters->short_reply++;
++        break;
++    case BAIKAL_DIAG_NONCE_BAD_WORKIDX:
++        counters->invalid_workidx++;
++        break;
++    case BAIKAL_DIAG_NONCE_MISSING:
++        counters->missing_work++;
++        break;
++    case BAIKAL_DIAG_NONCE_ALGO:
++        counters->algo_mismatch++;
++        break;
++    case BAIKAL_DIAG_NONCE_SUBMIT:
++        if (out->invalid_id)
++            counters->invalid_id++;
++        break;
++    default:
++        break;
++    }
++}
++
++void baikal_diag_counters_init(struct baikal_diag_counters *counters)
++{
++    if (!counters)
++        return;
++    memset(counters, 0, sizeof(*counters));
++    counters->last_poll_mono_us = -1;
++    counters->attempted_clock_code = -1;
++}
++
++void baikal_diag_note_poll(struct baikal_diag_counters *counters, uint64_t now_us)
++{
++    if (!counters)
++        return;
++    if (counters->last_poll_mono_us >= 0 &&
++            now_us >= (uint64_t)counters->last_poll_mono_us) {
++        uint64_t gap = now_us - (uint64_t)counters->last_poll_mono_us;
++
++        counters->poll_gap_us_last = gap;
++        if (gap > counters->poll_gap_us_max)
++            counters->poll_gap_us_max = gap;
++    }
++    counters->last_poll_mono_us = (int64_t)now_us;
++}
++
++void baikal_diag_note_duration(uint64_t *sum, uint64_t *max_us, uint64_t *count,
++                               uint64_t us)
++{
++    if (!sum || !max_us || !count)
++        return;
++    *sum += us;
++    if (us > *max_us)
++        *max_us = us;
++    (*count)++;
++}
++
++int baikal_diag_getinfo_fields(const uint8_t *data, int len,
++                               uint8_t *fw, uint8_t *hw, uint8_t *bbg,
++                               uint8_t *clock_code, uint8_t *asic_count,
++                               uint8_t *asic_count_r, uint8_t *asic_ver)
++{
++    if (!data || len < BAIKAL_DIAG_GETINFO_MIN)
++        return 0;
++    if (fw)
++        *fw = data[0];
++    if (hw)
++        *hw = data[1];
++    if (bbg)
++        *bbg = data[2];
++    if (clock_code)
++        *clock_code = data[3];
++    if (asic_count)
++        *asic_count = data[4];
++    if (asic_count_r)
++        *asic_count_r = data[5];
++    if (asic_ver)
++        *asic_ver = data[6];
++    return 1;
++}
++
++int baikal_diag_result_fields(const uint8_t *data, int len,
++                              uint8_t *chip, uint8_t *work_idx, uint8_t *temp,
++                              uint8_t *unit, uint32_t *nonce)
++{
++    if (!data || len < BAIKAL_DIAG_RESULT_MIN)
++        return 0;
++    if (chip)
++        *chip = data[4];
++    if (work_idx)
++        *work_idx = data[5];
++    if (temp)
++        *temp = data[6];
++    if (unit)
++        *unit = data[7];
++    if (nonce)
++        memcpy(nonce, data, sizeof(*nonce));
++    return 1;
++}
++
++int baikal_diag_encode_tx(uint8_t miner, uint8_t cmd, uint8_t param, uint8_t dest,
++                          const uint8_t *data, int len,
++                          uint8_t *out, int outcap, int *outlen)
++{
++    int pos = 0;
++    int i;
++
++    if (!out || !outlen || len < 0 || outcap < 7)
++        return -1;
++    if (len > (outcap - 7) / 2)
++        return -1;
++    if (len > 0 && !data)
++        return -1;
++
++    out[pos++] = ':';
++    out[pos++] = miner;
++    out[pos++] = cmd;
++    out[pos++] = param;
++    out[pos++] = dest;
++    for (i = 0; i < len; i++, pos += 2) {
++        out[pos] = 0;
++        out[pos + 1] = data[i];
++    }
++    out[pos++] = '\r';
++    out[pos++] = '\n';
++    *outlen = pos;
++    return 0;
++}
++
++int baikal_diag_decode_rx(const uint8_t *buf, int amount,
++                          uint8_t *miner, uint8_t *cmd, uint8_t *param, uint8_t *dest,
++                          uint8_t *data, int datacap, int *dlen)
++{
++    int pos = 1;
++    int len;
++    int payload;
++
++    if (!buf || !miner || !cmd || !param || !dest || !dlen)
++        return -1;
++    if (amount < 7 || ((amount - 7) & 1))
++        return -1;
++    if (buf[0] != ':' || buf[amount - 2] != '\r' || buf[amount - 1] != '\n')
++        return -1;
++
++    payload = (amount - 7) / 2;
++    if (payload < 0 || (payload > 0 && (!data || payload > datacap)))
++        return -1;
++
++    *miner = buf[pos++];
++    *cmd = buf[pos++];
++    *param = buf[pos++];
++    *dest = buf[pos++];
++    for (len = 0; len < payload; len++, pos += 2)
++        data[len] = buf[pos + 1];
++    *dlen = payload;
++    return amount;
++}
++
++int baikal_diag_clean_endpoint(const char *url, char *dst, size_t dst_len)
++{
++    const char *start;
++    const char *last_scheme = NULL;
++    const char *scan;
++    const char *end;
++    const char *at = NULL;
++    const char *p;
++    size_t n;
++
++    if (!dst || dst_len == 0)
++        return -1;
++    dst[0] = '\0';
++    if (!url || !url[0])
++        return 0;
++
++    /* The last scheme wins, so a legacy quota wrapper does not hide the host. */
++    for (scan = url; (scan = strstr(scan, "://")) != NULL; scan += 3)
++        last_scheme = scan;
++    start = last_scheme ? last_scheme + 3 : url;
++    end = start + strcspn(start, "/?#");
++    for (p = start; p < end; p++) {
++        if (*p == '@')
++            at = p;
++    }
++    if (at)
++        start = at + 1;
++    n = (size_t)(end - start);
++    while (n > 0 && (start[n - 1] == ' ' || start[n - 1] == '\r' || start[n - 1] == '\n'))
++        n--;
++    if (n >= dst_len)
++        n = dst_len - 1;
++    memcpy(dst, start, n);
++    dst[n] = '\0';
++    return 0;
++}
++
++int baikal_diag_transfer_status(int usb_err, int amount, int frame_ok)
++{
++    if (usb_err < 0)
++        return usb_err;
++    if (!frame_ok || amount < 7)
++        return -1;
++    return amount;
++}
++
++static int diag_clamp_count(int value)
++{
++    if (value < 0)
++        return 0;
++    if (value > 65535)
++        return 65535;
++    return value;
++}
++
++void baikal_diag_classify_tx(int usb_err, int amount, int intended,
++                             struct baikal_diag_xfer *out)
++{
++    if (!out)
++        return;
++    memset(out, 0, sizeof(*out));
++    out->intended = diag_clamp_count(intended);
++    out->transferred = diag_clamp_count(amount);
++    if (usb_err < 0) {
++        out->caller_rc = usb_err;
++        out->status = usb_err;
++        out->flags = (uint8_t)(BAIKAL_DIAG_F_FAIL | BAIKAL_DIAG_F_TX_ONLY);
++        out->count_usb = 1;
++        return;
++    }
++    if (amount < intended || amount < 0) {
++        out->caller_rc = -1;
++        out->status = -1;
++        out->flags = (uint8_t)(BAIKAL_DIAG_F_FAIL | BAIKAL_DIAG_F_SHORT | BAIKAL_DIAG_F_TX_ONLY);
++        return;
++    }
++    out->caller_rc = amount;
++    out->status = amount;
++    out->frame_ok = 1;
++}
++
++void baikal_diag_classify_rx(int usb_err, int amount, int intended,
++                             int decoded_len, int mismatch, int min_data,
++                             struct baikal_diag_xfer *out)
++{
++    int payload_short = 0;
++
++    if (!out)
++        return;
++    memset(out, 0, sizeof(*out));
++    out->intended = diag_clamp_count(intended);
++    out->transferred = diag_clamp_count(amount);
++    if (usb_err < 0) {
++        out->caller_rc = usb_err;
++        out->status = usb_err;
++        out->flags = BAIKAL_DIAG_F_FAIL;
++        out->count_usb = 1;
++        return;
++    }
++    if (amount < 7 || decoded_len < 0) {
++        out->caller_rc = -1;
++        out->status = -1;
++        out->flags = (uint8_t)(BAIKAL_DIAG_F_FAIL | BAIKAL_DIAG_F_SHORT);
++        out->count_short = 1;
++        return;
++    }
++    if (mismatch)
++        out->flags = (uint8_t)(out->flags | BAIKAL_DIAG_F_MISMATCH);
++    if (min_data > 0 && decoded_len < min_data)
++        payload_short = 1;
++    if (mismatch || payload_short) {
++        out->caller_rc = -1;
++        out->status = -1;
++        out->flags = (uint8_t)(out->flags | BAIKAL_DIAG_F_FAIL);
++        if (payload_short)
++            out->flags = (uint8_t)(out->flags | BAIKAL_DIAG_F_SHORT);
++        return;
++    }
++    out->caller_rc = amount;
++    out->status = amount;
++    out->frame_ok = 1;
++}
++
++int baikal_diag_accept_frame(int caller_rc)
++{
++    return caller_rc >= 7;
++}
++
++int baikal_diag_result_disposition(int caller_rc, int flags, int decoded,
++                                   int miner_ok, int cmd_ok, int data_len,
++                                   int min_data)
++{
++    int matched = miner_ok && cmd_ok;
++    int below_min = min_data > 0 && data_len < min_data;
++
++    if (baikal_diag_accept_frame(caller_rc)) {
++        if (!matched)
++            return BAIKAL_DIAG_RESULT_MISMATCH;
++        if (below_min)
++            return BAIKAL_DIAG_RESULT_SHORT;
++        return BAIKAL_DIAG_RESULT_FULL;
++    }
++    if ((flags & BAIKAL_DIAG_F_MISMATCH) || (decoded && !matched))
++        return BAIKAL_DIAG_RESULT_MISMATCH;
++    if ((flags & BAIKAL_DIAG_F_SHORT) && decoded && matched &&
++            data_len > 0 && below_min)
++        return BAIKAL_DIAG_RESULT_SHORT;
++    return BAIKAL_DIAG_RESULT_ABORT;
++}
++
++int baikal_diag_advance_work(int send_rc, int read_rc, int ack_param,
++                             int work_idx, int fifo, int *out_idx)
++{
++    if (out_idx)
++        *out_idx = work_idx;
++    (void)ack_param;
++    if (send_rc < 0 || !baikal_diag_accept_frame(read_rc) || fifo <= 0)
++        return 0;
++    work_idx++;
++    if (work_idx >= fifo)
++        work_idx = 0;
++    if (out_idx)
++        *out_idx = work_idx;
++    return 1;
++}
++
++void baikal_diag_mark_info_failed(struct baikal_diag_counters *counters)
++{
++    if (counters)
++        counters->last_info_ok = 0;
++}
++
++int baikal_diag_sync_close_with(int fd, int (*do_sync)(int), int (*do_close)(int))
++{
++    int rc_sync;
++    int rc_close;
++
++    if (fd < 0 || !do_sync || !do_close)
++        return -1;
++    rc_sync = do_sync(fd);
++    rc_close = do_close(fd);
++    if (rc_sync != 0 || rc_close != 0)
++        return -1;
++    return 0;
++}
++
++int baikal_diag_sync_close(int fd)
++{
++    return baikal_diag_sync_close_with(fd, fsync, close);
++}
++
++static void diag_copy_text(char *dst, size_t dst_len, const char *src)
++{
++    size_t n;
++
++    if (!dst || dst_len == 0)
++        return;
++    if (!src)
++        src = "";
++    n = strlen(src);
++    if (n >= dst_len)
++        n = dst_len - 1;
++    memcpy(dst, src, n);
++    dst[n] = '\0';
++}
++
++void baikal_diag_activity_init(struct baikal_diag_activity *st)
++{
++    if (!st)
++        return;
++    memset(st, 0, sizeof(*st));
++}
++
++int baikal_diag_observe_route(struct baikal_diag_activity *st, int pool_no,
++                              const char *endpoint, const char *worker)
++{
++    char ep[BAIKAL_DIAG_ID_LEN];
++    char wk[BAIKAL_DIAG_ID_LEN];
++
++    if (!st)
++        return -1;
++    if (baikal_diag_clean_endpoint(endpoint, ep, sizeof(ep)) != 0)
++        return -1;
++    diag_copy_text(wk, sizeof(wk), worker);
++    if (!st->route_ready) {
++        st->route_ready = 1;
++        st->pool_no = pool_no;
++        memcpy(st->endpoint, ep, sizeof(st->endpoint));
++        memcpy(st->worker, wk, sizeof(st->worker));
++        return 0;
++    }
++    if (st->pool_no == pool_no &&
++            strcmp(st->endpoint, ep) == 0 &&
++            strcmp(st->worker, wk) == 0)
++        return 0;
++    st->pool_no = pool_no;
++    memcpy(st->endpoint, ep, sizeof(st->endpoint));
++    memcpy(st->worker, wk, sizeof(st->worker));
++    st->route_epoch++;
++    st->share_valid = 0;
++    st->elapsed_valid = 0;
++    return 1;
++}
++
++int baikal_diag_observe_enable(struct baikal_diag_activity *st, int enabled)
++{
++    int on = enabled ? 1 : 0;
++
++    if (!st)
++        return -1;
++    if (!st->enable_ready) {
++        st->enable_ready = 1;
++        st->enabled = on;
++        return 0;
++    }
++    if (st->enabled == on)
++        return 0;
++    st->enabled = on;
++    st->enable_epoch++;
++    st->share_valid = 0;
++    st->elapsed_valid = 0;
++    return 1;
++}
++
++int baikal_diag_event_stats_reset(struct baikal_diag_activity *st)
++{
++    if (!st)
++        return -1;
++    if (!st->stat_ready)
++        return 0;
++    st->stat_sample.accepted = 0;
++    st->stat_sample.rejected = 0;
++    st->stat_sample.hw = 0;
++    st->stat_sample.diff_accepted = 0;
++    st->stat_sample.diff_rejected = 0;
++    st->share_valid = 0;
++    st->elapsed_valid = 0;
++    st->stat_epoch++;
++    return 1;
++}
++
++int baikal_diag_observe_stats(struct baikal_diag_activity *st,
++                              const struct baikal_diag_stat_sample *sample)
++{
++    int reset = 0;
++    const struct baikal_diag_stat_sample *prev;
++
++    if (!st || !sample)
++        return -1;
++    if (!st->stat_ready) {
++        st->stat_ready = 1;
++        st->stat_sample = *sample;
++        return 0;
++    }
++    prev = &st->stat_sample;
++    if (sample->accepted < prev->accepted ||
++            sample->rejected < prev->rejected ||
++            sample->hw < prev->hw ||
++            sample->local_nonce < prev->local_nonce ||
++            sample->local_error < prev->local_error ||
++            sample->diff_accepted + 0.001 < prev->diff_accepted ||
++            sample->diff_rejected + 0.001 < prev->diff_rejected ||
++            sample->device_start_sec != prev->device_start_sec)
++        reset = 1;
++    st->stat_sample = *sample;
++    if (!reset)
++        return 0;
++    st->stat_epoch++;
++    return 1;
++}
++
++int baikal_diag_copy_share(struct baikal_diag_share_view *dst,
++                           baikal_diag_share_load_fn load, void *user,
++                           void (*lock_hash)(void), void (*unlock_hash)(void),
++                           void (*lock_stats)(void), void (*unlock_stats)(void))
++{
++    struct baikal_diag_share_raw raw;
++
++    if (!dst)
++        return -1;
++    memset(dst, 0, sizeof(*dst));
++    if (!load || !lock_hash || !unlock_hash || !lock_stats || !unlock_stats)
++        return 0;
++
++    lock_hash();
++    lock_stats();
++    memset(&raw, 0, sizeof(raw));
++    load(&raw, user);
++    dst->accepted = raw.accepted < 0 ? 0 : (uint64_t)raw.accepted;
++    dst->rejected = raw.rejected < 0 ? 0 : (uint64_t)raw.rejected;
++    dst->hw = raw.hw < 0 ? 0 : (uint64_t)raw.hw;
++    dst->diff_accepted = raw.diff_accepted;
++    dst->diff_rejected = raw.diff_rejected;
++    dst->start_sec = raw.start_sec;
++    dst->start_usec = raw.start_usec;
++    dst->valid = 1;
++    unlock_stats();
++    unlock_hash();
++    return 0;
++}
++
++double baikal_diag_device_elapsed(int64_t start_sec, long start_usec,
++                                  int64_t now_sec, long now_usec, int *valid)
++{
++    double sec;
++
++    if (valid)
++        *valid = 0;
++    if (start_sec == 0)
++        return 0;
++    sec = (double)(now_sec - start_sec) +
++          ((double)now_usec - (double)start_usec) / 1000000.0;
++    if (sec < 1.0)
++        sec = 1.0;
++    if (valid)
++        *valid = 1;
++    return sec;
++}
++
++int baikal_diag_format_grid(const uint32_t grid[BAIKAL_DIAG_UNITS][BAIKAL_DIAG_CHIPS],
++                            char *dst, size_t dst_len)
++{
++    size_t used = 0;
++    int unit;
++    int chip;
++
++    if (!grid || !dst || dst_len == 0)
++        return -1;
++    dst[0] = '\0';
++    for (unit = 0; unit < BAIKAL_DIAG_UNITS; unit++) {
++        for (chip = 0; chip < BAIKAL_DIAG_CHIPS; chip++) {
++            int wrote;
++            int remain;
++
++            if (used >= dst_len)
++                return -1;
++            remain = (int)(dst_len - used);
++            wrote = snprintf(dst + used, (size_t)remain, "%s%u",
++                             (unit == 0 && chip == 0) ? "" : ",",
++                             grid[unit][chip]);
++            if (wrote < 0 || wrote >= remain)
++                return -1;
++            used += (size_t)wrote;
++        }
++    }
++    return 0;
++}
++
++uint64_t baikal_diag_mono_us(void)
++{
++    struct timespec ts;
++
++    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0)
++        return 0;
++    return (uint64_t)ts.tv_sec * 1000000ull + (uint64_t)ts.tv_nsec / 1000ull;
++}
++
++static void trace_store_enabled(struct baikal_diag_trace *trace, int enabled)
++{
++    __atomic_store_n(&trace->enabled, enabled ? 1 : 0, __ATOMIC_RELEASE);
++}
++
++static int trace_load_enabled(const struct baikal_diag_trace *trace)
++{
++    return __atomic_load_n(&trace->enabled, __ATOMIC_ACQUIRE) ? 1 : 0;
++}
++
++int baikal_diag_trace_enabled(const struct baikal_diag_trace *trace)
++{
++    if (!trace || !trace->ready)
++        return 0;
++    return trace_load_enabled(trace);
++}
++
++static void trace_reset_slots(struct baikal_diag_trace *trace)
++{
++    trace->head = 0;
++    trace->live = 0;
++}
++
++int baikal_diag_trace_init(struct baikal_diag_trace *trace)
++{
++    if (!trace)
++        return -1;
++    memset(trace, 0, sizeof(*trace));
++    if (pthread_mutex_init(&trace->lock, NULL) != 0)
++        return -1;
++    trace->ready = 1;
++    return 0;
++}
++
++void baikal_diag_trace_free(struct baikal_diag_trace *trace)
++{
++    if (!trace || !trace->ready)
++        return;
++    pthread_mutex_lock(&trace->lock);
++    free(trace->buf);
++    trace->buf = NULL;
++    trace->slots = 0;
++    trace->capacity = 0;
++    trace_store_enabled(trace, 0);
++    trace_reset_slots(trace);
++    pthread_mutex_unlock(&trace->lock);
++    pthread_mutex_destroy(&trace->lock);
++    trace->ready = 0;
++}
++
++int baikal_diag_trace_open(struct baikal_diag_trace *trace, uint32_t byte_budget,
++                           int enabled)
++{
++    uint32_t slots;
++    uint8_t *buf;
++
++    if (!trace || !trace->ready)
++        return -1;
++    if (byte_budget == 0)
++        byte_budget = BAIKAL_DIAG_TRACE_BYTES;
++    if (byte_budget > BAIKAL_DIAG_TRACE_BYTES)
++        byte_budget = BAIKAL_DIAG_TRACE_BYTES;
++    slots = byte_budget / BAIKAL_DIAG_TRACE_SLOT;
++    if (slots < 1)
++        return -1;
++
++    buf = (uint8_t *)calloc(slots, BAIKAL_DIAG_TRACE_SLOT);
++    if (!buf)
++        return -1;
++
++    pthread_mutex_lock(&trace->lock);
++    free(trace->buf);
++    trace->buf = buf;
++    trace->slots = slots;
++    trace->capacity = slots * BAIKAL_DIAG_TRACE_SLOT;
++    trace_reset_slots(trace);
++    trace->overwritten = 0;
++    trace->dropped = 0;
++    trace->recorded = 0;
++    trace_store_enabled(trace, enabled);
++    pthread_mutex_unlock(&trace->lock);
++    return 0;
++}
++
++int baikal_diag_trace_set(struct baikal_diag_trace *trace, int enabled)
++{
++    if (!trace || !trace->ready)
++        return -1;
++    if (enabled && !trace->buf) {
++        if (baikal_diag_trace_open(trace, BAIKAL_DIAG_TRACE_BYTES, 1) != 0) {
++            pthread_mutex_lock(&trace->lock);
++            trace_store_enabled(trace, 0);
++            trace->dropped++;
++            pthread_mutex_unlock(&trace->lock);
++            return -1;
++        }
++        return 0;
++    }
++    pthread_mutex_lock(&trace->lock);
++    trace_store_enabled(trace, enabled);
++    pthread_mutex_unlock(&trace->lock);
++    return 0;
++}
++
++void baikal_diag_trace_clear(struct baikal_diag_trace *trace)
++{
++    if (!trace || !trace->ready)
++        return;
++    pthread_mutex_lock(&trace->lock);
++    trace_reset_slots(trace);
++    trace->overwritten = 0;
++    trace->dropped = 0;
++    trace->recorded = 0;
++    if (trace->buf && trace->capacity)
++        memset(trace->buf, 0, trace->capacity);
++    pthread_mutex_unlock(&trace->lock);
++}
++
++static uint32_t trace_record_size(const struct baikal_diag_trace_rec *rec)
++{
++    return (uint32_t)BAIKAL_DIAG_TRACE_HDR + rec->tx_len + rec->rx_len;
++}
++
++static void trace_write_slot(uint8_t *slot, const struct baikal_diag_trace_rec *rec)
++{
++    uint32_t rec_bytes = trace_record_size(rec);
++
++    memset(slot, 0, BAIKAL_DIAG_TRACE_SLOT);
++    wr_u32(slot + 0, rec_bytes);
++    wr_u64(slot + 4, rec->mono_us);
++    wr_u32(slot + 12, rec->generation);
++    wr_u16(slot + 16, rec->tx_len);
++    wr_u16(slot + 18, rec->rx_len);
++    wr_i32(slot + 20, rec->tx_status);
++    wr_i32(slot + 24, rec->rx_status);
++    wr_i16(slot + 28, rec->attempted_clock_code);
++    wr_i16(slot + 30, rec->acked_clock_code);
++    slot[32] = rec->board;
++    slot[33] = rec->cmd;
++    slot[34] = rec->work_idx;
++    slot[35] = rec->flags;
++    slot[36] = rec->ack_miner;
++    slot[37] = rec->ack_cmd;
++    slot[38] = rec->ack_param;
++    slot[39] = rec->ack_dest;
++    wr_u16(slot + 40, rec->tx_transferred);
++    wr_u16(slot + 42, rec->rx_transferred);
++    wr_u16(slot + 44, rec->tx_intended);
++    wr_u16(slot + 46, rec->rx_intended);
++    if (rec->tx_len && rec->tx)
++        memcpy(slot + BAIKAL_DIAG_TRACE_HDR, rec->tx, rec->tx_len);
++    if (rec->rx_len && rec->rx)
++        memcpy(slot + BAIKAL_DIAG_TRACE_HDR + rec->tx_len, rec->rx, rec->rx_len);
++}
++
++int baikal_diag_trace_append(struct baikal_diag_trace *trace,
++                             const struct baikal_diag_trace_rec *rec)
++{
++    uint8_t *slot;
++
++    if (!trace || !trace->ready || !rec)
++        return -1;
++    if (rec->tx_len > BAIKAL_DIAG_TX_MAX || rec->rx_len > BAIKAL_DIAG_RX_MAX ||
++            (rec->tx_len && !rec->tx) || (rec->rx_len && !rec->rx)) {
++        pthread_mutex_lock(&trace->lock);
++        if (trace_load_enabled(trace))
++            trace->dropped++;
++        pthread_mutex_unlock(&trace->lock);
++        return -1;
++    }
++
++    pthread_mutex_lock(&trace->lock);
++    if (!trace_load_enabled(trace) || !trace->buf || trace->slots == 0) {
++        pthread_mutex_unlock(&trace->lock);
++        return 0;
++    }
++    if (trace->live == trace->slots) {
++        trace->overwritten++;
++        trace->live--;
++    }
++    slot = trace->buf + ((size_t)trace->head * BAIKAL_DIAG_TRACE_SLOT);
++    trace_write_slot(slot, rec);
++    trace->head++;
++    if (trace->head >= trace->slots)
++        trace->head = 0;
++    trace->live++;
++    trace->recorded++;
++    pthread_mutex_unlock(&trace->lock);
++    return 0;
++}
++
++int baikal_diag_trace_walk(const uint8_t *buf, uint32_t len,
++                           int (*cb)(const struct baikal_diag_trace_view *view, void *user),
++                           void *user)
++{
++    uint32_t off = 0;
++
++    if (!buf && len)
++        return -1;
++    while (off < len) {
++        struct baikal_diag_trace_view view;
++        uint32_t rec_bytes;
++        uint16_t tx_len;
++        uint16_t rx_len;
++
++        if (len - off < BAIKAL_DIAG_TRACE_HDR)
++            return -1;
++        rec_bytes = rd_u32(buf + off);
++        tx_len = (uint16_t)rd_u16(buf + off + 16);
++        rx_len = (uint16_t)rd_u16(buf + off + 18);
++        if (rec_bytes < BAIKAL_DIAG_TRACE_HDR ||
++                rec_bytes != (uint32_t)BAIKAL_DIAG_TRACE_HDR + tx_len + rx_len ||
++                tx_len > BAIKAL_DIAG_TX_MAX || rx_len > BAIKAL_DIAG_RX_MAX ||
++                rec_bytes > len - off)
++            return -1;
++
++        memset(&view, 0, sizeof(view));
++        view.rec_bytes = rec_bytes;
++        view.mono_us = rd_u64(buf + off + 4);
++        view.generation = rd_u32(buf + off + 12);
++        view.tx_len = tx_len;
++        view.rx_len = rx_len;
++        view.tx_status = rd_i32(buf + off + 20);
++        view.rx_status = rd_i32(buf + off + 24);
++        view.attempted_clock_code = rd_i16(buf + off + 28);
++        view.acked_clock_code = rd_i16(buf + off + 30);
++        view.board = buf[off + 32];
++        view.cmd = buf[off + 33];
++        view.work_idx = buf[off + 34];
++        view.flags = buf[off + 35];
++        view.ack_miner = buf[off + 36];
++        view.ack_cmd = buf[off + 37];
++        view.ack_param = buf[off + 38];
++        view.ack_dest = buf[off + 39];
++        view.tx_transferred = (uint16_t)rd_u16(buf + off + 40);
++        view.rx_transferred = (uint16_t)rd_u16(buf + off + 42);
++        view.tx_intended = (uint16_t)rd_u16(buf + off + 44);
++        view.rx_intended = (uint16_t)rd_u16(buf + off + 46);
++        view.tx = tx_len ? buf + off + BAIKAL_DIAG_TRACE_HDR : NULL;
++        view.rx = rx_len ? buf + off + BAIKAL_DIAG_TRACE_HDR + tx_len : NULL;
++        if (cb && cb(&view, user))
++            return 1;
++        off += rec_bytes;
++    }
++    return 0;
++}
++
++static uint32_t trace_oldest_index(const struct baikal_diag_trace *trace)
++{
++    if (!trace || trace->live == 0)
++        return 0;
++    if (trace->live <= trace->head)
++        return trace->head - trace->live;
++    if (trace->slots == 0)
++        return 0;
++    return trace->slots - (trace->live - trace->head);
++}
++
++int baikal_diag_trace_copy(struct baikal_diag_trace *trace, uint8_t **out,
++                           uint32_t *out_len, uint32_t *live,
++                           uint64_t *overwritten, uint64_t *dropped,
++                           uint64_t *recorded, uint32_t *capacity, int *enabled)
++{
++    uint8_t *copy = NULL;
++    uint32_t bytes = 0;
++    uint32_t count;
++    uint32_t start;
++    uint32_t i;
++
++    if (!trace || !trace->ready || !out || !out_len)
++        return -1;
++
++    pthread_mutex_lock(&trace->lock);
++    count = trace->live;
++    if (live)
++        *live = count;
++    if (overwritten)
++        *overwritten = trace->overwritten;
++    if (dropped)
++        *dropped = trace->dropped;
++    if (recorded)
++        *recorded = trace->recorded;
++    if (capacity)
++        *capacity = trace->capacity;
++    if (enabled)
++        *enabled = trace_load_enabled(trace);
++    if (count && trace->buf) {
++        uint32_t need = 0;
++
++        start = trace_oldest_index(trace);
++        for (i = 0; i < count; i++) {
++            uint32_t idx = start + i;
++
++            if (trace->slots)
++                idx %= trace->slots;
++            need += rd_u32(trace->buf + ((size_t)idx * BAIKAL_DIAG_TRACE_SLOT));
++        }
++        copy = (uint8_t *)malloc(need ? need : 1);
++        if (!copy) {
++            pthread_mutex_unlock(&trace->lock);
++            return -1;
++        }
++        for (i = 0; i < count; i++) {
++            uint32_t idx = start + i;
++            uint8_t *slot;
++            uint32_t rec_bytes;
++
++            if (trace->slots)
++                idx %= trace->slots;
++            slot = trace->buf + ((size_t)idx * BAIKAL_DIAG_TRACE_SLOT);
++            rec_bytes = rd_u32(slot);
++            if (rec_bytes < BAIKAL_DIAG_TRACE_HDR ||
++                    rec_bytes > BAIKAL_DIAG_TRACE_SLOT ||
++                    bytes + rec_bytes > need) {
++                free(copy);
++                pthread_mutex_unlock(&trace->lock);
++                return -1;
++            }
++            memcpy(copy + bytes, slot, rec_bytes);
++            bytes += rec_bytes;
++        }
++    }
++    pthread_mutex_unlock(&trace->lock);
++    *out = copy;
++    *out_len = bytes;
++    return 0;
++}
++
++int baikal_diag_trace_meta(struct baikal_diag_trace *trace,
++                           struct baikal_diag_trace_meta *meta)
++{
++    uint32_t i;
++    uint32_t used = 0;
++    uint32_t start;
++
++    if (!trace || !trace->ready || !meta)
++        return -1;
++
++    memset(meta, 0, sizeof(*meta));
++    pthread_mutex_lock(&trace->lock);
++    meta->enabled = trace_load_enabled(trace);
++    meta->live = trace->live;
++    meta->capacity = trace->capacity;
++    meta->overwritten = trace->overwritten;
++    meta->dropped = trace->dropped;
++    meta->recorded = trace->recorded;
++    start = trace_oldest_index(trace);
++    for (i = 0; i < trace->live && trace->buf; i++) {
++        uint32_t idx = start + i;
++        uint32_t rec_bytes;
++
++        if (trace->slots)
++            idx %= trace->slots;
++        rec_bytes = rd_u32(trace->buf + ((size_t)idx * BAIKAL_DIAG_TRACE_SLOT));
++        if (rec_bytes < BAIKAL_DIAG_TRACE_HDR ||
++                rec_bytes > BAIKAL_DIAG_TRACE_SLOT ||
++                used > BAIKAL_DIAG_TRACE_BYTES - rec_bytes) {
++            pthread_mutex_unlock(&trace->lock);
++            return -1;
++        }
++        used += rec_bytes;
++    }
++    meta->used = used;
++    pthread_mutex_unlock(&trace->lock);
++    return 0;
++}
++
++int baikal_diag_trace_meta_line(char *dst, size_t dst_len,
++                                const struct baikal_diag_trace_meta *meta,
++                                int pid, long start_unix)
++{
++    int n;
++
++    if (!dst || dst_len == 0 || !meta)
++        return -1;
++    n = snprintf(dst, dst_len,
++                 "{\"enabled\":%d,\"live\":%u,\"bytes\":%u,\"capacity\":%u,"
++                 "\"overwritten\":%llu,\"dropped\":%llu,\"recorded\":%llu,"
++                 "\"pid\":%d,\"start_unix\":%ld,"
++                 "\"status\":\"neg_fail_or_nbytes\"}\n",
++                 meta->enabled ? 1 : 0, meta->live, meta->used, meta->capacity,
++                 (unsigned long long)meta->overwritten,
++                 (unsigned long long)meta->dropped,
++                 (unsigned long long)meta->recorded,
++                 pid, start_unix);
++    if (n < 0 || (size_t)n >= dst_len)
++        return -1;
++    return n;
++}
+--- /dev/null
++++ b/baikal-diag.h
+@@ -0,0 +1,332 @@
++#ifndef BAIKAL_DIAG_H
++#define BAIKAL_DIAG_H
++
++#include <stddef.h>
++#include <stdint.h>
++#include <pthread.h>
++
++#define BAIKAL_DIAG_UNITS 4
++#define BAIKAL_DIAG_CHIPS 16
++#define BAIKAL_DIAG_GETINFO_MIN 7
++#define BAIKAL_DIAG_RESULT_MIN 8
++#define BAIKAL_DIAG_TX_MAX 512
++#define BAIKAL_DIAG_RX_MAX 128
++#define BAIKAL_DIAG_TRACE_HDR 48
++#define BAIKAL_DIAG_TRACE_SLOT (BAIKAL_DIAG_TRACE_HDR + BAIKAL_DIAG_TX_MAX + BAIKAL_DIAG_RX_MAX)
++#define BAIKAL_DIAG_TRACE_BYTES (2u * 1024u * 1024u)
++
++#define BAIKAL_DIAG_F_FAIL 0x01
++#define BAIKAL_DIAG_F_SHORT 0x02
++#define BAIKAL_DIAG_F_MISMATCH 0x04
++#define BAIKAL_DIAG_F_TX_ONLY 0x08
++#define BAIKAL_DIAG_ID_LEN 96
++
++/* GET_RESULT after classify_rx. ABORT ends the poll. MISMATCH skips the
++ * board. SHORT keeps the work-request and error bits and skips nonce/temp.
++ * FULL is a matching payload. */
++#define BAIKAL_DIAG_RESULT_ABORT 0
++#define BAIKAL_DIAG_RESULT_MISMATCH 1
++#define BAIKAL_DIAG_RESULT_SHORT 2
++#define BAIKAL_DIAG_RESULT_FULL 3
++
++/* tx_status and rx_status are negative on failure. A non-negative value is a
++ * byte count and is a successful frame only when FAIL and SHORT are clear.
++ * A USB short read can report status 0; that is not a valid frame.
++ * tx_transferred and rx_transferred keep the USB-reported counts when status
++ * is a negative error. tx_intended and rx_intended are the byte counts the
++ * transfer was asked to move. */
++
++struct baikal_diag_xfer {
++    int caller_rc;
++    int status;
++    int transferred;
++    int intended;
++    int frame_ok;
++    int count_usb;
++    int count_short;
++    uint8_t flags;
++};
++
++enum baikal_diag_nonce_kind {
++    BAIKAL_DIAG_NONCE_SHORT = 1,
++    BAIKAL_DIAG_NONCE_BAD_WORKIDX,
++    BAIKAL_DIAG_NONCE_MISSING,
++    BAIKAL_DIAG_NONCE_ALGO,
++    BAIKAL_DIAG_NONCE_SUBMIT
++};
++
++struct baikal_diag_nonce_in {
++    int data_len;
++    int unit_id;
++    int chip_id;
++    int work_idx;
++    int work_fifo;
++    int work_present;
++    int algo_match;
++};
++
++struct baikal_diag_nonce_out {
++    int kind;
++    int submit;
++    int attribute;
++    int invalid_id;
++    int unit;
++    int chip;
++};
++
++struct baikal_diag_counters {
++    uint64_t invalid_id;
++    uint64_t invalid_workidx;
++    uint64_t missing_work;
++    uint64_t algo_mismatch;
++    uint64_t short_reply;
++    uint64_t work_requests;
++    uint64_t work_sends;
++    uint64_t skip_overheat;
++    uint64_t skip_no_target;
++    uint64_t skip_disabled;
++    uint64_t skip_empty;
++    uint64_t usb_tx_error;
++    uint64_t usb_rx_error;
++    uint64_t work_wait_us_sum;
++    uint64_t work_wait_us_max;
++    uint64_t work_wait_count;
++    uint64_t ack_latency_us_sum;
++    uint64_t ack_latency_us_max;
++    uint64_t ack_latency_count;
++    uint64_t request_to_ack_us_sum;
++    uint64_t request_to_ack_us_max;
++    uint64_t request_to_ack_count;
++    uint64_t poll_gap_us_max;
++    uint64_t poll_gap_us_last;
++    int64_t last_poll_mono_us;
++    int attempted_clock_code;
++    uint64_t snap_mono_us;
++    int info_valid;
++    int last_info_ok;
++    int last_result_ok;
++    uint64_t reply_mismatch;
++};
++
++struct baikal_diag_stat_sample {
++    uint64_t accepted;
++    uint64_t rejected;
++    uint64_t hw;
++    uint64_t local_nonce;
++    uint64_t local_error;
++    double diff_accepted;
++    double diff_rejected;
++    uint64_t device_start_sec;
++};
++
++struct baikal_diag_share_raw {
++    int accepted;
++    int rejected;
++    int hw;
++    double diff_accepted;
++    double diff_rejected;
++    int64_t start_sec;
++    long start_usec;
++};
++
++struct baikal_diag_share_view {
++    uint64_t accepted;
++    uint64_t rejected;
++    uint64_t hw;
++    double diff_accepted;
++    double diff_rejected;
++    int64_t start_sec;
++    long start_usec;
++    int valid;
++};
++
++struct baikal_diag_activity {
++    int route_ready;
++    int pool_no;
++    char endpoint[BAIKAL_DIAG_ID_LEN];
++    char worker[BAIKAL_DIAG_ID_LEN];
++    uint64_t route_epoch;
++    int enable_ready;
++    int enabled;
++    uint64_t enable_epoch;
++    int stat_ready;
++    uint64_t stat_epoch;
++    int share_valid;
++    int elapsed_valid;
++    double device_elapsed_sec;
++    struct baikal_diag_stat_sample stat_sample;
++};
++
++struct baikal_diag_trace_rec {
++    uint64_t mono_us;
++    uint32_t generation;
++    uint16_t tx_len;
++    uint16_t rx_len;
++    int tx_status;
++    int rx_status;
++    int attempted_clock_code;
++    int acked_clock_code;
++    uint8_t board;
++    uint8_t cmd;
++    uint8_t work_idx;
++    uint8_t flags;
++    uint8_t ack_miner;
++    uint8_t ack_cmd;
++    uint8_t ack_param;
++    uint8_t ack_dest;
++    uint16_t tx_transferred;
++    uint16_t rx_transferred;
++    uint16_t tx_intended;
++    uint16_t rx_intended;
++    const uint8_t *tx;
++    const uint8_t *rx;
++};
++
++struct baikal_diag_trace_view {
++    uint64_t mono_us;
++    uint32_t generation;
++    uint32_t rec_bytes;
++    uint16_t tx_len;
++    uint16_t rx_len;
++    int tx_status;
++    int rx_status;
++    int attempted_clock_code;
++    int acked_clock_code;
++    uint8_t board;
++    uint8_t cmd;
++    uint8_t work_idx;
++    uint8_t flags;
++    uint8_t ack_miner;
++    uint8_t ack_cmd;
++    uint8_t ack_param;
++    uint8_t ack_dest;
++    uint16_t tx_transferred;
++    uint16_t rx_transferred;
++    uint16_t tx_intended;
++    uint16_t rx_intended;
++    const uint8_t *tx;
++    const uint8_t *rx;
++};
++
++struct baikal_diag_trace {
++    pthread_mutex_t lock;
++    uint8_t *buf;
++    uint32_t slots;
++    uint32_t capacity;
++    uint32_t head;
++    uint32_t live;
++    uint64_t overwritten;
++    uint64_t dropped;
++    uint64_t recorded;
++    int enabled;
++    int ready;
++};
++
++int baikal_diag_classify_nonce(const struct baikal_diag_nonce_in *in,
++                               struct baikal_diag_nonce_out *out);
++void baikal_diag_count_nonce(struct baikal_diag_counters *counters,
++                             const struct baikal_diag_nonce_out *out);
++void baikal_diag_counters_init(struct baikal_diag_counters *counters);
++void baikal_diag_note_poll(struct baikal_diag_counters *counters, uint64_t now_us);
++void baikal_diag_note_duration(uint64_t *sum, uint64_t *max_us, uint64_t *count,
++                               uint64_t us);
++
++int baikal_diag_getinfo_fields(const uint8_t *data, int len,
++                               uint8_t *fw, uint8_t *hw, uint8_t *bbg,
++                               uint8_t *clock_code, uint8_t *asic_count,
++                               uint8_t *asic_count_r, uint8_t *asic_ver);
++int baikal_diag_result_fields(const uint8_t *data, int len,
++                              uint8_t *chip, uint8_t *work_idx, uint8_t *temp,
++                              uint8_t *unit, uint32_t *nonce);
++
++int baikal_diag_encode_tx(uint8_t miner, uint8_t cmd, uint8_t param, uint8_t dest,
++                          const uint8_t *data, int len,
++                          uint8_t *out, int outcap, int *outlen);
++int baikal_diag_decode_rx(const uint8_t *buf, int amount,
++                          uint8_t *miner, uint8_t *cmd, uint8_t *param, uint8_t *dest,
++                          uint8_t *data, int datacap, int *dlen);
++
++int baikal_diag_format_grid(const uint32_t grid[BAIKAL_DIAG_UNITS][BAIKAL_DIAG_CHIPS],
++                            char *dst, size_t dst_len);
++int baikal_diag_clean_endpoint(const char *url, char *dst, size_t dst_len);
++int baikal_diag_transfer_status(int usb_err, int amount, int frame_ok);
++void baikal_diag_classify_tx(int usb_err, int amount, int intended,
++                             struct baikal_diag_xfer *out);
++void baikal_diag_classify_rx(int usb_err, int amount, int intended,
++                             int decoded_len, int mismatch, int min_data,
++                             struct baikal_diag_xfer *out);
++int baikal_diag_accept_frame(int caller_rc);
++int baikal_diag_result_disposition(int caller_rc, int flags, int decoded,
++                                   int miner_ok, int cmd_ok, int data_len,
++                                   int min_data);
++int baikal_diag_advance_work(int send_rc, int read_rc, int ack_param,
++                             int work_idx, int fifo, int *out_idx);
++void baikal_diag_mark_info_failed(struct baikal_diag_counters *counters);
++int baikal_diag_sync_close_with(int fd, int (*do_sync)(int), int (*do_close)(int));
++int baikal_diag_sync_close(int fd);
++void baikal_diag_activity_init(struct baikal_diag_activity *st);
++int baikal_diag_observe_route(struct baikal_diag_activity *st, int pool_no,
++                              const char *endpoint, const char *worker);
++int baikal_diag_observe_enable(struct baikal_diag_activity *st, int enabled);
++int baikal_diag_event_stats_reset(struct baikal_diag_activity *st);
++int baikal_diag_observe_stats(struct baikal_diag_activity *st,
++                              const struct baikal_diag_stat_sample *sample);
++typedef void (*baikal_diag_share_load_fn)(struct baikal_diag_share_raw *raw, void *user);
++int baikal_diag_copy_share(struct baikal_diag_share_view *dst,
++                           baikal_diag_share_load_fn load, void *user,
++                           void (*lock_hash)(void), void (*unlock_hash)(void),
++                           void (*lock_stats)(void), void (*unlock_stats)(void));
++double baikal_diag_device_elapsed(int64_t start_sec, long start_usec,
++                                  int64_t now_sec, long now_usec, int *valid);
++static inline uint32_t baikal_diag_load_u32(const uint32_t *word)
++{
++    return __atomic_load_n(word, __ATOMIC_ACQUIRE);
++}
++static inline void baikal_diag_store_u32(uint32_t *word, uint32_t value)
++{
++    __atomic_store_n(word, value, __ATOMIC_RELEASE);
++}
++static inline uint32_t baikal_diag_bump_u32(uint32_t *word)
++{
++    uint32_t value = __atomic_add_fetch(word, 1u, __ATOMIC_ACQ_REL);
++
++    if (value == 0)
++        value = __atomic_add_fetch(word, 1u, __ATOMIC_ACQ_REL);
++    return value;
++}
++uint64_t baikal_diag_mono_us(void);
++
++int baikal_diag_trace_enabled(const struct baikal_diag_trace *trace);
++int baikal_diag_trace_init(struct baikal_diag_trace *trace);
++void baikal_diag_trace_free(struct baikal_diag_trace *trace);
++int baikal_diag_trace_open(struct baikal_diag_trace *trace, uint32_t byte_budget,
++                           int enabled);
++int baikal_diag_trace_set(struct baikal_diag_trace *trace, int enabled);
++void baikal_diag_trace_clear(struct baikal_diag_trace *trace);
++int baikal_diag_trace_append(struct baikal_diag_trace *trace,
++                             const struct baikal_diag_trace_rec *rec);
++int baikal_diag_trace_copy(struct baikal_diag_trace *trace, uint8_t **out,
++                           uint32_t *out_len, uint32_t *live,
++                           uint64_t *overwritten, uint64_t *dropped,
++                           uint64_t *recorded, uint32_t *capacity, int *enabled);
++int baikal_diag_trace_walk(const uint8_t *buf, uint32_t len,
++                           int (*cb)(const struct baikal_diag_trace_view *view, void *user),
++                           void *user);
++
++struct baikal_diag_trace_meta {
++    int enabled;
++    uint32_t live;
++    uint32_t used;
++    uint32_t capacity;
++    uint64_t overwritten;
++    uint64_t dropped;
++    uint64_t recorded;
++};
++
++int baikal_diag_trace_meta(struct baikal_diag_trace *trace,
++                           struct baikal_diag_trace_meta *meta);
++int baikal_diag_trace_meta_line(char *dst, size_t dst_len,
++                                const struct baikal_diag_trace_meta *meta,
++                                int pid, long start_unix);
++
++#endif
+--- /dev/null
++++ b/tests/test-baikal-diag.c
+@@ -0,0 +1,585 @@
++#include "baikal-diag.h"
++
++#include <limits.h>
++#include <stdio.h>
++#include <string.h>
++#include <stdlib.h>
++
++static int failures;
++
++static void expect(int cond, const char *message)
++{
++    if (!cond) {
++        fprintf(stderr, "FAIL: %s\n", message);
++        failures++;
++    }
++}
++
++static struct baikal_diag_nonce_out classify(int len, int unit, int chip, int work,
++                                             int present, int algo)
++{
++    struct baikal_diag_nonce_in in;
++    struct baikal_diag_nonce_out out;
++
++    memset(&in, 0, sizeof(in));
++    in.data_len = len;
++    in.unit_id = unit;
++    in.chip_id = chip;
++    in.work_idx = work;
++    in.work_fifo = 200;
++    in.work_present = present;
++    in.algo_match = algo;
++    expect(baikal_diag_classify_nonce(&in, &out) == 0, "classify returns");
++    return out;
++}
++
++static void test_classify(void)
++{
++    struct baikal_diag_nonce_out out;
++    struct baikal_diag_counters counters;
++    uint8_t fw = 9, hw = 9, bbg = 9, code = 9, count = 9, count_r = 9, ver = 9;
++    uint8_t info[7] = {1, 2, 3, 30, 64, 61, 0x51};
++    uint8_t chip = 1, work = 1, temp = 1, unit = 1;
++    uint32_t nonce = 1;
++    uint8_t result[8] = {0x78, 0x56, 0x34, 0x12, 15, 4, 40, 2};
++
++    out = classify(8, 2, 15, 4, 1, 1);
++    expect(out.submit && out.attribute && !out.invalid_id, "in-range id submits");
++    expect(out.unit == 2 && out.chip == 15, "raw id kept");
++
++    out = classify(8, 4, 0, 4, 1, 1);
++    expect(out.submit && !out.attribute && out.invalid_id, "unknown unit still submits");
++
++    out = classify(8, 0, 16, 4, 1, 1);
++    expect(out.submit && out.invalid_id, "unknown chip still submits");
++
++    out = classify(8, 0, 0, 200, 1, 1);
++    expect(!out.submit && out.kind == BAIKAL_DIAG_NONCE_BAD_WORKIDX, "work index 200 rejected");
++
++    out = classify(8, 0, 0, 255, 1, 1);
++    expect(out.kind == BAIKAL_DIAG_NONCE_BAD_WORKIDX, "work index 255 rejected");
++
++    out = classify(8, 0, 0, 3, 0, 1);
++    expect(!out.submit && out.kind == BAIKAL_DIAG_NONCE_MISSING, "missing work rejected");
++
++    out = classify(8, 0, 0, 3, 1, 0);
++    expect(!out.submit && out.kind == BAIKAL_DIAG_NONCE_ALGO, "algo mismatch rejected");
++
++    out = classify(7, 0, 0, 3, 1, 1);
++    expect(!out.submit && out.kind == BAIKAL_DIAG_NONCE_SHORT, "short result rejected");
++
++    baikal_diag_counters_init(&counters);
++    baikal_diag_count_nonce(&counters, &out);
++    out = classify(8, 9, 1, 1, 1, 1);
++    baikal_diag_count_nonce(&counters, &out);
++    out = classify(8, 0, 0, 400, 1, 1);
++    baikal_diag_count_nonce(&counters, &out);
++    out = classify(8, 0, 0, 1, 0, 1);
++    baikal_diag_count_nonce(&counters, &out);
++    out = classify(8, 0, 0, 1, 1, 0);
++    baikal_diag_count_nonce(&counters, &out);
++    expect(counters.short_reply == 1 && counters.invalid_id == 1 &&
++           counters.invalid_workidx == 1 && counters.missing_work == 1 &&
++           counters.algo_mismatch == 1, "discard classes stay separate");
++
++    expect(!baikal_diag_getinfo_fields(info, 6, &fw, &hw, &bbg, &code, &count, &count_r, &ver),
++           "short GET_INFO rejected");
++    expect(fw == 9 && count == 9 && count_r == 9 && ver == 9, "short GET_INFO writes nothing");
++    expect(baikal_diag_getinfo_fields(info, 7, &fw, &hw, &bbg, &code, &count, &count_r, &ver),
++           "GET_INFO length 7 accepted");
++    expect(fw == 1 && hw == 2 && bbg == 3 && code == 30 && count == 64 &&
++           count_r == 61 && ver == 0x51, "both counts and version");
++
++    expect(!baikal_diag_result_fields(result, 7, &chip, &work, &temp, &unit, &nonce),
++           "short result fields rejected");
++    expect(chip == 1 && temp == 1 && nonce == 1, "short result writes nothing");
++    expect(baikal_diag_result_fields(result, 8, &chip, &work, &temp, &unit, &nonce),
++           "result fields accepted");
++    expect(chip == 15 && work == 4 && temp == 40 && unit == 2 && nonce == 0x12345678,
++           "result layout");
++}
++
++static void test_frame(void)
++{
++    uint8_t data[2] = {0x11, 0x22};
++    uint8_t wire[16];
++    uint8_t expect_wire[11] = {':', 1, 4, 3, 0, 0x00, 0x11, 0x00, 0x22, '\r', '\n'};
++    uint8_t decoded[8];
++    uint8_t miner, cmd, param, dest;
++    int outlen = 0;
++    int dlen = -1;
++    uint8_t payload[210];
++    uint8_t big[512];
++    int i;
++
++    memset(wire, 0x5a, sizeof(wire));
++    expect(baikal_diag_encode_tx(1, 4, 3, 0, data, 2, wire, (int)sizeof(wire), &outlen) == 0,
++           "encode");
++    expect(outlen == 11 && memcmp(wire, expect_wire, 11) == 0, "wire bytes unchanged");
++    expect(baikal_diag_decode_rx(wire, outlen, &miner, &cmd, &param, &dest,
++                                 decoded, (int)sizeof(decoded), &dlen) == outlen,
++           "decode");
++    expect(miner == 1 && cmd == 4 && param == 3 && dest == 0 && dlen == 2 &&
++           decoded[0] == 0x11 && decoded[1] == 0x22, "round trip");
++    expect(baikal_diag_decode_rx(wire, 6, &miner, &cmd, &param, &dest,
++                                 decoded, (int)sizeof(decoded), &dlen) != 0,
++           "short frame rejected");
++
++    for (i = 0; i < 210; i++)
++        payload[i] = (uint8_t)i;
++    expect(baikal_diag_encode_tx(0, 4, 0, 0, payload, 210, big, 512, &outlen) == 0,
++           "send work fits");
++    expect(outlen == 5 + 420 + 2, "send work length");
++    expect(baikal_diag_encode_tx(0, 4, 0, 0, payload, 210, big, outlen - 1, &outlen) != 0,
++           "tight buffer rejected");
++
++    outlen = 77;
++    expect(baikal_diag_encode_tx(0, 4, 0, 0, payload, INT_MAX, big, 512, &outlen) != 0,
++           "encode rejects overflowing length");
++    expect(outlen == 77, "failed encode leaves length untouched");
++    expect(baikal_diag_encode_tx(0, 4, 0, 0, payload, 0, big, 6, &outlen) != 0,
++           "encode rejects a header that does not fit");
++}
++
++static void test_half_payload(void)
++{
++    uint8_t wire[128];
++    uint8_t decoded[64];
++    uint8_t miner = 0x5a, cmd = 0x5a, param = 0x5a, dest = 0x5a;
++    uint8_t saved_miner, saved_cmd, saved_param, saved_dest;
++    int dlen = 99;
++    int n;
++    uint8_t one[1] = {0x42};
++    int outlen = 0;
++
++    memset(decoded, 0xab, sizeof(decoded));
++    for (n = 8; n <= 128; n += 2) {
++        memset(wire, 0, sizeof(wire));
++        wire[0] = ':';
++        wire[n - 2] = '\r';
++        wire[n - 1] = '\n';
++        miner = cmd = param = dest = 0x5a;
++        dlen = 99;
++        decoded[0] = 0xab;
++        saved_miner = miner;
++        saved_cmd = cmd;
++        saved_param = param;
++        saved_dest = dest;
++        expect(baikal_diag_decode_rx(wire, n, &miner, &cmd, &param, &dest,
++                                     decoded, (int)sizeof(decoded), &dlen) < 0,
++               "odd payload length rejected");
++        expect(miner == saved_miner && cmd == saved_cmd && param == saved_param &&
++               dest == saved_dest && dlen == 99 && decoded[0] == 0xab,
++               "rejected frame writes nothing");
++    }
++
++    memset(wire, 0, sizeof(wire));
++    expect(baikal_diag_encode_tx(2, 5, 1, 0, NULL, 0, wire, (int)sizeof(wire), &outlen) == 0,
++           "empty payload encodes");
++    expect(outlen == 7, "empty frame is 7 bytes");
++    dlen = -1;
++    expect(baikal_diag_decode_rx(wire, outlen, &miner, &cmd, &param, &dest,
++                                 NULL, 0, &dlen) == outlen,
++           "empty frame decodes with no data buffer");
++    expect(dlen == 0 && miner == 2 && cmd == 5 && param == 1, "empty frame fields");
++
++    expect(baikal_diag_encode_tx(1, 4, 9, 0, one, 1, wire, (int)sizeof(wire), &outlen) == 0,
++           "one-byte payload encodes");
++    expect(outlen == 9 && ((outlen - 7) % 2) == 0, "one-byte frame is even");
++    expect(baikal_diag_decode_rx(wire, outlen, &miner, &cmd, &param, &dest,
++                                 decoded, (int)sizeof(decoded), &dlen) == outlen &&
++           dlen == 1 && decoded[0] == 0x42 && param == 9,
++           "one-byte frame round trip");
++
++    expect(baikal_diag_transfer_status(0, 6, 0) == -1, "short read status is failure");
++    expect(baikal_diag_transfer_status(0, 8, 0) == -1, "malformed frame status is failure");
++    expect(baikal_diag_transfer_status(-7, 0, 0) == -7, "usb failure status kept");
++    expect(baikal_diag_transfer_status(0, 7, 1) == 7, "full frame status is its byte count");
++}
++
++static struct baikal_diag_stat_sample stat_sample(uint64_t accepted, double diff,
++                                                   uint64_t start_sec)
++{
++    struct baikal_diag_stat_sample sample;
++
++    memset(&sample, 0, sizeof(sample));
++    sample.accepted = accepted;
++    sample.rejected = accepted;
++    sample.hw = 0;
++    sample.local_nonce = accepted;
++    sample.local_error = 0;
++    sample.diff_accepted = diff;
++    sample.diff_rejected = 0;
++    sample.device_start_sec = start_sec;
++    return sample;
++}
++
++static void test_epochs(void)
++{
++    struct baikal_diag_activity st;
++    struct baikal_diag_stat_sample sample;
++    char endpoint[BAIKAL_DIAG_ID_LEN];
++
++    expect(baikal_diag_clean_endpoint("stratum+tcp://user:secret@pool.example:3334/job",
++                                      endpoint, sizeof(endpoint)) == 0,
++           "clean endpoint");
++    expect(strcmp(endpoint, "pool.example:3334") == 0, "endpoint is host:port");
++    expect(strstr(endpoint, "secret") == NULL && strstr(endpoint, "user") == NULL,
++           "endpoint has no userinfo");
++    expect(baikal_diag_clean_endpoint("user:secret@pool.example:3334",
++                                      endpoint, sizeof(endpoint)) == 0 &&
++           strcmp(endpoint, "pool.example:3334") == 0,
++           "userinfo stripped without a scheme");
++    expect(baikal_diag_clean_endpoint(
++               "http://quota:2;stratum+tcp://user:password@host:3334",
++               endpoint, sizeof(endpoint)) == 0 &&
++           strcmp(endpoint, "host:3334") == 0,
++           "legacy quota wrapper keeps the host");
++    expect(strstr(endpoint, "password") == NULL && strstr(endpoint, "quota") == NULL,
++           "legacy quota wrapper drops credentials");
++    expect(baikal_diag_clean_endpoint("stratum+tcp://host:3334?password=secret",
++                                      endpoint, sizeof(endpoint)) == 0 &&
++           strcmp(endpoint, "host:3334") == 0,
++           "query is stripped when there is no slash");
++    expect(baikal_diag_clean_endpoint("stratum+tcp://host:3334#frag",
++                                      endpoint, sizeof(endpoint)) == 0 &&
++           strcmp(endpoint, "host:3334") == 0,
++           "fragment is stripped when there is no slash");
++
++    baikal_diag_activity_init(&st);
++    expect(baikal_diag_observe_route(&st, 1, "stratum+tcp://u:secret@a.example:1", "worker") == 0 &&
++           st.route_epoch == 0, "first route is the baseline");
++    expect(strcmp(st.endpoint, "a.example:1") == 0 && strstr(st.endpoint, "secret") == NULL,
++           "stored route has no password");
++    expect(baikal_diag_observe_route(&st, 1, "a.example:1", "worker") == 0 &&
++           st.route_epoch == 0, "same cleaned route is not a change");
++    expect(baikal_diag_observe_route(&st, 2, "b.example:1", "worker") == 1 &&
++           st.route_epoch == 1, "route away increments");
++    expect(baikal_diag_observe_route(&st, 1, "a.example:1", "worker") == 1 &&
++           st.route_epoch == 2, "route back increments again");
++    expect(baikal_diag_observe_route(&st, 1, "a.example:1", "other") == 1 &&
++           st.route_epoch == 3, "worker change increments");
++    expect(baikal_diag_observe_route(&st, 1, "a.example:9", "other") == 1 &&
++           st.route_epoch == 4, "endpoint change increments");
++    expect(baikal_diag_observe_route(
++               &st, 1, "http://quota:2;stratum+tcp://user:password@a.example:9",
++               "other") == 0 &&
++           st.route_epoch == 4, "same host inside a quota wrapper is not a new route");
++    expect(baikal_diag_observe_route(
++               &st, 1, "http://quota:2;stratum+tcp://user:password@b.example:9",
++               "other") == 1 &&
++           st.route_epoch == 5, "another host inside a quota wrapper is a new route");
++
++    baikal_diag_activity_init(&st);
++    expect(baikal_diag_observe_enable(&st, 1) == 0 && st.enable_epoch == 0,
++           "first enablement is the baseline");
++    expect(baikal_diag_observe_enable(&st, 1) == 0 && st.enable_epoch == 0,
++           "steady enablement does not increment");
++    expect(baikal_diag_observe_enable(&st, 0) == 1 && st.enable_epoch == 1,
++           "disable increments");
++    expect(baikal_diag_observe_enable(&st, 1) == 1 && st.enable_epoch == 2,
++           "re-enable increments again");
++
++    baikal_diag_activity_init(&st);
++    sample = stat_sample(10, 320.0, 1000);
++    expect(baikal_diag_observe_stats(&st, &sample) == 0 && st.stat_epoch == 0,
++           "first stats sample is the baseline");
++    sample = stat_sample(11, 352.0, 1000);
++    expect(baikal_diag_observe_stats(&st, &sample) == 0 && st.stat_epoch == 0,
++           "increasing counters stay in the epoch");
++    sample = stat_sample(4, 352.0, 1000);
++    expect(baikal_diag_observe_stats(&st, &sample) == 1 && st.stat_epoch == 1,
++           "accepted decrease increments stat epoch");
++    sample = stat_sample(4, 100.0, 1000);
++    expect(baikal_diag_observe_stats(&st, &sample) == 1 && st.stat_epoch == 2,
++           "difficulty decrease increments stat epoch");
++    sample = stat_sample(4, 100.0, 2000);
++    expect(baikal_diag_observe_stats(&st, &sample) == 1 && st.stat_epoch == 3,
++           "device start change increments stat epoch");
++    expect(baikal_diag_observe_stats(&st, &sample) == 0 && st.stat_epoch == 3,
++           "repeat sample does not increment");
++
++    sample.rejected = 0;
++    expect(baikal_diag_observe_stats(&st, &sample) == 1 && st.stat_epoch == 4,
++           "rejected decrease increments stat epoch");
++    sample.hw = 0;
++    sample.rejected = 0;
++    sample.local_error = 3;
++    expect(baikal_diag_observe_stats(&st, &sample) == 0 && st.stat_epoch == 4,
++           "new local error does not look like a reset");
++    sample.local_error = 1;
++    expect(baikal_diag_observe_stats(&st, &sample) == 1 && st.stat_epoch == 5,
++           "local error decrease increments stat epoch");
++    sample.hw = 2;
++    expect(baikal_diag_observe_stats(&st, &sample) == 0 && st.stat_epoch == 5,
++           "hw increase stays in the epoch");
++    sample.hw = 0;
++    expect(baikal_diag_observe_stats(&st, &sample) == 1 && st.stat_epoch == 6,
++           "hw decrease increments stat epoch");
++    sample.local_nonce = 0;
++    expect(baikal_diag_observe_stats(&st, &sample) == 1 && st.stat_epoch == 7,
++           "local nonce decrease increments stat epoch");
++}
++
++static void test_grid_and_poll(void)
++{
++    uint32_t grid[BAIKAL_DIAG_UNITS][BAIKAL_DIAG_CHIPS];
++    char text[768];
++    struct baikal_diag_counters counters;
++    int unit;
++    int chip;
++
++    memset(grid, 0, sizeof(grid));
++    grid[0][0] = 1;
++    grid[0][15] = 2;
++    grid[3][15] = 3;
++    expect(baikal_diag_format_grid(grid, text, sizeof(text)) == 0, "format grid");
++    expect(strcmp(text,
++                  "1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,2,"
++                  "0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,"
++                  "0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,"
++                  "0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,3") == 0,
++           "grid order is unit major");
++    for (unit = 0; unit < 4; unit++)
++        for (chip = 0; chip < 16; chip++)
++            grid[unit][chip] = 10;
++    expect(baikal_diag_format_grid(grid, text, 8) != 0, "grid overflow rejected");
++
++    baikal_diag_counters_init(&counters);
++    baikal_diag_note_poll(&counters, 1000);
++    expect(counters.poll_gap_us_last == 0, "first poll has no gap");
++    baikal_diag_note_poll(&counters, 2500);
++    expect(counters.poll_gap_us_last == 1500 && counters.poll_gap_us_max == 1500,
++           "poll gap");
++    baikal_diag_note_poll(&counters, 3000);
++    expect(counters.poll_gap_us_max == 1500 && counters.poll_gap_us_last == 500,
++           "poll gap max sticks");
++    baikal_diag_note_duration(&counters.ack_latency_us_sum, &counters.ack_latency_us_max,
++                              &counters.ack_latency_count, 40);
++    baikal_diag_note_duration(&counters.ack_latency_us_sum, &counters.ack_latency_us_max,
++                              &counters.ack_latency_count, 10);
++    expect(counters.ack_latency_count == 2 && counters.ack_latency_us_sum == 50 &&
++           counters.ack_latency_us_max == 40, "duration sum and max");
++}
++
++struct walk_state {
++    int count;
++    int saw_bytes;
++    int saw_fail;
++    int order_ok;
++    uint64_t last_mono;
++};
++
++static int on_view(const struct baikal_diag_trace_view *view, void *user)
++{
++    struct walk_state *st = user;
++
++    if (view->mono_us < st->last_mono)
++        st->order_ok = 0;
++    st->last_mono = view->mono_us;
++    st->count++;
++    if (view->tx_len == 4 && view->tx && memcmp(view->tx, "ABCD", 4) == 0 &&
++            view->rx_len == 3 && view->rx && memcmp(view->rx, "xyz", 3) == 0 &&
++            view->board == 2 && view->cmd == 0x03 && view->work_idx == 0xff &&
++            view->generation == 9 && view->attempted_clock_code == 30 &&
++            view->acked_clock_code == 22 && view->ack_param == 0 &&
++            view->ack_dest == 0 && view->tx_status == 11 && view->rx_status == 7)
++        st->saw_bytes = 1;
++    if ((view->flags & BAIKAL_DIAG_F_FAIL) && (view->flags & BAIKAL_DIAG_F_TX_ONLY) &&
++            view->rx_len == 0 && view->tx_status == -7)
++        st->saw_fail = 1;
++    return 0;
++}
++
++static void test_trace(void)
++{
++    struct baikal_diag_trace trace;
++    struct baikal_diag_trace_rec rec;
++    uint8_t *copy = NULL;
++    uint32_t copy_len = 0;
++    uint32_t live = 0;
++    uint32_t capacity = 0;
++    uint64_t overwritten = 0;
++    uint64_t dropped = 0;
++    uint64_t recorded = 0;
++    int enabled = 1;
++    struct walk_state st;
++    int i;
++    uint32_t budget;
++
++    memset(&rec, 0, sizeof(rec));
++    rec.tx = (const uint8_t *)"ABCD";
++    rec.tx_len = 4;
++    rec.rx = (const uint8_t *)"xyz";
++    rec.rx_len = 3;
++    rec.board = 2;
++    rec.cmd = 0x03;
++    rec.work_idx = 0xff;
++    rec.generation = 9;
++    rec.attempted_clock_code = 30;
++    rec.acked_clock_code = 22;
++    rec.ack_param = 0;
++    rec.ack_dest = 0;
++    rec.tx_status = 11;
++    rec.rx_status = 7;
++    rec.mono_us = 100;
++
++    expect(baikal_diag_trace_init(&trace) == 0, "trace init");
++    expect(baikal_diag_trace_append(&trace, &rec) == 0, "append while off");
++    expect(baikal_diag_trace_copy(&trace, &copy, &copy_len, &live, &overwritten,
++                                  &dropped, &recorded, &capacity, &enabled) == 0,
++           "copy while off");
++    expect(copy == NULL && copy_len == 0 && live == 0 && recorded == 0 && enabled == 0,
++           "disabled trace stores nothing");
++    free(copy);
++    copy = NULL;
++
++    budget = 3 * BAIKAL_DIAG_TRACE_SLOT;
++    expect(baikal_diag_trace_open(&trace, budget, 1) == 0, "open small ring");
++    expect(trace.capacity <= BAIKAL_DIAG_TRACE_BYTES, "cap stays inside 2MiB");
++    expect(baikal_diag_trace_set(&trace, 1) == 0, "enable keeps small ring");
++    expect(trace.capacity == budget, "enable does not grow a configured ring");
++
++    rec.tx_len = BAIKAL_DIAG_TX_MAX + 1;
++    expect(baikal_diag_trace_append(&trace, &rec) != 0, "oversize dropped");
++    rec.tx_len = 4;
++    expect(baikal_diag_trace_copy(&trace, &copy, &copy_len, &live, &overwritten,
++                                  &dropped, &recorded, &capacity, &enabled) == 0,
++           "copy after drop");
++    expect(dropped == 1 && live == 0, "drop counted");
++    free(copy);
++    copy = NULL;
++
++    for (i = 0; i < 5; i++) {
++        rec.mono_us = (uint64_t)(1000 + i);
++        rec.flags = 0;
++        rec.rx_len = 3;
++        rec.rx_status = 7;
++        if (i == 3) {
++            rec.flags = BAIKAL_DIAG_F_FAIL | BAIKAL_DIAG_F_TX_ONLY;
++            rec.rx_len = 0;
++            rec.rx = NULL;
++            rec.tx_status = -7;
++            rec.rx_status = 0;
++        } else {
++            rec.tx_status = 11;
++            rec.rx = (const uint8_t *)"xyz";
++        }
++        expect(baikal_diag_trace_append(&trace, &rec) == 0, "append event");
++    }
++    expect(baikal_diag_trace_copy(&trace, &copy, &copy_len, &live, &overwritten,
++                                  &dropped, &recorded, &capacity, &enabled) == 0,
++           "copy ring");
++    expect(live == 3 && overwritten == 2 && recorded == 5 && enabled == 1, "overwrite metadata");
++    expect(capacity <= budget && capacity + BAIKAL_DIAG_TRACE_SLOT > budget,
++           "allocated bytes are the slot budget");
++    memset(&st, 0, sizeof(st));
++    st.order_ok = 1;
++    expect(baikal_diag_trace_walk(copy, copy_len, on_view, &st) == 0, "walk export");
++    expect(st.count == 3 && st.order_ok, "oldest events overwritten in order");
++    expect(st.saw_bytes && st.saw_fail, "payload and failed attempt kept");
++    free(copy);
++
++    expect(baikal_diag_trace_set(&trace, 0) == 0, "disable");
++    rec.mono_us = 9999;
++    rec.flags = 0;
++    rec.rx_len = 3;
++    rec.rx = (const uint8_t *)"xyz";
++    expect(baikal_diag_trace_append(&trace, &rec) == 0, "append after disable");
++    expect(baikal_diag_trace_copy(&trace, &copy, &copy_len, &live, NULL, NULL,
++                                  &recorded, NULL, &enabled) == 0, "copy after disable");
++    expect(enabled == 0 && live == 3 && recorded == 5, "disable stops new events");
++    free(copy);
++    baikal_diag_trace_free(&trace);
++
++    expect(baikal_diag_trace_init(&trace) == 0, "reinit");
++    expect(baikal_diag_trace_open(&trace, BAIKAL_DIAG_TRACE_BYTES, 0) == 0, "full budget");
++    expect(trace.capacity <= BAIKAL_DIAG_TRACE_BYTES, "2MiB bound");
++    expect(trace.capacity >= BAIKAL_DIAG_TRACE_BYTES - BAIKAL_DIAG_TRACE_SLOT,
++           "budget is usable");
++    expect(trace.enabled == 0, "full ring can stay off");
++    baikal_diag_trace_free(&trace);
++}
++
++static void test_trace_meta(void)
++{
++    struct baikal_diag_trace trace;
++    struct baikal_diag_trace_rec rec;
++    struct baikal_diag_trace_meta meta;
++    char line[256];
++    int n;
++    uint32_t one;
++
++    memset(&rec, 0, sizeof(rec));
++    rec.tx = (const uint8_t *)"ABCD";
++    rec.tx_len = 4;
++    rec.rx = (const uint8_t *)"xyz";
++    rec.rx_len = 3;
++    rec.tx_status = 11;
++    rec.rx_status = 7;
++    rec.mono_us = 5;
++    one = BAIKAL_DIAG_TRACE_HDR + 4 + 3;
++
++    expect(baikal_diag_trace_init(&trace) == 0, "meta trace init");
++    expect(baikal_diag_trace_meta(&trace, &meta) == 0, "meta before open");
++    expect(meta.enabled == 0 && meta.live == 0 && meta.used == 0 &&
++           meta.capacity == 0 && meta.recorded == 0, "off trace has no bytes");
++    expect(baikal_diag_trace_open(&trace, 2 * BAIKAL_DIAG_TRACE_SLOT, 1) == 0,
++           "open two slots");
++    expect(baikal_diag_trace_append(&trace, &rec) == 0, "append one record");
++    expect(baikal_diag_trace_meta(&trace, &meta) == 0, "meta after append");
++    expect(meta.enabled == 1 && meta.live == 1 && meta.used == one &&
++           meta.recorded == 1 && meta.dropped == 0, "used bytes are the record");
++
++    rec.tx_len = BAIKAL_DIAG_TX_MAX + 1;
++    expect(baikal_diag_trace_append(&trace, &rec) != 0, "oversize is not stored");
++    rec.tx_len = 4;
++    expect(baikal_diag_trace_meta(&trace, &meta) == 0 && meta.used == one &&
++           meta.dropped == 1 && meta.live == 1, "drop does not add used bytes");
++
++    expect(baikal_diag_trace_set(&trace, 0) == 0, "meta disable");
++    rec.mono_us = 9;
++    expect(baikal_diag_trace_append(&trace, &rec) == 0, "append while disabled");
++    expect(baikal_diag_trace_meta(&trace, &meta) == 0 && meta.enabled == 0 &&
++           meta.live == 1 && meta.used == one && meta.recorded == 1,
++           "disable keeps the record and ignores new appends");
++    baikal_diag_trace_free(&trace);
++
++    memset(&meta, 0, sizeof(meta));
++    meta.enabled = 1;
++    meta.live = 2;
++    meta.used = one;
++    meta.capacity = 2040;
++    meta.overwritten = 3;
++    meta.dropped = 4;
++    meta.recorded = 9;
++    n = baikal_diag_trace_meta_line(line, sizeof(line), &meta, 42, 1700000000L);
++    expect(n > 0, "metadata line fits");
++    expect(strcmp(line,
++                  "{\"enabled\":1,\"live\":2,\"bytes\":55,\"capacity\":2040,"
++                  "\"overwritten\":3,\"dropped\":4,\"recorded\":9,"
++                  "\"pid\":42,\"start_unix\":1700000000,"
++                  "\"status\":\"neg_fail_or_nbytes\"}\n") == 0,
++           "metadata line contract");
++    expect(strstr(line, "secret") == NULL && strstr(line, "rpc") == NULL &&
++           strstr(line, "password") == NULL && strstr(line, "pool") == NULL,
++           "metadata line has no pool material");
++    expect(one == 55, "record size used by the fixture");
++}
++
++int main(void)
++{
++    test_classify();
++    test_frame();
++    test_half_payload();
++    test_epochs();
++    test_grid_and_poll();
++    test_trace();
++    test_trace_meta();
++    if (failures) {
++        fprintf(stderr, "%d failure(s)\n", failures);
++        return 1;
++    }
++    printf("PASS baikal diag counters, framing, and trace\n");
++    return 0;
++}
+--- /dev/null
++++ b/tests/test-baikal-diag-driver.c
+@@ -0,0 +1,384 @@
++#include "baikal-diag.h"
++
++#include <stdint.h>
++#include <stdio.h>
++#include <string.h>
++#include <stdlib.h>
++
++static int failures;
++
++static void expect(int cond, const char *message)
++{
++    if (!cond) {
++        fprintf(stderr, "FAIL: %s\n", message);
++        failures++;
++    }
++}
++
++static void test_usb_results(void)
++{
++    struct baikal_diag_xfer tx;
++    struct baikal_diag_xfer rx;
++    int next = -1;
++
++    baikal_diag_classify_tx(0, 4, 20, &tx);
++    expect(tx.caller_rc < 0 && tx.status == -1, "short write is not success");
++    expect(tx.transferred == 4 && tx.intended == 20, "short write keeps both lengths");
++    expect(tx.count_usb == 0, "error 0 short write is not a USB error count");
++    expect((tx.flags & BAIKAL_DIAG_F_FAIL) && (tx.flags & BAIKAL_DIAG_F_SHORT) &&
++           (tx.flags & BAIKAL_DIAG_F_TX_ONLY), "short write is fail short tx-only");
++    expect(!baikal_diag_accept_frame(tx.caller_rc), "short write is not a frame");
++
++    baikal_diag_classify_tx(-7, 4, 20, &tx);
++    expect(tx.caller_rc == -7 && tx.status == -7, "partial write keeps the USB error");
++    expect(tx.transferred == 4 && tx.intended == 20, "partial write plus error keeps the count");
++    expect(tx.count_usb == 1, "negative USB write is a USB error");
++    expect((tx.flags & BAIKAL_DIAG_F_FAIL) && (tx.flags & BAIKAL_DIAG_F_TX_ONLY),
++           "USB write failure is tx-only");
++
++    baikal_diag_classify_tx(0, 20, 20, &tx);
++    expect(tx.caller_rc == 20 && tx.frame_ok && tx.count_usb == 0, "full write succeeds");
++
++    baikal_diag_classify_rx(0, 3, 23, -1, 0, 8, &rx);
++    expect(rx.caller_rc < 0 && rx.count_short == 1 && rx.count_usb == 0,
++           "transport short is a short reply, not a USB error");
++    expect(baikal_diag_result_disposition(rx.caller_rc, rx.flags, 0, 1, 1, 0,
++                                          BAIKAL_DIAG_RESULT_MIN) ==
++           BAIKAL_DIAG_RESULT_ABORT,
++           "transport short aborts the poll");
++
++    baikal_diag_classify_rx(-5, 4, 23, -1, 0, 8, &rx);
++    expect(rx.caller_rc == -5 && rx.transferred == 4 && rx.intended == 23 &&
++           rx.count_usb == 1 && rx.count_short == 0,
++           "read error keeps transferred, intended, and USB status");
++    expect(baikal_diag_result_disposition(rx.caller_rc, rx.flags, 0, 1, 1, 0,
++                                          BAIKAL_DIAG_RESULT_MIN) ==
++           BAIKAL_DIAG_RESULT_ABORT,
++           "USB read error aborts the poll");
++
++    baikal_diag_classify_rx(0, 21, 23, 8, 1, 8, &rx);
++    expect(rx.caller_rc < 0 && rx.count_short == 0 &&
++           (rx.flags & BAIKAL_DIAG_F_MISMATCH),
++           "mismatched frame is negative and is not a short reply");
++    expect(baikal_diag_result_disposition(rx.caller_rc, rx.flags, 1, 0, 0, 8,
++                                          BAIKAL_DIAG_RESULT_MIN) ==
++           BAIKAL_DIAG_RESULT_MISMATCH,
++           "mismatch continues to the next board");
++
++    baikal_diag_classify_rx(0, 15, 23, 4, 0, 8, &rx);
++    expect(rx.caller_rc < 0 && rx.count_short == 0 &&
++           (rx.flags & BAIKAL_DIAG_F_SHORT) && (rx.flags & BAIKAL_DIAG_F_FAIL),
++           "decoded payload short is a caller short, not a transport short");
++    expect(baikal_diag_result_disposition(rx.caller_rc, rx.flags, 1, 1, 1, 4,
++                                          BAIKAL_DIAG_RESULT_MIN) ==
++           BAIKAL_DIAG_RESULT_SHORT,
++           "decoded payload short still honors work-request bits");
++    expect(baikal_diag_result_disposition(rx.caller_rc, rx.flags, 1, 1, 1, 0,
++                                          BAIKAL_DIAG_RESULT_MIN) ==
++           BAIKAL_DIAG_RESULT_ABORT,
++           "decoded empty payload aborts");
++
++    baikal_diag_classify_rx(0, 8, 23, -1, 0, 8, &rx);
++    expect(rx.count_short == 1 &&
++           baikal_diag_result_disposition(rx.caller_rc, rx.flags, 0, 1, 1, 0,
++                                          BAIKAL_DIAG_RESULT_MIN) ==
++           BAIKAL_DIAG_RESULT_ABORT,
++           "undecodable frame aborts and counts short once");
++
++    baikal_diag_classify_rx(0, 23, 23, 8, 0, 8, &rx);
++    expect(baikal_diag_accept_frame(rx.caller_rc) &&
++           baikal_diag_result_disposition(rx.caller_rc, rx.flags, 1, 1, 1, 8,
++                                          BAIKAL_DIAG_RESULT_MIN) ==
++           BAIKAL_DIAG_RESULT_FULL,
++           "full matching result is success");
++    expect(baikal_diag_result_disposition(rx.caller_rc, rx.flags, 1, 0, 1, 8,
++                                          BAIKAL_DIAG_RESULT_MIN) ==
++           BAIKAL_DIAG_RESULT_MISMATCH,
++           "accepted bytes with the wrong miner are still a mismatch");
++
++    expect(!baikal_diag_accept_frame(0) && !baikal_diag_accept_frame(6) &&
++           !baikal_diag_accept_frame(-1) && baikal_diag_accept_frame(7),
++           "only a 7-byte-or-longer return is a frame");
++
++    expect(baikal_diag_advance_work(20, 7, 30, 3, 200, &next) == 1 && next == 4,
++           "ACK parameter 30 is not a clock and is not the next index");
++    expect(baikal_diag_advance_work(20, -1, 30, 3, 200, &next) == 0 && next == 3,
++           "negative read does not rotate work");
++    expect(baikal_diag_advance_work(-1, 7, 1, 3, 200, &next) == 0 && next == 3,
++           "failed send does not rotate work");
++    expect(baikal_diag_advance_work(20, 7, 30, 199, 200, &next) == 1 && next == 0,
++           "work index wraps the FIFO");
++}
++
++static int sync_calls;
++static int close_calls;
++static int sync_rc;
++static int close_rc;
++
++static int mock_sync(int fd)
++{
++    (void)fd;
++    sync_calls++;
++    return sync_rc;
++}
++
++static int mock_close(int fd)
++{
++    (void)fd;
++    close_calls++;
++    return close_rc;
++}
++
++static void test_info_and_close(void)
++{
++    struct baikal_diag_counters counters;
++
++    baikal_diag_counters_init(&counters);
++    counters.info_valid = 1;
++    counters.last_info_ok = 1;
++    counters.short_reply = 4;
++    counters.attempted_clock_code = 30;
++    baikal_diag_mark_info_failed(&counters);
++    expect(counters.last_info_ok == 0 && counters.info_valid == 1 &&
++           counters.short_reply == 4 && counters.attempted_clock_code == 30,
++           "GET_INFO failure clears only last-ok");
++
++    sync_calls = close_calls = 0;
++    sync_rc = -1;
++    close_rc = 0;
++    expect(baikal_diag_sync_close_with(3, mock_sync, mock_close) == -1 &&
++           sync_calls == 1 && close_calls == 1,
++           "fsync failure still closes");
++    sync_rc = 0;
++    close_rc = -1;
++    expect(baikal_diag_sync_close_with(3, mock_sync, mock_close) == -1 &&
++           close_calls == 2,
++           "close failure is reported");
++    close_rc = 0;
++    expect(baikal_diag_sync_close_with(3, mock_sync, mock_close) == 0 &&
++           sync_calls == 3 && close_calls == 3,
++           "sync and close both succeed once each");
++    expect(baikal_diag_sync_close_with(-1, mock_sync, mock_close) == -1 &&
++           sync_calls == 3 && close_calls == 3,
++           "invalid fd does not call sync or close");
++}
++
++static int hash_held;
++static int lock_order_ok;
++static int hash_locks;
++static int stats_locks;
++static struct baikal_diag_share_raw share_src;
++
++static void lock_hash(void)
++{
++    hash_held = 1;
++    hash_locks++;
++}
++
++static void unlock_hash(void)
++{
++    hash_held = 0;
++}
++
++static void lock_stats(void)
++{
++    if (!hash_held)
++        lock_order_ok = 0;
++    stats_locks++;
++}
++
++static void unlock_stats(void)
++{
++    share_src.accepted = 99;
++    share_src.diff_accepted = 9.0;
++}
++
++static void load_share(struct baikal_diag_share_raw *raw, void *user)
++{
++    (void)user;
++    *raw = share_src;
++}
++
++static void test_share_epochs_and_route(void)
++{
++    struct baikal_diag_share_view view;
++    struct baikal_diag_activity st;
++    struct baikal_diag_stat_sample sample;
++    char endpoint[BAIKAL_DIAG_ID_LEN];
++    int valid = 1;
++    double elapsed;
++    uint32_t generation = 0xffffffffu;
++
++    memset(&share_src, 0, sizeof(share_src));
++    share_src.accepted = 3;
++    share_src.rejected = -2;
++    share_src.hw = 4;
++    share_src.diff_accepted = 12.5;
++    share_src.diff_rejected = 1.5;
++    share_src.start_sec = 50;
++    share_src.start_usec = 250000;
++    hash_held = 0;
++    lock_order_ok = 1;
++    hash_locks = 0;
++    stats_locks = 0;
++    expect(baikal_diag_copy_share(&view, load_share, NULL,
++                                  lock_hash, unlock_hash, lock_stats, unlock_stats) == 0,
++           "copy share returns");
++    expect(hash_locks == 1 && stats_locks == 1 && lock_order_ok && !hash_held,
++           "stats lock is taken while hash lock is held, then both release");
++    expect(view.valid == 1 && view.accepted == 3 && view.rejected == 0 &&
++           view.hw == 4 && view.diff_accepted == 12.5 && view.diff_rejected == 1.5 &&
++           view.start_sec == 50,
++           "snapshot does not follow writes after the copy");
++    expect(baikal_diag_copy_share(&view, load_share, NULL, NULL, NULL, NULL, NULL) == 0 &&
++           view.valid == 0,
++           "missing lock functions produce an invalid snapshot");
++
++    valid = 1;
++    elapsed = baikal_diag_device_elapsed(0, 0, 80, 0, &valid);
++    expect(elapsed == 0 && valid == 0, "unset device start is not elapsed");
++    elapsed = baikal_diag_device_elapsed(50, 0, 50, 1000, &valid);
++    expect(valid == 1 && elapsed == 1.0, "sub-second device elapsed floors to 1");
++    elapsed = baikal_diag_device_elapsed(50, 250000, 53, 250000, &valid);
++    expect(valid == 1 && elapsed == 3.0, "device elapsed is start to now");
++
++    baikal_diag_activity_init(&st);
++    expect(baikal_diag_event_stats_reset(&st) == 0 && st.stat_epoch == 0,
++           "reset before the first sample is not an epoch");
++    memset(&sample, 0, sizeof(sample));
++    sample.accepted = 5;
++    sample.diff_accepted = 10;
++    sample.local_nonce = 7;
++    sample.device_start_sec = 50;
++    expect(baikal_diag_observe_stats(&st, &sample) == 0 && st.stat_epoch == 0,
++           "first stats sample is the baseline");
++    expect(baikal_diag_event_stats_reset(&st) == 1 && st.stat_epoch == 1 &&
++           st.stat_sample.accepted == 0 && st.stat_sample.diff_accepted == 0 &&
++           st.stat_sample.local_nonce == 7,
++           "reset event zeros share counters once and keeps local nonces");
++    sample.accepted = 6;
++    sample.diff_accepted = 11;
++    expect(baikal_diag_observe_stats(&st, &sample) == 0 && st.stat_epoch == 1,
++           "recovery after a reset event does not increment again");
++
++    baikal_diag_activity_init(&st);
++    expect(baikal_diag_observe_enable(&st, 1) == 0 && st.enable_epoch == 0,
++           "first enablement is the baseline");
++    expect(baikal_diag_observe_enable(&st, 0) == 1 && st.enable_epoch == 1,
++           "disable increments");
++    expect(baikal_diag_observe_enable(&st, 1) == 1 && st.enable_epoch == 2,
++           "enable after disable increments again");
++    expect(baikal_diag_observe_enable(&st, 1) == 0 && st.enable_epoch == 2,
++           "a repeated enable does not increment");
++
++    expect(baikal_diag_clean_endpoint(
++               "http://quota:2;stratum+tcp://user:password@host:3334",
++               endpoint, sizeof(endpoint)) == 0 &&
++           strcmp(endpoint, "host:3334") == 0,
++           "legacy quota wrapper stores host:port");
++    expect(strstr(endpoint, "password") == NULL && strstr(endpoint, "quota") == NULL,
++           "legacy quota wrapper removes credentials");
++    expect(baikal_diag_clean_endpoint("stratum+tcp://host:3334?password=secret",
++                                      endpoint, sizeof(endpoint)) == 0 &&
++           strcmp(endpoint, "host:3334") == 0,
++           "query without a slash is removed");
++
++    baikal_diag_activity_init(&st);
++    expect(baikal_diag_observe_route(&st, 1, "stratum+tcp://user:password@a.example:9",
++                                     "worker") == 0 &&
++           st.route_epoch == 0 && strcmp(st.endpoint, "a.example:9") == 0,
++           "first route stores the cleaned host");
++    expect(baikal_diag_observe_route(
++               &st, 1, "http://quota:2;stratum+tcp://user:password@a.example:9",
++               "worker") == 0 &&
++           st.route_epoch == 0,
++           "same host inside a quota wrapper is not a new route");
++    expect(baikal_diag_observe_route(
++               &st, 2, "http://quota:2;stratum+tcp://user:password@b.example:9",
++               "worker") == 1 &&
++           st.route_epoch == 1 && strcmp(st.endpoint, "b.example:9") == 0,
++           "a different wrapped host is a new route");
++    expect(baikal_diag_observe_route(&st, 1, "a.example:9", "worker") == 1 &&
++           st.route_epoch == 2,
++           "route back increments again");
++
++    expect(baikal_diag_bump_u32(&generation) == 1 && generation == 1,
++           "generation wraps past zero");
++}
++
++struct trace_seen {
++    int calls;
++    uint16_t tx_transferred;
++    uint16_t tx_intended;
++    int tx_status;
++    uint8_t flags;
++};
++
++static int on_trace(const struct baikal_diag_trace_view *view, void *user)
++{
++    struct trace_seen *seen = user;
++
++    seen->calls++;
++    seen->tx_transferred = view->tx_transferred;
++    seen->tx_intended = view->tx_intended;
++    seen->tx_status = view->tx_status;
++    seen->flags = view->flags;
++    return 0;
++}
++
++static void test_trace_partial(void)
++{
++    struct baikal_diag_trace trace;
++    struct baikal_diag_trace_rec rec;
++    struct trace_seen seen;
++    uint8_t *copy = NULL;
++    uint32_t copy_len = 0;
++    uint8_t tx[4] = {1, 2, 3, 4};
++    int enabled = -1;
++
++    memset(&trace, 0, sizeof(trace));
++    expect(baikal_diag_trace_init(&trace) == 0, "trace init");
++    expect(baikal_diag_trace_enabled(&trace) == 0, "trace starts disabled");
++    expect(baikal_diag_trace_open(&trace, BAIKAL_DIAG_TRACE_SLOT, 0) == 0,
++           "open one slot while off");
++    expect(baikal_diag_trace_enabled(&trace) == 0, "open off stays off");
++    expect(baikal_diag_trace_set(&trace, 1) == 0 && baikal_diag_trace_enabled(&trace) == 1,
++           "enable is visible through the atomic reader");
++
++    memset(&rec, 0, sizeof(rec));
++    rec.tx = tx;
++    rec.tx_len = 4;
++    rec.tx_status = -7;
++    rec.tx_transferred = 4;
++    rec.tx_intended = 20;
++    rec.rx_status = 0;
++    rec.flags = (uint8_t)(BAIKAL_DIAG_F_FAIL | BAIKAL_DIAG_F_TX_ONLY);
++    expect(baikal_diag_trace_append(&trace, &rec) == 0, "append partial write");
++    expect(baikal_diag_trace_copy(&trace, &copy, &copy_len, NULL, NULL, NULL, NULL,
++                                  NULL, &enabled) == 0 &&
++           enabled == 1 && copy != NULL,
++           "copy partial record");
++    memset(&seen, 0, sizeof(seen));
++    expect(baikal_diag_trace_walk(copy, copy_len, on_trace, &seen) == 0 &&
++           seen.calls == 1 && seen.tx_transferred == 4 && seen.tx_intended == 20 &&
++           seen.tx_status == -7,
++           "walk keeps transferred, intended, and USB status");
++    free(copy);
++    expect(baikal_diag_trace_set(&trace, 0) == 0 && baikal_diag_trace_enabled(&trace) == 0,
++           "disable is visible through the atomic reader");
++    baikal_diag_trace_free(&trace);
++}
++
++int main(void)
++{
++    test_usb_results();
++    test_info_and_close();
++    test_share_epochs_and_route();
++    test_trace_partial();
++    if (failures) {
++        fprintf(stderr, "FAIL baikal diag driver path (%d)\n", failures);
++        return 1;
++    }
++    printf("PASS baikal diag driver path\n");
++    return 0;
++}

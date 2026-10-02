@@ -2,38 +2,42 @@
   Blakestream-GaintB Miner tab.
   Replaces the factory hardcoded "Available pools" sidebar with user-managed
   categories and a pool form that has Name + Category fields.
-  SGMINER Options form below is unchanged from factory.
+  Pools, clock/fan controls and SGMINER options retain their forms across tabs.
 -->
 <style>
-  /* Override custom.css hover affordance that bleeds the highlight bar past
-   * the container and adds a stray '>' pseudo-element. Scoped to the Pools
-   * sidebar via .bs-pools-sidebar to avoid affecting other list-groups. */
-  .bs-pools-sidebar a.list-group-item,
-  .bs-pools-sidebar a.list-group-item:hover,
-  .bs-pools-sidebar a.list-group-item:focus,
-  .bs-pools-sidebar a.list-group-item.active,
-  .bs-pools-sidebar a.list-group-item.active:hover {
+  /* Pool sidebar layout. */
+  .bs-pools-sidebar .list-group-item,
+  .bs-pools-sidebar .list-group-item:hover,
+  .bs-pools-sidebar .list-group-item:focus,
+  .bs-pools-sidebar .list-group-item.active,
+  .bs-pools-sidebar .list-group-item.active:hover {
     margin-right: 0 !important;
     padding-right: 15px !important;
   }
-  .bs-pools-sidebar a.list-group-item:hover:after,
-  .bs-pools-sidebar a.list-group-item:focus:after,
-  .bs-pools-sidebar a.list-group-item.active:after {
+  .bs-pools-sidebar .list-group-item:hover:after,
+  .bs-pools-sidebar .list-group-item:focus:after,
+  .bs-pools-sidebar .list-group-item.active:after {
     content: none !important;
     display: none !important;
   }
-  .bs-pools-sidebar a.list-group-item small {
+  .bs-pools-sidebar .list-group-item small {
     margin-left: 8px;
     opacity: 0.7;
   }
-  .bs-pools-sidebar a.list-group-item.active small {
+  .bs-pools-sidebar .list-group-item.active small {
     color: rgba(255,255,255,0.8) !important;
   }
 </style>
+<h3>Miner</h3>
+<ul class="nav nav-pills bs-dev-tabs" role="tablist" aria-label="Miner sections">
+  <li ng-class="{active: bsMinerTab === 'pools'}"><a href="" role="tab" id="miner-pools-tab" aria-controls="miner-pools" aria-selected="{{bsMinerTab === 'pools'}}" ng-click="bsSelectMinerTab('pools')">Pools</a></li>
+  <li ng-class="{active: bsMinerTab === 'clocks'}"><a href="" role="tab" id="miner-clocks-tab" aria-controls="miner-clocks" aria-selected="{{bsMinerTab === 'clocks'}}" ng-click="bsSelectMinerTab('clocks')">{{bsClockControlsEnabled() ? 'Clocks &amp; Fan' : 'Fan'}}</a></li>
+  <li ng-class="{active: bsMinerTab === 'sgminer'}"><a href="" role="tab" id="miner-sgminer-tab" aria-controls="miner-sgminer" aria-selected="{{bsMinerTab === 'sgminer'}}" ng-click="bsSelectMinerTab('sgminer')">SGMINER</a></li>
+</ul>
 <div class="row">
 
   <!-- ==================== LEFT: Categories sidebar ==================== -->
-  <div class="col-sm-3 col-md-3 bs-pools-sidebar">
+  <div class="col-sm-3 col-md-3 bs-pools-sidebar" ng-show="bsMinerTab === 'pools'">
     <h3 style="margin-top:20px;">Pools</h3>
     <p class="help-block" ng-show="settings.userHelp">
       Saved pools, organised by category. Click a pool to edit it.
@@ -44,63 +48,67 @@
       <input type="text" class="form-control input-sm" placeholder="New category name"
              ng-model="newCategoryName" ng-keyup="$event.keyCode==13 && bsAddCategory()">
       <span class="input-group-btn">
-        <button class="btn btn-default btn-sm" ng-click="bsAddCategory()" title="Add category">+</button>
+        <button class="btn btn-default btn-sm bs-tip" ng-click="bsAddCategory()" data-tip="Add category">+</button>
       </span>
     </div>
 
     <!-- Categories with their pools -->
     <div ng-repeat="cat in savedPools.categories track by cat.id" style="margin-bottom:14px;">
-      <h4 style="margin-bottom:6px;">
-        {{cat.name}}
-        <button class="btn btn-default btn-xs pull-right"
-                ng-click="bsRemoveCategory(cat)"
-                ng-show="cat.pools.length === 0"
-                title="Delete empty category">&times;</button>
+      <h4 class="bs-pool-category-title">
+        <span class="bs-pool-category-name">{{cat.name}}</span>
+        <span class="bs-pool-category-actions">
+          <button type="button" class="btn btn-default btn-xs bs-save-order-btn bs-tip"
+                  ng-click="bsSavePoolOrder(cat)"
+                  ng-show="bsPoolOrderIsDirty(cat.id)"
+                  data-tip="Save this category pool order">Save Order</button>
+          <button class="btn btn-default btn-xs bs-tip"
+                  ng-click="bsRemoveCategory(cat)"
+                  ng-show="cat.pools.length === 0"
+                  data-tip="Delete empty category">&times;</button>
+        </span>
       </h4>
       <div class="list-group">
-        <a href="" ng-repeat="pool in cat.pools track by pool.id"
-           class="list-group-item"
-           ng-class="{active: editingPool && editingPool.id === pool.id, 'bs-pool-dirty': bsPoolHasPendingEdits(pool.id)}"
-           ng-click="bsEditPool(pool, cat)"
-           title="{{bsPoolHasPendingEdits(pool.id) ? 'Has pending changes — click Update Pool to save' : ''}}">
-          <span ng-show="bsPoolHasPendingEdits(pool.id)" style="color:#f0ad4e; font-weight:bold;" title="Pending changes">●</span>
-          {{pool.name || pool.url}}
-          <small class="text-muted">{{pool.algo}}</small>
-        </a>
+        <div ng-repeat="pool in cat.pools track by pool.id"
+             class="list-group-item bs-pool-item"
+             ng-class="{active: editingPool && editingPool.id === pool.id, 'bs-pool-dirty': bsPoolHasPendingEdits(pool.id), 'bs-tip': bsPoolHasPendingEdits(pool.id)}"
+             ng-click="bsEditPool(pool, cat)"
+             data-tip="Has pending changes — click Update Pool to save">
+          <span class="bs-pool-reorder" ng-click="$event.stopPropagation(); $event.preventDefault();">
+            <button type="button" class="btn btn-default btn-xs bs-pool-move-btn bs-tip"
+                    ng-click="bsMovePool(cat, $index, -1, $event)"
+                    ng-disabled="$first"
+                    data-tip="Move pool up">
+              <i class="fa fa-chevron-up"></i>
+            </button>
+            <button type="button" class="btn btn-default btn-xs bs-pool-move-btn bs-tip"
+                    ng-click="bsMovePool(cat, $index, 1, $event)"
+                    ng-disabled="$last"
+                    data-tip="Move pool down">
+              <i class="fa fa-chevron-down"></i>
+            </button>
+          </span>
+          <span class="bs-pool-label">
+            <span class="bs-pool-name">
+              <span class="bs-tip" ng-show="bsPoolHasPendingEdits(pool.id)" style="color:#f0ad4e; font-weight:bold;" data-tip="Pending changes">●</span>
+              {{pool.name || pool.url}}
+            </span>
+            <span class="bs-pool-user" ng-show="pool.user">User: {{pool.user}}</span>
+          </span>
+        </div>
         <div class="list-group-item text-muted small" ng-show="cat.pools.length === 0">
           (empty &mdash; add a pool)
         </div>
       </div>
     </div>
 
-    <div class="alert alert-info" ng-show="!savedPools.categories || savedPools.categories.length === 0">
+    <div class="alert alert-info bs-history-empty" ng-show="!savedPools.categories || savedPools.categories.length === 0">
       No categories yet. Add one above to get started.
     </div>
   </div>
 
-  <!-- ==================== CENTER: Pool form + SGMINER Options ==================== -->
-  <div class="col-sm-9 col-md-9">
-
-    <!-- Top row: Add/Edit Pool heading on the left, Miner commands button on the right.
-         When expanded, the 3 command buttons appear inline LEFT of the "Miner commands"
-         button so the button itself stays anchored to the right edge. -->
-    <div class="clearfix">
-      <div class="pull-right" style="margin-top:20px; white-space:nowrap;">
-        <span ng-show="minerRestart">
-          <button type="button" class="btn btn-default bs-tip"
-                  data-tip="Soft restart sgminer (RPC)"
-                  ng-click="cgminer('restart')">Soft reset (RPC)</button>
-          <button type="button" class="btn btn-default bs-tip"
-                  data-tip="Hard restart sgminer Linux process (~30s)"
-                  ng-click="cgminerHardCtl('0')">Restart linux process (30s)</button>
-          <button type="button" class="btn btn-default bs-tip"
-                  data-tip="Reload Blakestream launcher with current saved pools + assignments"
-                  ng-click="bsRestart()">Reload Blakestream pools</button>
-        </span>
-        <button type="button" ng-click="minerRestart=!minerRestart" class="btn btn-warning">Miner commands</button>
-      </div>
+  <div ng-class="bsMinerTab === 'pools' ? 'col-sm-9 col-md-9' : 'col-sm-12'">
+    <section id="miner-pools" role="tabpanel" aria-labelledby="miner-pools-tab" ng-show="bsMinerTab === 'pools'">
       <h3 style="margin-top:20px;">{{editingPool ? 'Edit Pool' : 'Add Pool'}}</h3>
-    </div>
 
     <p class="help-block" ng-show="settings.userHelp">
       Saved pools live in the catalog on the left. Boards mine according to
@@ -155,7 +163,7 @@
           <div class="form-group">
             <label>Name</label>
             <input type="text" ng-model="poolDraft.name" class="form-control"
-                   placeholder="e.g. Blakecoin Devnet" required>
+                   placeholder="e.g. Blakecoin Pool" required>
           </div>
 
           <div class="form-group">
@@ -167,13 +175,20 @@
 
       <!-- Buttons row, full width below the 2 columns -->
       <div class="row">
-        <div class="col-sm-12">
-          <button type="button" class="btn btn-success"
+        <div class="col-sm-12 bs-pool-form-actions">
+          <button type="button" class="btn btn-default bs-save-pool-btn"
                   ng-click="bsSavePoolDraft()"
-                  ng-disabled="!poolDraft.name || !poolDraft.url || !poolDraft.categoryId">
+                  ng-disabled="bsSavePoolDraftDisabled()">
             {{bsUpdatePoolLabel()}}
           </button>
-          <button type="button" class="btn btn-danger"
+          <button type="button" class="btn btn-default bs-save-new-pool-btn bs-tip"
+                  ng-show="editingPool"
+                  ng-click="bsSavePoolAsNew()"
+                  ng-disabled="bsSavePoolAsNewDisabled()"
+                  data-tip="Create another saved pool from this form without changing the current pool">
+            Save as New
+          </button>
+          <button type="button" class="btn btn-default bs-delete-pool-btn"
                   ng-show="editingPool"
                   ng-click="bsDeletePool()">Delete</button>
           <button type="button" class="btn btn-default"
@@ -182,26 +197,285 @@
       </div>
     </form>
 
-    <hr />
+    </section>
+    <section id="miner-clocks" role="tabpanel" aria-labelledby="miner-clocks-tab" ng-show="bsMinerTab === 'clocks'">
+    <form name="clockForm" class="bs-clock-form bs-clock-settings-form"
+          ng-show="bsClockControlsEnabled()" novalidate>
+      <div class="bs-clock-control-grid">
+        <div class="bs-clock-control-group"
+             ng-class="{
+               'bs-clock-control-active': bsClockMode === 'global',
+               'bs-clock-control-inactive': bsClockMode !== 'global'
+             }">
+          <div class="bs-clock-control-heading">
+            <label class="bs-clock-title bs-clock-scope">
+              <input type="radio" name="clockScope" ng-checked="bsClockMode === 'global'"
+                     ng-click="bsSelectClockMode('global')" aria-label="Global clock, all boards">
+              Global <span class="bs-clock-control-state">All boards</span>
+            </label>
+            <button type="button" class="btn btn-default bs-clock-default"
+                    aria-label="Default global clock" ng-click="bsDefaultClock('global')"
+                    ng-disabled="!bsMinerOptionsReady()">Default</button>
+          </div>
+          <div class="bs-linked-clock-pair">
+            <label class="bs-clock-index">
+              <span>Index</span>
+              <input type="number" class="form-control" min="8" max="32" step="1"
+                     aria-label="Global clock index" ng-model="bsGlobalClockIndex.index"
+                     ng-change="bsLinkedClockChanged('global', 'clock_index')"
+                     ng-disabled="bsClockMode !== 'global' || !bsMinerOptionsReady()"
+                     ng-required="bsClockMode === 'global'">
+            </label>
+            <div class="bs-clock-readouts" role="group" aria-label="Global baseline estimates">
+              <label><span>Est. GH/s</span>
+                <output class="bs-clock-estimate" aria-label="Global estimated GH/s">{{bsClockGHsText('global', true)}}</output>
+              </label>
+              <label><span>Est. MHz</span>
+                <output class="bs-clock-estimate" aria-label="Global estimated MHz">{{bsClockMHzText('global')}}</output>
+              </label>
+            </div>
+          </div>
+          <small class="bs-clock-board-state">Total / {{bsClockGHsText('global', false)}} per board</small>
+        </div>
 
-    <!-- ==================== SGMINER Options (unchanged from factory) ==================== -->
-    <h3>SGMINER Options</h3>
-    <label>Options <a href="https://github.com/sgminer-dev/sgminer" target="_blank" rel="noopener noreferrer">SGMINER's Github page</a> for the following options</label>
+        <div class="bs-clock-control-group bs-board-clock-group"
+             ng-class="{
+               'bs-clock-control-active': bsClockMode === 'individual',
+               'bs-clock-control-inactive': bsClockMode !== 'individual'
+             }">
+          <div class="bs-clock-control-heading">
+            <label class="bs-clock-title bs-clock-scope">
+              <input type="radio" name="clockScope" ng-checked="bsClockMode === 'individual'"
+                     ng-click="bsSelectClockMode('individual')" aria-label="Individual board clocks">
+              Individual <span class="bs-clock-control-state">Per board</span>
+            </label>
+            <button type="button" class="btn btn-default bs-clock-default"
+                    aria-label="Default individual clocks" ng-click="bsDefaultClock('individual')"
+                    ng-disabled="!bsMinerOptionsReady()">Default</button>
+          </div>
+          <div class="bs-linked-board-grid">
+            <div class="bs-linked-board" ng-repeat="board in [0, 1, 2]">
+              <strong>Board {{board}}</strong>
+              <div class="bs-linked-clock-pair" ng-if="bsClockMode === 'individual'">
+                <label class="bs-clock-index"><span>Index</span>
+                  <input type="number" class="form-control" min="8" max="32" step="1"
+                         aria-label="Board {{board}} clock index" ng-model="bsBoardClockIndex['board' + board]"
+                         ng-change="bsLinkedClockChanged(board, 'clock_index')"
+                         ng-disabled="!bsMinerOptionsReady()" required>
+                </label>
+                <div class="bs-clock-readouts" role="group" aria-label="Board {{board}} baseline estimates">
+                  <label><span>Est. GH/s</span>
+                    <output class="bs-clock-estimate" aria-label="Board {{board}} estimated GH/s">{{bsClockGHsText(board, false)}}</output>
+                  </label>
+                  <label><span>Est. MHz</span>
+                    <output class="bs-clock-estimate" aria-label="Board {{board}} estimated MHz">{{bsClockMHzText(board)}}</output>
+                  </label>
+                </div>
+              </div>
+              <div class="bs-linked-clock-pair" ng-if="bsClockMode === 'global'">
+                <label class="bs-clock-index"><span>Index</span>
+                  <input type="number" class="form-control" ng-model="bsGlobalClockIndex.index"
+                         aria-label="Board {{board}} clock index" disabled>
+                </label>
+                <div class="bs-clock-readouts" role="group" aria-label="Board {{board}} baseline estimates">
+                  <label><span>Est. GH/s</span>
+                    <output class="bs-clock-estimate" aria-label="Board {{board}} estimated GH/s">{{bsClockGHsText(board, false)}}</output>
+                  </label>
+                  <label><span>Est. MHz</span>
+                    <output class="bs-clock-estimate" aria-label="Board {{board}} estimated MHz">{{bsClockMHzText(board)}}</output>
+                  </label>
+                </div>
+              </div>
+              <small class="bs-clock-board-state">{{bsClockCommandState(board)}}</small>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="bs-clock-shared-row">
+        <label class="bs-clock-title">Temperature</label>
+        <label class="bs-clock-field">
+          <span>Recover Temp</span>
+          <input type="text" class="form-control bs-numeric-input" inputmode="numeric" pattern="[0-9]*"
+                 maxlength="2" ng-pattern="/^[0-9]{1,2}$/"
+                 ng-model="bsClock.recover" required>
+          <span class="bs-clock-unit">C</span>
+        </label>
+        <label class="bs-clock-field">
+          <span>Cutoff Temp</span>
+          <input type="text" class="form-control bs-numeric-input" inputmode="numeric" pattern="[0-9]*"
+                 maxlength="2" ng-pattern="/^[0-9]{1,2}$/"
+                 ng-model="bsClock.cutoff" required>
+          <span class="bs-clock-unit">C</span>
+        </label>
+        <button type="button" class="btn btn-default bs-save-pool-btn"
+                ng-class="{'bs-needs-save': bsClockSettingsChanged()}"
+                ng-click="bsSaveClockSettings()"
+                ng-disabled="!bsMinerOptionsReady() || (bsExperimentalClockIndex.enabled && !bsClockIndexValues()) || !bsClock.recover || !bsClock.cutoff || clockForm.$error.pattern">Save Clock Settings</button>
+      </div>
+    </form>
+
+    <form name="fanCurveForm" class="bs-clock-form bs-fan-curve-form" ng-show="settings.userAutoFan" novalidate>
+      <label class="bs-clock-title bs-fan-curve-heading">Auto Fan Curve</label>
+      <div class="bs-fan-curve-layout">
+      <div class="bs-fan-graph-wrap">
+        <svg class="bs-fan-graph" viewBox="0 0 360 126" preserveAspectRatio="xMidYMid meet">
+          <rect ng-attr-x="{{bsFanGraphPlot().x}}" ng-attr-y="{{bsFanGraphPlot().y}}"
+                ng-attr-width="{{bsFanGraphPlot().w}}" ng-attr-height="{{bsFanGraphPlot().h}}"
+                class="bs-fan-graph-plot"/>
+          <g ng-repeat="yt in bsFanGraphYTicks">
+            <line ng-attr-x1="{{bsFanGraphPlot().x}}" ng-attr-y1="{{bsFanPctToY(yt)}}"
+                  ng-attr-x2="{{bsFanGraphPlot().x + bsFanGraphPlot().w}}" ng-attr-y2="{{bsFanPctToY(yt)}}"
+                  class="bs-fan-graph-grid"/>
+            <text ng-attr-x="{{bsFanGraphPlot().x - 6}}" ng-attr-y="{{bsFanGraphYLabelY(yt)}}"
+                  class="bs-fan-graph-ylabel">{{yt}}</text>
+          </g>
+          <text ng-repeat="xt in bsFanGraphXTicks" ng-attr-x="{{bsFanGraphXLabelX(xt)}}"
+                ng-attr-y="{{bsFanGraph.h - 8}}" class="bs-fan-graph-xlabel">{{xt}}&deg;</text>
+          <polyline ng-attr-points="{{bsFanCurvePoints()}}" class="bs-fan-graph-curve"/>
+          <circle ng-attr-cx="{{bsFanHandleTarget().x}}" ng-attr-cy="{{bsFanHandleTarget().y}}" r="7"
+                  class="bs-fan-graph-handle" ng-mousedown="bsFanCurveDragStart('target',$event)"/>
+          <circle ng-attr-cx="{{bsFanHandleMid().x}}" ng-attr-cy="{{bsFanHandleMid().y}}" r="7"
+                  class="bs-fan-graph-handle bs-fan-graph-handle-mid" ng-mousedown="bsFanCurveDragStart('mid',$event)"/>
+          <circle ng-attr-cx="{{bsFanHandleFull().x}}" ng-attr-cy="{{bsFanHandleFull().y}}" r="7"
+                  class="bs-fan-graph-handle" ng-mousedown="bsFanCurveDragStart('full',$event)"/>
+        </svg>
+        <div class="bs-fan-graph-legend">
+          Drag <b>Target</b> (ramp start), <b>Mid</b> (ramp shape), and <b>Full</b> (100% fan). Y = fan %, X = board &deg;C.
+        </div>
+      </div>
+      <div class="bs-fan-curve-fields">
+        <div class="bs-fan-paired-row">
+          <label class="bs-clock-field">
+            <span>Min %</span>
+            <input type="text" class="form-control bs-numeric-input" inputmode="numeric" pattern="[0-9]*"
+                   maxlength="3" ng-pattern="/^[0-9]+$/"
+                   ng-model="settings.userAutoFanMin" bs-commit-on-blur="bsStageFanCurve()" required>
+          </label>
+          <label class="bs-clock-field">
+            <span>Target Temp</span>
+            <input type="text" class="form-control bs-numeric-input" inputmode="numeric" pattern="[0-9]*"
+                   maxlength="3" ng-pattern="/^[0-9]+$/"
+                   ng-model="settings.userAutoFanTarget" bs-commit-on-blur="bsStageFanCurve()" required>
+            <span class="bs-clock-unit">C</span>
+          </label>
+        </div>
+        <div class="bs-fan-paired-row">
+          <label class="bs-clock-field">
+            <span>Mid %</span>
+            <input type="text" class="form-control bs-numeric-input" inputmode="numeric" pattern="[0-9]*"
+                   maxlength="3" ng-pattern="/^[0-9]+$/"
+                   ng-model="settings.userAutoFanMidFan" bs-commit-on-blur="bsStageFanCurve()" required>
+          </label>
+          <label class="bs-clock-field">
+            <span>Mid Temp</span>
+            <input type="text" class="form-control bs-numeric-input" inputmode="numeric" pattern="[0-9]*"
+                   maxlength="3" ng-pattern="/^[0-9]+$/"
+                   ng-model="settings.userAutoFanMidTemp" bs-commit-on-blur="bsStageFanCurve()" required>
+            <span class="bs-clock-unit">C</span>
+          </label>
+        </div>
+        <div class="bs-fan-full-row">
+          <label class="bs-clock-field">
+            <span>Full Fan Temp</span>
+            <input type="text" class="form-control bs-numeric-input" inputmode="numeric" pattern="[0-9]*"
+                   maxlength="3" ng-pattern="/^[0-9]+$/"
+                   ng-model="settings.userAutoFanFull" bs-commit-on-blur="bsStageFanCurve()" required>
+            <span class="bs-clock-unit">C</span>
+          </label>
+          <button type="button" class="btn btn-default bs-save-pool-btn"
+                  ng-class="{'bs-needs-save': fanCurveForm.$dirty}"
+                  ng-click="bsSaveFanCurve()"
+                  ng-disabled="fanCurveForm.$invalid">Save Curve</button>
+        </div>
+      </div>
+      </div>
+      <span class="help-block bs-fan-curve-help" ng-show="settings.userHelp">
+        Auto Fan enable/disable is in Settings. Fan changes are queued through sgminer and applied from the Baikal polling path.
+      </span>
+    </form>
+
+    <form name="manualFanForm" class="bs-clock-form bs-manual-fan-form" ng-hide="settings.userAutoFan" novalidate>
+      <div class="bs-manual-fan-row">
+        <label class="bs-clock-title bs-manual-fan-label">Manual Fan</label>
+        <input type="range" class="bs-fan-range" min="40" max="100" step="1"
+               ng-model="bsManualFan" bs-range>
+        <span class="bs-fan-pct-box">
+          <input type="text" class="form-control bs-numeric-input" inputmode="numeric"
+                 maxlength="3" ng-pattern="/^(?:[4-9][0-9]|100)$/" ng-model="bsManualFan" required>
+          <span class="bs-fan-pct-suffix">%</span>
+        </span>
+        <button type="button" class="btn btn-default bs-save-pool-btn"
+                ng-class="{'bs-needs-save': manualFanForm.$dirty}"
+                ng-click="bsApplyManualFan()"
+                ng-disabled="manualFanForm.$invalid">Save Fan</button>
+      </div>
+      <span class="help-block bs-manual-fan-help" ng-show="settings.userHelp">
+        Manual fan speed. Saved to the miner config and applied on the next miner restart. Hidden while Auto Fan is on (Settings).
+      </span>
+    </form>
+
+    <form name="clockProfileForm" class="bs-clock-form bs-clock-profile-form" ng-show="bsClockControlsEnabled()" novalidate>
+      <div class="bs-clock-profile-row">
+        <label class="bs-clock-title">Clock Profiles</label>
+        <input type="text" class="form-control bs-clock-profile-name"
+               ng-model="bsClockProfileName"
+               maxlength="48"
+               placeholder="Profile name">
+        <button type="button" class="btn btn-default bs-save-pool-btn"
+                ng-click="bsSaveClockProfile()"
+                ng-disabled="(bsExperimentalClockIndex.enabled && !bsClockIndexValues()) || (!bsSelectedClockProfileId && !bsClockProfileName)">Save Profile</button>
+        <button type="button" class="btn btn-default"
+                ng-click="bsNewClockProfile()">New</button>
+        <button type="button" class="btn btn-default bs-delete-pool-btn"
+                ng-click="bsDeleteClockProfile()"
+                ng-disabled="!bsSelectedClockProfileId">Delete</button>
+        <div class="bs-clock-profile-choose">
+          <select class="form-control bs-clock-profile-select"
+                  ng-model="bsSelectedClockProfileId"
+                  ng-options="p.id as bsClockProfileSummary(p) for p in bsClockProfiles"
+                  ng-change="bsClockProfileSelectedChanged()">
+            <option value="">-- choose profile --</option>
+          </select>
+          <button type="button" class="btn btn-default"
+                  ng-click="bsApplyClockProfile()"
+                  ng-disabled="!bsSelectedClockProfileId || !bsMinerOptionsReady()">Apply Profile</button>
+        </div>
+        <span class="help-block" ng-show="settings.userHelp">
+          Profiles save clock and fan curve values. Select a profile to edit/apply it. Backups include them in etc/clock-profiles.json.
+        </span>
+      </div>
+    </form>
+
+    </section>
+    <section id="miner-sgminer" role="tabpanel" aria-labelledby="miner-sgminer-tab" ng-show="bsMinerTab === 'sgminer'">
+    <div class="bs-section-title-row">
+      <h3>SGMINER Options</h3>
+      <button type="button" class="btn btn-default btn-xs"
+              ng-click="minerRestart=!minerRestart" aria-expanded="{{!!minerRestart}}">Miner commands</button>
+    </div>
+    <div class="bs-miner-command-actions" ng-show="minerRestart">
+      <button type="button" class="btn btn-default" ng-click="cgminer('restart')">Soft reset (RPC)</button>
+      <button type="button" class="btn btn-default" ng-click="cgminerHardCtl('0')">Restart linux process (30s)</button>
+      <button type="button" class="btn btn-default" ng-click="bsRestart()">Reload Blakestream pools</button>
+    </div>
+    <label>Advanced options from <a href="https://github.com/sgminer-dev/sgminer" target="_blank" rel="noopener noreferrer">SGMINER's Github page</a>.</label>
+
     <form name="optionForm" class="form-horizontal">
       <div class="row">
         <label class="col-sm-3">Sgminer options</label>
         <label class="col-sm-4">Value</label>
         <label class="col-sm-2">Description</label>
       </div>
-      <div class="form-group" ng-repeat="option in options">
+      <div class="form-group" ng-repeat="option in options" ng-hide="option.key === 'baikal-options' || option.key === 'baikal-board-clocks' || option.key === 'baikal-clock-mode' || option.key === 'baikal-experimental-clock-index' || option.key === 'baikal-board-clock-index' || (settings.userAutoFan && option.key === 'baikal-fan')">
         <div class="col-sm-2">
           <input type="text" ng-model="option.key" class="form-control" required>
         </div>
         <div class="col-sm-3">
           <div class="input-group">
-            <input type="text" ng-model="option.value" class="form-control" required>
+            <input type="text" ng-model="option.value" ng-change="bsOptionChanged(option)" class="form-control" required>
             <div class="input-group-btn">
-              <button type="button" ng-click="optionRemove($index)" title="We suggest you backup before make any changes." class="btn btn-default pull-right">&times;</button>
+              <button type="button" ng-click="optionRemove($index)" data-tip="We suggest you back up before making any changes." class="btn btn-default pull-right bs-tip">&times;</button>
             </div>
           </div>
         </div>
@@ -213,6 +487,6 @@
       <button type="button" class="btn btn-default" ng-click="optionAdd({'key':'x'})">Add Options</button>
       <button type="button" ng-show="optionForm.$dirty && optionForm.$valid" class="btn btn-success" ng-click="optionSave()">Save Options</button>
     </form>
-
+    </section>
   </div>
 </div>

@@ -1,0 +1,47 @@
+Clamp Baikal fan option and declare failover pin APIs.
+
+Direct sgminer config edits can bypass the web UI/runtime normalizers. The
+existing Baikal fan parser only reset values above 100, so negative or invalid
+`--baikal-fan` values could wrap when stored in the uint8_t firmware packet.
+Reset invalid fan values to the safe default.
+
+Also declare the explicit failover pin functions used by api.c so the build no
+longer relies on implicit function declarations.
+
+--- a/driver-baikal.h
++++ b/driver-baikal.h
+@@ -106,6 +106,8 @@
+
+ void baikal_pin_pool(struct cgpu_info *cgpu, int pool_no);
+ void baikal_clear_pool_pin(struct cgpu_info *cgpu);
++void baikal_pin_failover(struct cgpu_info *cgpu, int pool_no);
++void baikal_clear_failover_pin(struct cgpu_info *cgpu);
+ void baikal_set_effective_pool(struct cgpu_info *cgpu, int pool_no, bool failover_active);
+ int baikal_primary_pool(const struct cgpu_info *cgpu);
+ int baikal_effective_pool(const struct cgpu_info *cgpu);
+--- a/driver-baikalu.c
++++ b/driver-baikalu.c
+@@ -566,8 +566,8 @@
+     baikal_sanitize_temps(&recovertemp, &cutofftemp);
+
+     if (opt_baikal_fan != NULL) {
+-        sscanf(opt_baikal_fan, "%d", &fanspeed);
+-        if (fanspeed > BAIKAL_FANSPEED_MAX) {
++        if (sscanf(opt_baikal_fan, "%d", &fanspeed) != 1
++                || fanspeed < 0 || fanspeed > BAIKAL_FANSPEED_MAX) {
+             fanspeed = BAIKAL_FANSPEED_DEF;
+         }
+     }
+--- a/driver-baikals.c
++++ b/driver-baikals.c
+@@ -544,8 +544,8 @@
+     baikal_sanitize_temps(&recovertemp, &cutofftemp);
+
+     if (opt_baikal_fan != NULL) {
+-        sscanf(opt_baikal_fan, "%d", &fanspeed);
+-        if (fanspeed > BAIKAL_FANSPEED_MAX) {
++        if (sscanf(opt_baikal_fan, "%d", &fanspeed) != 1
++                || fanspeed < 0 || fanspeed > BAIKAL_FANSPEED_MAX) {
+             fanspeed = BAIKAL_FANSPEED_DEF;
+         }
+     }

@@ -10,14 +10,15 @@ without that board. Once the board cools below recover_at (with hysteresis),
 marks it active again and triggers another restart.
 
 Called by /etc/cron.d/blakestream-temp-watchdog every minute. The Scripta
-dashboard reads temp-state.json via f_blakestream.php to grey out disabled
-rows in the Devices table.
+dashboard reads /run/blakestream/temp-state.json via f_blakestream.php to
+grey out disabled rows in the Devices table.
 
 Compatible with Python 2.7 and Python 3.
 """
 
 from __future__ import print_function
 import errno
+import grp
 import json
 import os
 import re
@@ -27,8 +28,9 @@ import sys
 import time
 
 ETC = '/opt/scripta/etc'
+RUNTIME_DIR = '/run/blakestream'
 CONFIG = ETC + '/temp-config.json'
-STATE = ETC + '/temp-state.json'
+STATE = RUNTIME_DIR + '/temp-state.json'
 RESTART = '/opt/scripta/startup/miner-restart.sh'
 RUNTIME_CONF = '/tmp/scripta-runtime-miner.conf'
 DEFAULT_API_PORT = 4028
@@ -58,7 +60,13 @@ def load_config(path):
 def load_state(path):
     try:
         with open(path, 'r') as f:
-            return json.load(f)
+            raw = f.read()
+        # Dev Tools can intentionally clear this recorder state. Treat a
+        # zero-byte file as no prior state so the next watchdog pass rebuilds
+        # it; malformed non-empty JSON remains a hard error.
+        if not raw.strip():
+            return {}
+        return json.loads(raw)
     except IOError as e:
         if getattr(e, 'errno', None) == errno.ENOENT:
             return {}
@@ -72,10 +80,43 @@ def load_state(path):
 
 
 def write_json_atomic(path, data):
-    tmp = path + '.tmp'
-    with open(tmp, 'w') as f:
-        json.dump(data, f, indent=2)
-    os.rename(tmp, path)
+    parent = os.path.dirname(path)
+    if parent and not os.path.isdir(parent):
+        os.makedirs(parent)
+    owner = None
+    try:
+        owner = (0, grp.getgrnam('www-data').gr_gid)
+    except (KeyError, OSError):
+        pass
+    tmp = '%s.%s.tmp' % (path, os.getpid())
+    try:
+        with open(tmp, 'w') as f:
+            json.dump(data, f, indent=2)
+        if owner:
+            try:
+                os.chown(tmp, owner[0], owner[1])
+            except OSError:
+                pass
+        try:
+            os.chmod(tmp, 0o664)
+        except OSError:
+            pass
+        os.rename(tmp, path)
+        if owner:
+            try:
+                os.chown(path, owner[0], owner[1])
+            except OSError:
+                pass
+        try:
+            os.chmod(path, 0o664)
+        except OSError:
+            pass
+    finally:
+        if os.path.exists(tmp):
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
 
 
 def get_api_port():
@@ -92,22 +133,32 @@ def get_api_port():
 
 def query_sgminer_devs(api_port):
     """Return dict {board_id_str: temperature_celsius_float} from sgminer API."""
+    s = None
     try:
         s = socket.socket()
         s.settimeout(3)
         s.connect(('127.0.0.1', api_port))
         s.sendall(b'{"command":"devs"}')
+        try:
+            s.shutdown(socket.SHUT_WR)
+        except socket.error:
+            pass
         data = b''
         while True:
             chunk = s.recv(8192)
             if not chunk:
                 break
             data += chunk
-        s.close()
     except Exception as e:
         sys.stderr.write('temp-watchdog: cannot query sgminer API on port %d: %s\n'
                          % (api_port, e))
         return {}
+    finally:
+        if s is not None:
+            try:
+                s.close()
+            except Exception:
+                pass
 
     txt = data.decode('utf-8', 'replace')
     out = {}

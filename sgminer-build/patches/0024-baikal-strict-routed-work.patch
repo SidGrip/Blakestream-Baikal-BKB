@@ -1,0 +1,152 @@
+From: sid <sidgrip@gmail.com>
+Subject: [PATCH 0024] baikal: keep routed boards on assigned pools
+
+Per-board pool routing must not let BKLU boards consume staged work for a
+different pool. Keep BKLU threads idle until apply-board-assignments has set
+an ascpool primary, make hash_pop_pool wait when the global queue contains
+only non-matching work, and stop the BKLU 0x51 work-copy shortcut from
+feeding board 0 work to boards that are routed to another pool.
+
+This prevents startup shares from leaking to the first/global pool, avoids
+starving the work generator, and makes an explicit "no failover" board idle
+instead of copying another board's work.
+
+---
+--- a/sgminer.c
++++ b/sgminer.c
+@@ -6826,10 +6826,11 @@
+             goto out_unlock;
+         }
+ 
+-        /* No matching work: block until gen_thread stages something
+-         * (potentially for the right pool — gen_thread's deficit probe
+-         * will see this empty queue and stage for our pinned pool). */
+-        do {
++        /* No matching work: block until gen_thread stages something else.
++         * This must also wait when the global queue contains only work for
++         * other pools. Otherwise a pinned board can spin on non-matching work
++         * while holding the staged lock and starve the generator thread. */
++        {
+             struct timespec then;
+             struct timeval now;
+             int rc;
+@@ -6844,7 +6845,7 @@
+                 applog(LOG_WARNING, "Waiting for work to be available from pools.");
+                 event_notify("idle");
+             }
+-        } while (HASH_COUNT(staged_work) == 0);
++        }
+         /* Fall through to retry the scan with whatever is now staged. */
+     }
+ 
+@@ -8160,14 +8161,15 @@
+     while (!work) {
+         /* v2 Path B: resolve the cgpu's effective pool. For a Baikal thread
+          * with a primary pin, this is either the primary pool (if usable)
+-         * or a same-algo fallback (if primary is not usable). For non-Baikal
+-         * threads or threads with no pin, target_pool stays NULL and we
+-         * use the v1 unfiltered hash_pop path. */
++         * or the explicit failover pool (if configured and usable). A BKLU
++         * thread with no effective pool must wait. Do not fall through to the
++         * unfiltered hash_pop path, or startup can briefly mine the first
++         * global pool before apply-board-assignments has pinned the board. */
+         target_pool = baikal_effective_pool_for_cgpu(thr->cgpu);
+-        if (baikal_pool_routing_active(thr->cgpu) && !target_pool) {
+-            /* Routing requested but neither primary nor any same-algo
+-             * fallback is usable. Sleep briefly and retry — a pool
+-             * may come back. Don't busy-spin. */
++        if (thr->cgpu && thr->cgpu->drv->drv_id == DRIVER_baikalu && !target_pool) {
++            /* Either not pinned yet, or routed but neither primary nor the
++             * explicit failover is usable. Sleep briefly and retry; the
++             * assignment applier or pool recovery may make a pool available. */
+             cgsleep_ms(250);
+             continue;
+         }
+--- a/driver-baikalu.c
++++ b/driver-baikalu.c
+@@ -293,6 +293,44 @@
+     return cgpu ? cgpu->pool_failover_active : false;
+ }
+ 
++static bool baikal_routed_miner_has_no_work_target(struct thr_info *thr)
++{
++    struct cgpu_info *cgpu = thr ? thr->cgpu : NULL;
++
++    return cgpu && cgpu->primary_pool_no != BAIKAL_POOL_UNSET &&
++           cgpu->effective_pool_no == BAIKAL_POOL_UNSET;
++}
++
++static void baikal_discard_miner_work(struct miner_info *miner)
++{
++    int j;
++
++    if (!miner)
++        return;
++
++    for (j = 0; j < BAIKAL_WORK_FIFO; j++) {
++        if (miner->works[j] != NULL) {
++            free_work(miner->works[j]);
++            miner->works[j] = NULL;
++        }
++    }
++}
++
++static bool baikal_base_work_matches_route(struct thr_info *thr, struct work *base_work)
++{
++    struct cgpu_info *cgpu = thr ? thr->cgpu : NULL;
++    int effective_pool_no;
++
++    if (!base_work || !base_work->pool)
++        return false;
++    if (!cgpu || cgpu->primary_pool_no == BAIKAL_POOL_UNSET)
++        return true;
++
++    effective_pool_no = cgpu->effective_pool_no;
++    return effective_pool_no != BAIKAL_POOL_UNSET &&
++           base_work->pool->pool_no == effective_pool_no;
++}
++
+ static int baikal_sendmsg(struct cgpu_info *baikal, baikal_msg *msg)
+ {
+     int err;
+@@ -938,12 +976,25 @@
+ 
+ 	mutex_lock(baikal->mutex);
+ 
++    if (baikal_routed_miner_has_no_work_target(thr)) {
++        baikal_discard_miner_work(miner);
++        mutex_unlock(baikal->mutex);
++        cgsleep_ms(50);
++        return (true);
++    }
++
+     if (miner->works[miner->work_idx] == NULL) {        
+         if ((miner_id != 0) && (miner->asic_ver == 0x51)) {
+             struct miner_info *miner_base = &info->miners[0];
+             int idx = (miner_base->work_idx - 1) % BAIKAL_WORK_FIFO;
+-            work = copy_work(miner_base->works[idx]);            
+-            work->thr_id = miner->thr_id;            
++            struct work *base_work = miner_base->works[idx];
++
++            if (baikal_base_work_matches_route(thr, base_work)) {
++                work = copy_work(base_work);
++                work->thr_id = miner->thr_id;
++            } else {
++                work = get_work(thr, miner->thr_id);
++            }
+         }
+         else {
+             work = get_work(thr, miner->thr_id);            
+@@ -951,6 +1002,12 @@
+         miner->works[miner->work_idx] = work;
+         work->devflag = true;
+     }
++    work = miner->works[miner->work_idx];
++    if (work == NULL) {
++        mutex_unlock(baikal->mutex);
++        cgsleep_ms(50);
++        return (true);
++    }
+ 
+     if (work->pool->algorithm.type != thr->cgpu->algorithm.type) {
+         thr->cgpu->algorithm.type = work->pool->algorithm.type;

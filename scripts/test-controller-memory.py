@@ -1,0 +1,158 @@
+#!/usr/bin/env python3
+"""Low-memory defaults and retained-tail checks, no miner or network access."""
+import importlib.util
+import json
+import os
+from pathlib import Path
+import shlex
+import subprocess
+import sys
+import tempfile
+import unittest
+
+ROOT = Path(__file__).resolve().parent.parent
+SPEC = importlib.util.spec_from_file_location('log_writer', ROOT / 'overlay/opt/scripta/bin/capped-log-writer.py')
+L = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(L)
+
+
+class MemoryDefaults(unittest.TestCase):
+    def test_log_target_is_independent_of_dev_tools(self):
+        launcher = (ROOT / 'overlay/opt/scripta/startup/miner-start.sh').read_text()
+        block = launcher[launcher.index('SGMINER_LOG_MAX='):launcher.index('\nlog()')]
+        block = block.replace('/usr/bin/python', shlex.quote(sys.executable))
+        self.assertNotIn('userDev\'', block)
+        cases = [(None, 'RAM'), ('broken JSON', 'RAM'), ([], 'RAM'), ({}, 'RAM')]
+        for dev in (False, True):
+            for target, expected in [('RAM', 'RAM'), ('SD', 'SD'), ('sd', 'SD'),
+                                     ('invalid', 'RAM'), (None, 'RAM'), ([], 'RAM')]:
+                cases.append(({'userDev': dev, 'userDevLogTarget': target}, expected))
+        with tempfile.TemporaryDirectory(prefix='bkb memory ') as tmp:
+            config = Path(tmp) / 'settings.json'
+            for settings, expected in cases:
+                if settings is None:
+                    if config.exists(): config.unlink()
+                else:
+                    config.write_text(settings if isinstance(settings, str) else json.dumps(settings))
+                env = dict(os.environ, SCRIPTA_CONF=str(config))
+                result = subprocess.check_output(['bash', '-c', block +
+                    '\nprintf "%s %s %s" "$SGMINER_LOG_TARGET" "$SGMINER_LOG_MAX" "$SGMINER_LOG_KEEP"'], env=env)
+                self.assertEqual(result.decode(), expected + ' 4194304 2097152')
+
+    def test_both_launch_paths_capture_and_cap_output(self):
+        launcher = (ROOT / 'overlay/opt/scripta/startup/miner-start.sh').read_text()
+        start = launcher.index('case $BUILD_RC in\n    0)') + len('case $BUILD_RC in\n    0)')
+        block = launcher[start:launcher.index('\n        ;;', start)]
+        block = block.replace('/usr/bin/python', shlex.quote(sys.executable))
+        with tempfile.TemporaryDirectory(prefix='bkb memory ') as tmp:
+            root = Path(tmp)
+            miner = root / 'fixture-miner'
+            miner.write_text('#!/bin/sh\n[ "$1" = "--text-only" ] || exit 5\n'
+                             'i=0\nwhile [ "$i" -lt 2000 ]; do\n'
+                             'printf "Accepted fixture share %s\\n" "$i"\n'
+                             'i=$((i + 1))\ndone\nprintf "last stderr line\\n" >&2\n')
+            miner.chmod(0o755)
+            ram, sd = root / 'ram.log', root / 'sd.log'
+            block = block.replace('/run/blakestream/sgminer.log', shlex.quote(str(ram))).replace('/var/log/sgminer.log', shlex.quote(str(sd)))
+            for target, destination in [('RAM', ram), ('SD', sd)]:
+                env = dict(os.environ, SGMINER_LOG_TARGET=target, SGMINER_LOG=str(destination), SGMINER_LOG_CONFIG_OK='1',
+                           SGMINER_LOG_MAX='8192', SGMINER_LOG_KEEP='4096', SGMINER=str(miner),
+                           LOG_WRITER=str(ROOT / 'overlay/opt/scripta/bin/capped-log-writer.py'), RUNTIME_CONF='unused')
+                prelude = 'log() { :; }\nfix_screen_dir() { :; }\nscreen() { shift 2; "$@"; }\n'
+                subprocess.run(['bash', '-c', prelude + block], env=env, check=True)
+                output = destination.read_bytes()
+                self.assertLessEqual(len(output), 8192)
+                self.assertIn(b'log trimmed;', output)
+                self.assertIn(b'Accepted fixture share 1999', output)
+                self.assertIn(b'last stderr line', output)
+
+    def test_log_cleanup_only_runs_when_launching(self):
+        launcher = (ROOT / 'overlay/opt/scripta/startup/miner-start.sh').read_text()
+        cleanup = launcher.index('case "$SGMINER_LOG_TARGET" in', launcher.index('# 4. Decide what to launch'))
+        self.assertGreater(cleanup, launcher.index('if pgrep -f "$SGMINER "'))
+        self.assertGreater(cleanup, launcher.index('if api_command_ok "$API_PORT"'))
+        self.assertGreater(cleanup, launcher.index('case $BUILD_RC in\n    0)'))
+        self.assertNotIn('rm -f /var/log/sgminer.log', launcher[:cleanup])
+        self.assertNotIn('rm -f /run/blakestream/sgminer.log', launcher[:cleanup])
+        block = launcher[cleanup:launcher.index('\n        mkdir -p', cleanup)]
+        block = block.replace('/usr/bin/python', shlex.quote(sys.executable))
+        with tempfile.TemporaryDirectory(prefix='bkb memory ') as tmp:
+            ram, sd = Path(tmp) / 'ram.log', Path(tmp) / 'sd.log'
+            block = block.replace('/run/blakestream/sgminer.log', shlex.quote(str(ram))).replace('/var/log/sgminer.log', shlex.quote(str(sd)))
+            for target, keep_ram, keep_sd in [('RAM', True, False), ('SD', False, True)]:
+                ram.write_text('RAM log\n')
+                sd.write_text('SD log\n')
+                env = dict(os.environ, SGMINER_LOG_TARGET=target, SGMINER_LOG=str(ram if target == 'RAM' else sd),
+                           SGMINER_LOG_CONFIG_OK='1', SGMINER_LOG_MAX='8192', SGMINER_LOG_KEEP='4096',
+                           LOG_WRITER=str(ROOT / 'overlay/opt/scripta/bin/capped-log-writer.py'))
+                subprocess.run(['bash', '-c', 'log() { :; }\n' + block], env=env, check=True)
+                self.assertEqual(ram.exists(), keep_ram)
+                self.assertEqual(sd.exists(), keep_sd)
+                self.assertIn(b'RAM log', (ram if keep_ram else sd).read_bytes())
+                self.assertIn(b'SD log', (ram if keep_ram else sd).read_bytes())
+            for overrides in [{'SGMINER_LOG_CONFIG_OK':'0'}, {'LOG_WRITER':'/nonexistent/writer'}]:
+                ram.write_text('RAM evidence\n')
+                sd.write_text('SD evidence\n')
+                env.update(overrides)
+                subprocess.run(['bash', '-c', 'log() { :; }\n' + block], env=env, check=True,
+                               stderr=subprocess.DEVNULL)
+                self.assertEqual(ram.read_text(), 'RAM evidence\n')
+                self.assertEqual(sd.read_text(), 'SD evidence\n')
+                env['SGMINER_LOG_CONFIG_OK']='1'
+
+    def test_ram_cap_matches_launcher_and_storage_ui(self):
+        self.assertEqual(L.DEFAULT_MAX_BYTES, 4194304)
+        self.assertEqual(L.DEFAULT_KEEP_BYTES, 2097152)
+        launcher = (ROOT / 'overlay/opt/scripta/startup/miner-start.sh').read_text()
+        self.assertIn('SGMINER_LOG_MAX=${SGMINER_LOG_MAX:-4194304}', launcher)
+        self.assertIn('SGMINER_LOG_KEEP=${SGMINER_LOG_KEEP:-2097152}', launcher)
+        self.assertIn('$SGMINER_CAP = 4194304;', (ROOT / 'overlay/var/www/f_dev.php').read_text())
+        self.assertIn("storage_stat('sgminer.log', '/var/log/sgminer.log', $SGMINER_CAP)",
+                      (ROOT / 'overlay/var/www/f_dev.php').read_text())
+        self.assertIn("$scope.devLogRamCap = '4 MiB';", (ROOT / 'overlay/var/www/ng/controllers.js').read_text())
+
+    def test_no_extra_daily_sgminer_archives(self):
+        config = (ROOT / 'overlay/etc/logrotate.d/sgminer').read_text()
+        active = [line.strip() for line in config.splitlines() if line.strip() and not line.startswith('#')]
+        self.assertEqual(active, [])
+
+    def test_trim_preserves_recent_bytes_within_cap(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'sgminer.log'
+            tail = b'recent log\n' * 200
+            path.write_bytes(b'old log\n' * 2000 + tail)
+            size = L.trim_log(str(path), 8192, 4096)
+            self.assertLessEqual(size, 8192)
+            self.assertTrue(path.read_bytes().endswith(tail))
+            self.assertIn(b'log trimmed;', path.read_bytes())
+
+    def test_small_log_is_unchanged(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'sgminer.log'
+            path.write_bytes(b'keep this log\n')
+            self.assertEqual(L.trim_log(str(path), 8192, 4096), len(b'keep this log\n'))
+            self.assertEqual(path.read_bytes(), b'keep this log\n')
+
+    def test_maintenance_cadence_is_preserved_without_alert_collisions(self):
+        slots = []
+        for name, start in [('system-perms', 4), ('runtime-dir', 8)]:
+            content = (ROOT / ('overlay/etc/cron.d/blakestream-' + name)).read_text()
+            active = [line for line in content.splitlines() if line and not line.startswith('#')]
+            if name == 'system-perms':
+                self.assertEqual(len(active), 1)
+                unit = (ROOT / 'overlay/etc/systemd/system/blakestream-system-perms.service').read_text()
+                self.assertIn('ExecStart=/opt/scripta/bin/repair-system-perms.sh', unit)
+            else:
+                self.assertEqual(len(active), 2)
+                self.assertTrue(active[0].startswith('@reboot root '))
+            self.assertEqual(active[-1].split()[0], '%d-59/15' % start)
+            minutes = set(range(start, 60, 15))
+            self.assertEqual(len(minutes), 4)
+            self.assertFalse(minutes & set(range(0, 60, 5)))
+            self.assertFalse(minutes & set(range(0, 60, 3)))
+            slots.append(minutes)
+        self.assertFalse(slots[0] & slots[1])
+
+
+if __name__ == '__main__':
+    unittest.main(verbosity=2)

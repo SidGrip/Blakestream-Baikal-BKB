@@ -9,6 +9,7 @@ Reads:
   /opt/scripta/etc/saved-pools.json       - user pool catalog (categories + pools)
   /opt/scripta/etc/board-assignments.json - board id -> pool id (or null = idle)
   /opt/scripta/etc/miner.options.json     - shared sgminer options
+  /run/blakestream/temp-state.json        - runtime temp-watchdog board state
 
 Writes:
   /tmp/scripta-runtime-miner.conf       - sgminer JSON config for the launcher
@@ -52,17 +53,35 @@ Exits:
 from __future__ import print_function
 import json
 import os
+import re
 import sys
 import collections
 
 ETC_DIR = "/opt/scripta/etc"
+RUNTIME_DIR = "/run/blakestream"
 SAVED_POOLS = os.path.join(ETC_DIR, "saved-pools.json")
 ASSIGNMENTS = os.path.join(ETC_DIR, "board-assignments.json")
 OPTIONS = os.path.join(ETC_DIR, "miner.options.json")
-TEMP_STATE = os.path.join(ETC_DIR, "temp-state.json")
+BRIDGE_GLOBAL_V1_READY = "/opt/scripta/firmware/BRIDGE_GLOBAL_V1_READY"
+TEMP_STATE = os.path.join(RUNTIME_DIR, "temp-state.json")
 FAILOVER_CONFIG = os.path.join(ETC_DIR, "failover-config.json")
 RUNTIME_CONF = "/tmp/scripta-runtime-miner.conf"
 RUNTIME_POOLMAP = "/tmp/scripta-runtime-poolmap.json"
+BAIKAL_CLOCK_DEFAULT = 400
+BAIKAL_VALIDATED_CLOCKS = (400,)
+BAIKAL_RECOVER_DEFAULT = 40
+BAIKAL_CUTOFF_DEFAULT = 55
+BAIKAL_TEMP_MIN = 1
+BAIKAL_TEMP_MAX = 99
+BKB_DEV_CHIP_MD5 = "0e8467eddabf589ad94549a8d572c759"
+BKB_V1_CHIP_MD5 = "18babe0c4c67d9146e230f9dc423f2f2"
+# \Z, not $, so a final newline is not an exact index tuple.
+EXPERIMENTAL_CLOCK_INDEX_RE = re.compile(
+    r"^(?:[8-9]|[1-2][0-9]|3[0-2])(?::(?:[8-9]|[1-2][0-9]|3[0-2])){2}\Z")
+CLOCK_SCOPE_KEY = "blakestream-clock-scope"
+
+# Public labels are accepted-work-validated lookup entries. Raw clock indices are
+# a separate experimental option and are not a MHz scale.
 
 
 def _unlink_if_exists(path):
@@ -93,6 +112,281 @@ def load_json(path, default=None):
         sys.exit(1)
 
 
+def int_or_default(value, default):
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def normalize_baikal_options(value):
+    clock = BAIKAL_CLOCK_DEFAULT
+    recover = BAIKAL_RECOVER_DEFAULT
+    cutoff = BAIKAL_CUTOFF_DEFAULT
+    text = "" if value is None else str(value).strip()
+
+    if text:
+        parts = text.split(":")
+        if len(parts) >= 3:
+            clock = int_or_default(parts[0], clock)
+            recover = int_or_default(parts[1], recover)
+            cutoff = int_or_default(parts[2], cutoff)
+        elif len(parts) >= 2:
+            # Backward-compatible old format: recover:cutoff.
+            recover = int_or_default(parts[0], recover)
+            cutoff = int_or_default(parts[1], cutoff)
+        elif len(parts) == 1:
+            clock = int_or_default(parts[0], clock)
+
+    if clock not in BAIKAL_VALIDATED_CLOCKS:
+        clock = BAIKAL_CLOCK_DEFAULT
+    clock = ((clock + 5) // 10) * 10
+    if recover < BAIKAL_TEMP_MIN:
+        recover = BAIKAL_TEMP_MIN
+    if recover > BAIKAL_TEMP_MAX:
+        recover = BAIKAL_TEMP_MAX
+    if cutoff < BAIKAL_TEMP_MIN:
+        cutoff = BAIKAL_TEMP_MIN
+    if cutoff > BAIKAL_TEMP_MAX:
+        cutoff = BAIKAL_TEMP_MAX
+    if recover >= cutoff:
+        recover = BAIKAL_RECOVER_DEFAULT
+        cutoff = BAIKAL_CUTOFF_DEFAULT
+
+    return "%d:%d:%d" % (clock, recover, cutoff)
+
+
+def normalize_baikal_clock_mode(value, has_saved_mode, has_board_clocks):
+    if value in ("global", "individual"):
+        return value
+    if not has_saved_mode and has_board_clocks:
+        return "individual"
+    return "global"
+
+
+def normalize_baikal_board_clocks(value):
+    text = "" if value is None else str(value).strip()
+    parts = text.split(":")
+    if len(parts) != 3:
+        raise ValueError("baikal-board-clocks must be board0:board1:board2")
+
+    clocks = []
+    for part in parts:
+        if not re.match(r"^[0-9]+$", part):
+            raise ValueError("baikal-board-clocks values must be integers")
+        clock = int(part)
+        if clock not in BAIKAL_VALIDATED_CLOCKS:
+            raise ValueError("baikal-board-clocks values must use a validated clock")
+        clock = ((clock + 5) // 10) * 10
+        clocks.append(clock)
+    return "%d:%d:%d" % tuple(clocks)
+
+
+class ExperimentalClockError(Exception):
+    pass
+
+
+def _exact_text(value):
+    """Real text only. Booleans, numbers, and null are not indices or flags."""
+    if isinstance(value, bool):
+        return None
+    try:
+        text_types = (str, unicode)  # Python 2 str is bytes; json uses unicode.
+    except NameError:
+        text_types = (str,)
+    if isinstance(value, text_types):
+        return value
+    return None
+
+
+def parse_experimental_flag(value):
+    if value is True:
+        return True
+    if value is False:
+        return False
+    text = _exact_text(value)
+    if text == "true":
+        return True
+    if text == "false":
+        return False
+    raise ExperimentalClockError(
+        "baikal-experimental-clock-index must be a boolean or the string true or false")
+
+
+def parse_board_clock_index(value):
+    text = _exact_text(value)
+    if text is None or EXPERIMENTAL_CLOCK_INDEX_RE.match(text) is None:
+        raise ExperimentalClockError(
+            "baikal-board-clock-index must be three integers 8..32 such as 29:30:30")
+    return text
+
+
+def parse_clock_scope(value):
+    """Presentation only: global or individual. Not a frequency and not a mode."""
+    text = _exact_text(value)
+    if text != "global" and text != "individual":
+        raise ExperimentalClockError(
+            "blakestream-clock-scope must be global or individual")
+    return text
+
+
+def board_clock_indices_equal(clock_index):
+    parts = clock_index.split(":")
+    return len(parts) == 3 and parts[0] == parts[1] == parts[2]
+
+
+def firmware_supports_clock_index(paths=None):
+    if paths is None:
+        paths = (
+            os.path.join(RUNTIME_DIR, "bkb-firmware-identity.json"),
+            os.path.join(ETC_DIR, "bkb-firmware-identity.json"),
+        )
+    for path in paths:
+        try:
+            with open(path, "r") as handle:
+                record = json.load(handle)
+        except (IOError, OSError, ValueError):
+            continue
+        if not isinstance(record, dict):
+            continue
+        chip = _exact_text(record.get("chip_md5"))
+        # The current RAM record takes precedence over a stale SD fallback.
+        images = {BKB_DEV_CHIP_MD5: "CUSTOM V1", BKB_V1_CHIP_MD5: "CUSTOM V1"}
+        return (chip is not None and chip.lower() in images and
+                record.get("identity") == images[chip.lower()])
+    return False
+
+
+def adjustable_clocks_enabled(path=None):
+    if path is None:
+        path = os.path.join(ETC_DIR, "scripta.conf")
+    try:
+        with open(path, "r") as handle:
+            data = json.load(handle)
+    except (IOError, OSError, ValueError):
+        return False
+    return isinstance(data, dict) and data.get("userAdjustableClocks") is True
+
+
+def _saved_option_items(options_list):
+    items = options_list
+    if isinstance(options_list, dict):
+        items = [{"key": key, "value": value} for key, value in options_list.items()]
+    if not isinstance(items, list):
+        raise ExperimentalClockError("miner options must be a list or object")
+    return items
+
+
+def explicit_saved_clock_mode(options_list):
+    """Return baikal-clock-mode only when the saved list contains it once.
+
+    A repeated entry is ambiguous. It must not authorize experimental Index,
+    even when every copy is the string individual. Absence stays None so a
+    legacy individual inference cannot enable the experiment either.
+    """
+    found = []
+    for item in _saved_option_items(options_list):
+        if not isinstance(item, dict) or "key" not in item or "value" not in item:
+            continue
+        if item["key"] == "baikal-clock-mode":
+            found.append(item["value"])
+    if len(found) != 1:
+        return None
+    return found[0]
+
+
+def load_saved_options(options_list):
+    """Flatten miner.options.json. Duplicate experimental keys fail closed."""
+    options = {}
+    mode_count = 0
+    for item in _saved_option_items(options_list):
+        if not isinstance(item, dict) or "key" not in item:
+            continue
+        key = item["key"]
+        if key == CLOCK_SCOPE_KEY:
+            if CLOCK_SCOPE_KEY in options:
+                raise ExperimentalClockError(
+                    "blakestream-clock-scope must appear once")
+            if "value" not in item:
+                raise ExperimentalClockError(
+                    "blakestream-clock-scope must be global or individual")
+            parse_clock_scope(item["value"])
+        if "value" not in item:
+            continue
+        if key in ("baikal-experimental-clock-index", "baikal-board-clock-index") and key in options:
+            raise ExperimentalClockError("%s must appear once" % key)
+        if key == "baikal-clock-mode":
+            mode_count += 1
+        options[key] = item["value"]
+    if 'baikal-fan' in options:
+        options['baikal-fan'] = str(max(40, min(100, int_or_default(options['baikal-fan'], 70))))
+    flag = options.get("baikal-experimental-clock-index")
+    if mode_count > 1 and (flag is True or flag == "true"):
+        raise ExperimentalClockError(
+            "duplicate baikal-clock-mode cannot authorize experimental Index")
+    return options
+
+
+def apply_experimental_clock_index(options, explicit_clock_mode, identity_paths=None,
+                           scripta_conf=None):
+    """Rewrite the experimental keys in the runtime option dict.
+
+    explicit_clock_mode is the single saved mode, or None when that key was
+    absent or repeated. A repeated mode cannot authorize this experiment.
+    A legacy inference of individual mode is not accepted. Both keys are
+    removed when experimental mode is off, and also when a well-formed enable
+    is not allowed to launch. Malformed values raise instead of being clamped.
+
+    blakestream-clock-scope is presentation metadata, not an sgminer option.
+    It is validated and then removed. Global scope with the experiment on
+    requires three equal indices. Absent scope keeps the legacy behavior.
+    """
+    scope = None
+    if CLOCK_SCOPE_KEY in options:
+        scope = parse_clock_scope(options.get(CLOCK_SCOPE_KEY))
+
+    flag_present = "baikal-experimental-clock-index" in options
+    clock_index_present = "baikal-board-clock-index" in options
+    if not flag_present and not clock_index_present:
+        options.pop(CLOCK_SCOPE_KEY, None)
+        return "off"
+
+    flag = False
+    clock_index = None
+    if flag_present:
+        flag = parse_experimental_flag(options.get("baikal-experimental-clock-index"))
+    if clock_index_present:
+        clock_index = parse_board_clock_index(options.get("baikal-board-clock-index"))
+    if flag and not clock_index_present:
+        raise ExperimentalClockError(
+            "baikal-experimental-clock-index requires baikal-board-clock-index")
+    if clock_index_present and not flag:
+        raise ExperimentalClockError(
+            "baikal-board-clock-index requires baikal-experimental-clock-index")
+    if flag and explicit_clock_mode != "individual":
+        raise ExperimentalClockError(
+            "baikal-experimental-clock-index requires explicit baikal-clock-mode individual")
+    if flag and scope == "global" and not board_clock_indices_equal(clock_index):
+        raise ExperimentalClockError(
+            "blakestream-clock-scope global requires three equal clock indices")
+
+    options.pop(CLOCK_SCOPE_KEY, None)
+    options.pop("baikal-experimental-clock-index", None)
+    options.pop("baikal-board-clock-index", None)
+    if not flag:
+        return "off"
+    if not (firmware_supports_clock_index(identity_paths) and
+            adjustable_clocks_enabled(scripta_conf)):
+        sys.stderr.write(
+            "WARN: experimental Index omitted; verified custom firmware and "
+            "Adjustable Clocks are required\n")
+        return "omitted"
+
+    options["baikal-experimental-clock-index"] = True
+    options["baikal-board-clock-index"] = clock_index
+    return "enabled"
+
+
 def index_pools_by_id(saved_pools_doc):
     """Return dict: pool_id -> pool_object (with category context if needed)."""
     out = {}
@@ -102,6 +396,20 @@ def index_pools_by_id(saved_pools_doc):
             if pid:
                 out[pid] = pool
     return out
+
+
+def pool_endpoint_key(url):
+    """Normalize a stratum URL down to the endpoint identity host:port."""
+    if not url:
+        return ""
+    s = "%s" % url
+    s = re.sub(r"^https?://", "", s, flags=re.I)
+    s = re.sub(r"^quota:\d+;", "", s, flags=re.I)
+    s = re.sub(r"^stratum\+(tcp|ssl|tls)://", "", s, flags=re.I)
+    s = s.split("/", 1)[0]
+    if "@" in s:
+        s = s.rsplit("@", 1)[1]
+    return s.rstrip("/ \t\r\n").lower()
 
 
 def main():
@@ -143,8 +451,12 @@ def main():
         if failover_id and failover_id in pool_index:
             primary_algo = pool_index[primary_id].get("algo")
             failover_algo = pool_index[failover_id].get("algo")
+            primary_endpoint = pool_endpoint_key(pool_index[primary_id].get("url"))
+            failover_endpoint = pool_endpoint_key(pool_index[failover_id].get("url"))
             if failover_id == primary_id:
                 sys.stderr.write("WARN: board %s failover == primary, ignoring\n" % board_id_str)
+            elif primary_endpoint and failover_endpoint and primary_endpoint == failover_endpoint:
+                sys.stderr.write("WARN: board %s failover endpoint == primary endpoint, ignoring\n" % board_id_str)
             elif primary_algo and failover_algo and primary_algo != failover_algo:
                 sys.stderr.write("WARN: board %s failover algo (%s) != primary algo (%s), ignoring\n"
                                  % (board_id_str, failover_algo, primary_algo))
@@ -164,55 +476,72 @@ def main():
         _unlink_if_exists(RUNTIME_POOLMAP)
         sys.exit(2)
 
-    # Convert miner.options.json (list of {key, value}) into a flat dict
-    options = {}
-    if isinstance(options_list, list):
-        for item in options_list:
-            if isinstance(item, dict) and "key" in item and "value" in item:
-                options[item["key"]] = item["value"]
-    elif isinstance(options_list, dict):
-        options = dict(options_list)
+    # Convert miner.options.json (list of {key, value}) into a flat dict.
+    # Capture the saved clock mode before legacy individual inference.
+    try:
+        options = load_saved_options(options_list)
+    except ExperimentalClockError as e:
+        print("ERROR: %s" % e, file=sys.stderr)
+        _unlink_if_exists(RUNTIME_CONF)
+        _unlink_if_exists(RUNTIME_POOLMAP)
+        sys.exit(1)
+    # Count the saved list. The flattened dict would keep only the last mode.
+    explicit_clock_mode = explicit_saved_clock_mode(options_list)
 
-    # Determine if we need failover backups: all same-algo saved pools that
-    # AREN'T already in by_pool are added with quota:1 so sgminer keeps a
-    # connection warm. Primary pools get quota = boards * primary_quota_multiplier
-    # (default 10) so ~99% of work goes to user choice while backups stay alive
-    # ready to absorb quota redistribution if a primary dies.
-    failover_enabled = failover.get("enabled", True)
+    has_saved_clock_mode = "baikal-clock-mode" in options
+    has_board_clocks = "baikal-board-clocks" in options
+    clock_mode = normalize_baikal_clock_mode(
+        options.get("baikal-clock-mode"),
+        has_saved_clock_mode,
+        has_board_clocks)
+    options["baikal-options"] = normalize_baikal_options(options.get("baikal-options"))
+    options["baikal-clock-mode"] = clock_mode
+    if os.path.isfile(BRIDGE_GLOBAL_V1_READY):
+        options["baikal-bridge-global"] = True
+    else:
+        options.pop("baikal-bridge-global", None)
+    if clock_mode == "individual":
+        if not has_board_clocks:
+            options["baikal-board-clocks"] = ":".join(
+                [str(BAIKAL_CLOCK_DEFAULT)] * 3)
+        try:
+            options["baikal-board-clocks"] = normalize_baikal_board_clocks(
+                options.get("baikal-board-clocks"))
+        except ValueError as e:
+            print("ERROR: %s" % e, file=sys.stderr)
+            _unlink_if_exists(RUNTIME_CONF)
+            _unlink_if_exists(RUNTIME_POOLMAP)
+            sys.exit(1)
+    else:
+        # Retain board values in miner.options.json, but do not expose them to
+        # sgminer while the global clock is active.
+        options.pop("baikal-board-clocks", None)
+
+    try:
+        apply_experimental_clock_index(options, explicit_clock_mode)
+    except ExperimentalClockError as e:
+        print("ERROR: %s" % e, file=sys.stderr)
+        _unlink_if_exists(RUNTIME_CONF)
+        _unlink_if_exists(RUNTIME_POOLMAP)
+        sys.exit(1)
+    # Validated above. Never copy the presentation key into sgminer config.
+    options.pop(CLOCK_SCOPE_KEY, None)
+
+    # Determine explicit failover backups. Only pools selected in the dashboard's
+    # FAILOVER lane are added as backups. An empty failover slot means the board
+    # should stop if its primary is unavailable, not auto-search another pool.
     multiplier = int(failover.get("primary_quota_multiplier", 10))
     if multiplier < 1:
         multiplier = 1
 
     primary_pool_ids = set(by_pool.keys())
 
-    # Backup pool collection has TWO sources, in this priority order:
-    #
-    #   1. Explicit per-board failover (boards where the user picked a specific
-    #      failover pool in the dashboard's FAILOVER lane). These are added as
-    #      quota:1 backups regardless of the global failover toggle. Their
-    #      presence ALSO suppresses the auto-search for those boards' algos
-    #      (so sgminer can only fail over to the user-chosen pool, never to
-    #      some random other same-algo pool).
-    #
-    #   2. Global automatic same-algo failover (only when failover-config.json
-    #      enabled=true). Adds every saved pool of an algo used by a primary,
-    #      EXCEPT for algos that are already covered by an explicit per-board
-    #      failover. This preserves today's auto-failover behaviour for boards
-    #      without an explicit user choice, while honouring the "stop hashing
-    #      when both die" guarantee for boards that have one.
     backup_pools = []
     backup_pool_ids_seen = set()
 
-    # 1. Explicit per-board failovers
     explicit_failover_pool_ids = set()
     for bid, fid in explicit_failover_by_board.items():
         explicit_failover_pool_ids.add(fid)
-    # Algos that have an explicit failover for at least one board → skip auto
-    explicit_failover_algos = set()
-    for fid in explicit_failover_pool_ids:
-        algo = pool_index[fid].get("algo")
-        if algo:
-            explicit_failover_algos.add(algo)
     for fid in explicit_failover_pool_ids:
         if fid in primary_pool_ids:
             # Already in pools_out as a primary; sgminer will share it.
@@ -221,21 +550,6 @@ def main():
             continue
         backup_pool_ids_seen.add(fid)
         backup_pools.append(pool_index[fid])
-
-    # 2. Global same-algo auto backups (only for algos NOT covered by explicit)
-    if failover_enabled:
-        primary_algos = set()
-        for pid in primary_pool_ids:
-            primary_algos.add(pool_index[pid].get("algo", "blake256r8"))
-        auto_algos = primary_algos - explicit_failover_algos
-        for cat in saved.get("categories", []):
-            for pool in cat.get("pools", []):
-                pid = pool.get("id")
-                if (pid and pid not in primary_pool_ids
-                        and pid not in backup_pool_ids_seen
-                        and pool.get("algo") in auto_algos):
-                    backup_pool_ids_seen.add(pid)
-                    backup_pools.append(pool)
 
     # Build the pools array. Each unique assigned pool becomes one entry.
     # Quota = number of boards assigned to it × multiplier (when failover on
@@ -305,7 +619,7 @@ def main():
         runtime["_failover_backup_count"] = len(backup_pools)
     # Make sure essential defaults exist
     runtime.setdefault("api-port", "4028")
-    runtime.setdefault("api-allow", "W:127.0.0.1,W:192.168.0.0/16")
+    runtime.setdefault("api-allow", "W:127.0.0.1")
     runtime.setdefault("scan-time", "0")
     runtime.setdefault("no-submit-stale", True)
 
@@ -352,11 +666,14 @@ def main():
         sys.exit(1)
 
     # Print a summary to stdout for the launcher to parse / log
+    assigned_count = sum(len(b) for b in by_pool.values())
+    board_ids = set(str(k) for k in assignments.keys())
+    board_ids.update(["0", "1", "2"])
     summary = {
         "config": RUNTIME_CONF,
         "poolmap": RUNTIME_POOLMAP,
-        "boards_assigned": sum(len(b) for b in by_pool.values()),
-        "boards_idle": sum(1 for v in assignments.values() if not v),
+        "boards_assigned": assigned_count,
+        "boards_idle": max(0, len(board_ids) - assigned_count),
         "unique_pools": len(by_pool),
         "load_balance": use_quota,
         "failover_backups": len(backup_pools) if has_backups else 0,

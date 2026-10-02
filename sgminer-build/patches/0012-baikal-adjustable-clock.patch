@@ -1,0 +1,81 @@
+Enable adjustable BK-B clock control up to 500 MHz.
+
+The previous BK-B build still compiled Baikal set-clock support out, so
+`baikal-options` only parsed recover/cutoff temperatures and any requested
+clock was ignored. When set-clock is enabled, keep backward compatibility
+with old two-field `recover:cutoff` values while accepting the new
+`clock:recover:cutoff` form.
+
+--- a/driver-baikal.h
++++ b/driver-baikal.h
+@@ -16,7 +16,7 @@
+ #define BAIKAL_POOL_UNSET       (-1)
+
+-#define BAIKAL_CLK_MIN  		(150)
+-#define BAIKAL_CLK_MAX		    (400)
++#define BAIKAL_CLK_MIN  		(260)
++#define BAIKAL_CLK_MAX		    (500)
+
+ #if BAIKAL_TYPE == BAIKAL_1751
+ #define BAIKAL_CLK_DEF  		(200)
+@@ -43,7 +43,7 @@
+ #define BAIKAL_MINER_TYPE_MINI  (0x01)
+ #define BAIKAL_MINER_TYPE_CUBE  (0x02)
+
+-#define BAIKAL_ENABLE_SETCLK    (0)
++#define BAIKAL_ENABLE_SETCLK    (1)
+
+ #define BAIKAL_CHECK_STALE      (0)
+ #define BAIKAL_EN_HWE           (1)
+--- a/driver-baikals.c
++++ b/driver-baikals.c
+@@ -486,7 +486,22 @@ static void baikal_detect(void)
+
+ #if BAIKAL_ENABLE_SETCLK
+     if (opt_baikal_options != NULL) {
+-        sscanf(opt_baikal_options, "%d:%d:%d", &clock, &recovertemp, &cutofftemp);
++        int opt0 = 0;
++        int opt1 = 0;
++        int opt2 = 0;
++        int opt_count = sscanf(opt_baikal_options, "%d:%d:%d", &opt0, &opt1, &opt2);
++
++        if (opt_count >= 3) {
++            clock = opt0;
++            recovertemp = opt1;
++            cutofftemp = opt2;
++        } else if (opt_count == 2) {
++            recovertemp = opt0;
++            cutofftemp = opt1;
++        } else if (opt_count == 1) {
++            clock = opt0;
++        }
++
+         if (clock < BAIKAL_CLK_MIN) {
+             clock = BAIKAL_CLK_MIN;
+         }
+--- a/driver-baikalu.c
++++ b/driver-baikalu.c
+@@ -508,7 +508,22 @@ static struct cgpu_info* baikal_detect_one(struct libusb_device *dev, struct usb
+
+ #if BAIKAL_ENABLE_SETCLK
+     if (opt_baikal_options != NULL) {
+-        sscanf(opt_baikal_options, "%d:%d:%d", &clock, &recovertemp, &cutofftemp);
++        int opt0 = 0;
++        int opt1 = 0;
++        int opt2 = 0;
++        int opt_count = sscanf(opt_baikal_options, "%d:%d:%d", &opt0, &opt1, &opt2);
++
++        if (opt_count >= 3) {
++            clock = opt0;
++            recovertemp = opt1;
++            cutofftemp = opt2;
++        } else if (opt_count == 2) {
++            recovertemp = opt0;
++            cutofftemp = opt1;
++        } else if (opt_count == 1) {
++            clock = opt0;
++        }
++
+         if (clock < BAIKAL_CLK_MIN) {
+             clock = BAIKAL_CLK_MIN;
+         }

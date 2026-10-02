@@ -1,0 +1,190 @@
+--- a/driver-baikalu.c
++++ b/driver-baikalu.c
+@@ -45,13 +45,13 @@
+
+ static int baikal_clock_command_code(uint16_t clk)
+ {
+-    /* Shared monotonic PLL index the v4 firmware reads directly: idx = MHz/10 - 18,
++    /* Shared monotonic PLL index the v5+ firmware reads directly: idx = MHz/10 - 18,
+        clamped to the mode-0x10 ladder [8,32] (~260-500 MHz). clk==0 keeps the
+        firmware default/off path. The old ((clk/10)%20)+2 form was non-monotonic and
+        could not emit indices 22-32, so distinct MHz collapsed onto the same low PLL
+        entries (e.g. 400->code2 and 520->code14 both read ~150 GH/s). On stock
+        firmware the PLL-over-SPI sender is disconnected, so the code is ignored and
+-       this change is a no-op until the v4 firmware is flashed. */
++       this change is a no-op until compatible custom firmware is flashed. */
+     int idx;
+
+     if (clk == 0)
+@@ -64,6 +64,13 @@
+     return idx;
+ }
+
++static int baikal_clock_from_command_code(int code)
++{
++    if (code < 8 || code > 32)
++        return 0;
++    return (code + 18) * 10;
++}
++
+ static void baikal_log_raw_clock_experiment_build(void)
+ {
+ #if BAIKAL_RAW_CLOCK_EXPERIMENT
+@@ -500,15 +507,19 @@
+ }
+
+
+-static bool baikal_getinfo(struct cgpu_info *baikal)
++static bool baikal_getinfo_for_miner(struct cgpu_info *baikal, int miner_id)
+ {
+     int amount;
+-    uint16_t sign;
+     baikal_msg msg = {0, };
+     struct baikal_info *info    = baikal->device_data;
+-    struct miner_info *miner    = &info->miners[baikal->miner_id];
++    struct miner_info *miner;
++
++    if (!baikal_pin_index_valid(miner_id) || miner_id >= info->miner_count)
++        return false;
++
++    miner = &info->miners[miner_id];
+
+-    msg.miner_id    = baikal->miner_id;
++    msg.miner_id    = miner_id;
+     msg.cmd         = BAIKAL_GET_INFO;
+     msg.dest        = 0;
+     msg.len         = 0;
+@@ -527,6 +538,14 @@
+         return (false);
+     }
+
++    if (msg.miner_id != miner_id || msg.cmd != BAIKAL_GET_INFO) {
++        applog(LOG_WARNING,
++               "BK-B GET_INFO reply mismatch ASC %d reply_miner_id=%d cmd=0x%02x",
++               miner_id, msg.miner_id, msg.cmd);
++        mutex_unlock(baikal->mutex);
++        return (false);
++    }
++
+     mutex_unlock(baikal->mutex);
+
+     miner->fw_ver       = msg.data[0];
+@@ -536,18 +555,29 @@
+     miner->asic_count   = msg.data[4];
+     miner->asic_count_r = msg.data[5];
+     miner->asic_ver     = msg.data[6];
+-    miner->working_diff = 0.1;
+-    miner->work_idx     = 0;
+-    miner->working      = true;
+-    miner->overheated   = false;
+     applog(LOG_NOTICE,
+-           "BK-B GET_INFO decoded ASC %d requested=%d firmware_clock_code=%d firmware_echo=%dMHz fw=%d hw=%d asics=%d",
+-           baikal->miner_id, info->clock, msg.data[3], msg.data[3] << 1,
++           "BK-B GET_INFO decoded ASC %d requested=%d bridge_status_code=%d bridge_status_echo=%dMHz fw=%d hw=%d asics=%d",
++           miner_id, info->clock, msg.data[3], msg.data[3] << 1,
+            msg.data[0], msg.data[1], msg.data[4]);
+     baikal_log_protocol_msg("GET_INFO", info->clock, &msg);
+     return (true);
+ }
+
++static bool baikal_getinfo(struct cgpu_info *baikal)
++{
++    struct baikal_info *info = baikal->device_data;
++    struct miner_info *miner = &info->miners[baikal->miner_id];
++
++    if (!baikal_getinfo_for_miner(baikal, baikal->miner_id))
++        return false;
++
++    miner->working_diff = 0.1;
++    miner->work_idx     = 0;
++    miner->working      = true;
++    miner->overheated   = false;
++    return true;
++}
++
+
+ static bool baikal_setoption_for_miner(struct cgpu_info *baikal, int miner_id,
+                                        uint16_t clk, uint8_t mode, uint8_t temp,
+@@ -593,6 +623,14 @@
+         return (false);
+     }
+
++    if (msg.miner_id != miner_id || msg.cmd != BAIKAL_SET_OPTION || msg.param != 1) {
++        applog(LOG_WARNING,
++               "BK-B SET_OPTION ACK mismatch ASC %d reply_miner_id=%d cmd=0x%02x param=0x%02x",
++               miner_id, msg.miner_id, msg.cmd, msg.param);
++        mutex_unlock(baikal->mutex);
++        return (false);
++    }
++
+     if (log_protocol) {
+         applog(LOG_NOTICE,
+                "BK-B SET_OPTION request ASC %d requested=%dMHz sent_code=%d mode=%u cutoff=%u fan=%u",
+@@ -621,6 +659,11 @@
+ {
+     struct baikal_info *info = baikal->device_data;
+     struct miner_info *miner;
++    bool host_ack;
++    bool getinfo_ok = false;
++    bool echo_ok = false;
++    int retry_clock_code;
++    int expected_clock;
+     time_t now;
+
+     if (!baikal_pin_index_valid(miner_id) || miner_id >= info->miner_count)
+@@ -643,26 +686,47 @@
+         return;
+
+     miner->clock_retry_last_time = now;
++    retry_clock_code = baikal_clock_command_code(info->clock);
+     applog(LOG_NOTICE,
+-           "BK-B post-mining clock retry ASC %d requested=%dMHz sent_code=%d current_echo=%dMHz fan=%u",
+-           miner_id, info->clock, miner->sent_clock_code, miner->reported_clock,
++           "BK-B post-mining clock retry ASC %d requested=%dMHz pll_index=%d bridge_status_echo=%dMHz fan=%u",
++           miner_id, info->clock, retry_clock_code, miner->reported_clock,
+            (unsigned int)info->fanspeed);
+
+-    if (baikal_setoption_for_miner(baikal, miner_id, info->clock,
+-                                  to_baikal_algorithm(baikal->algorithm.type),
+-                                  info->cutofftemp, info->fanspeed) == true) {
++    host_ack = baikal_setoption_for_miner(baikal, miner_id, info->clock,
++                                         to_baikal_algorithm(baikal->algorithm.type),
++                                         info->cutofftemp, info->fanspeed);
++    applog(host_ack ? LOG_NOTICE : LOG_WARNING,
++           "BK-B post-mining SET_OPTION ASC %d requested=%dMHz pll_index=%d host_ack=%s",
++           miner_id, info->clock, retry_clock_code, host_ack ? "yes" : "no");
++
++    expected_clock = baikal_clock_from_command_code(retry_clock_code);
++    if (host_ack) {
++        getinfo_ok = baikal_getinfo_for_miner(baikal, miner_id);
++        echo_ok = getinfo_ok && expected_clock > 0 &&
++                  miner->reported_clock == expected_clock;
++        applog(echo_ok ? LOG_NOTICE : LOG_WARNING,
++               "BK-B post-mining GET_INFO ASC %d requested=%dMHz pll_index=%d get_info=%s bridge_status_code=%d bridge_status_echo=%dMHz expected_echo=%dMHz match=%s",
++               miner_id, info->clock, retry_clock_code,
++               getinfo_ok ? "yes" : "no", miner->reported_clock_code,
++               miner->reported_clock, expected_clock, echo_ok ? "yes" : "no");
++    }
++
++    if (host_ack && getinfo_ok && echo_ok) {
+         miner->clock_retry_pending = false;
+         miner->clock_retry_done = true;
+         applog(LOG_NOTICE,
+-               "BK-B post-mining clock retry OK ASC %d requested=%dMHz sent_code=%d current_echo=%dMHz",
+-               miner_id, info->clock, miner->sent_clock_code, miner->reported_clock);
++               "BK-B post-mining clock retry OK ASC %d requested=%dMHz pll_index=%d bridge_status_echo=%dMHz",
++               miner_id, info->clock, retry_clock_code, miner->reported_clock);
+         return;
+     }
+
+     miner->clock_retry_failures++;
+     applog(LOG_WARNING,
+-           "BK-B post-mining clock retry failed ASC %d requested=%dMHz failure=%u/%u",
+-           miner_id, info->clock, (unsigned int)miner->clock_retry_failures,
++           "BK-B post-mining clock retry failed ASC %d requested=%dMHz pll_index=%d host_ack=%s get_info=%s bridge_status_echo=%dMHz expected_echo=%dMHz failure=%u/%u",
++           miner_id, info->clock, retry_clock_code,
++           host_ack ? "yes" : "no", getinfo_ok ? "yes" : "no",
++           miner->reported_clock, expected_clock,
++           (unsigned int)miner->clock_retry_failures,
+            (unsigned int)BAIKAL_CLOCK_RETRY_MAX_FAILURES);
+ }

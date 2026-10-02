@@ -1,0 +1,11 @@
+[Unit]
+Description=Roll back an unconfirmed Blakestream network change
+After=NetworkManager.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /opt/scripta/bin/network-settings.py tick
+TimeoutStartSec=40
+
+[Install]
+WantedBy=multi-user.target

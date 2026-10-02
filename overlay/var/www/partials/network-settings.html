@@ -1,0 +1,50 @@
+<div class="bs-network-error" role="alert" ng-show="networkError">
+  {{networkError}}
+  <a class="btn btn-default" ng-show="!network.pending && networkReconnect()" ng-href="{{networkReconnect()}}">Reconnect</a>
+</div>
+<div class="bs-network-pending" ng-show="network.pending">
+  <div class="bs-network-progress">
+    <strong role="status"><i class="fa fa-exchange" aria-hidden="true"></i> {{networkPendingLabel()}}</strong>
+    <span class="bs-network-countdown" ng-show="network.pending.state !== 'rollback-failed'">Auto-revert in {{networkCountdown()}}</span>
+  </div>
+  <div class="bs-network-actions">
+    <a class="btn btn-default" ng-show="networkReconnect()" ng-href="{{networkReconnect()}}">Reconnect</a>
+    <button type="button" class="btn btn-primary" ng-click="networkConfirm()" ng-disabled="networkBusy || !networkReady || network.pending.state !== 'awaiting-confirmation'">Keep Settings</button>
+    <button type="button" class="btn btn-default" ng-click="networkRollback()" ng-disabled="networkBusy">Revert</button>
+  </div>
+</div>
+<form name="networkForm" class="form-horizontal bs-network-form" novalidate>
+  <fieldset ng-disabled="networkBusy || !!network.pending || !networkReady">
+    <div class="form-group">
+      <label class="col-sm-2 control-label" for="networkInterface">Interface</label>
+      <div class="col-sm-5"><select id="networkInterface" class="form-control" ng-model="networkDraft.interface" ng-options="i.interface as i.interface for i in network.interfaces" ng-change="networkSelectInterface()"></select></div>
+    </div>
+    <div class="form-group" ng-repeat="i in network.interfaces" ng-show="i.interface === networkDraft.interface">
+      <label class="col-sm-2 control-label">Current Connection</label>
+      <div class="col-sm-10 bs-network-current">
+        <span>{{i.mode === 'dhcp' ? 'Dynamic (DHCP)' : (i.mode === 'static' ? 'Static' : (i.mode || 'Unknown'))}}</span>
+        <span>{{i.address || 'No address'}}<span ng-show="i.address">/{{i.prefix}}</span></span>
+        <span>Gateway: {{i.gateway || 'None'}}</span>
+        <span>DNS: {{i.dns.join(', ') || 'None'}}</span>
+        <span>{{i.saved ? 'Saved configuration' : 'Runtime configuration only'}}</span>
+      </div>
+    </div>
+    <div class="form-group">
+      <label class="col-sm-2 control-label">Address Mode</label>
+      <div class="col-sm-10">
+        <label class="radio-inline"><input type="radio" name="networkMode" ng-model="networkDraft.mode" value="dhcp">Dynamic (DHCP)</label>
+        <label class="radio-inline"><input type="radio" name="networkMode" ng-model="networkDraft.mode" value="static">Static</label>
+      </div>
+    </div>
+    <div ng-show="networkDraft.mode === 'static'">
+      <div class="form-group"><label for="networkAddress" class="col-sm-2 control-label">IPv4 Address</label><div class="col-sm-5"><input id="networkAddress" class="form-control" type="text" ng-model="networkDraft.address" autocomplete="off"></div></div>
+      <div class="form-group"><label for="networkPrefix" class="col-sm-2 control-label">Prefix Length</label><div class="col-sm-2"><input id="networkPrefix" class="form-control" type="number" ng-model="networkDraft.prefix" min="1" max="30" step="1"></div></div>
+      <div class="form-group"><label for="networkGateway" class="col-sm-2 control-label">Gateway</label><div class="col-sm-5"><input id="networkGateway" class="form-control" type="text" ng-model="networkDraft.gateway" autocomplete="off"></div></div>
+      <div class="form-group"><label for="networkDNS" class="col-sm-2 control-label">DNS Servers</label><div class="col-sm-5"><input id="networkDNS" class="form-control" type="text" ng-model="networkDraft.dnsText" placeholder="Comma-separated IPv4 addresses" autocomplete="off"></div></div>
+    </div>
+    <div class="form-group"><div class="col-sm-offset-2 col-sm-10">
+      <button type="button" class="btn btn-default" ng-click="networkApply()" ng-disabled="!networkValid()">Apply Network Settings</button>
+      <button type="button" class="btn btn-default" ng-if="networkRestoredInterface()" ng-click="networkReviewRestored()">Review Restored Network</button>
+    </div></div>
+  </fieldset>
+</form>

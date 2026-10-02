@@ -1,0 +1,144 @@
+diff --git a/driver-baikal.h b/driver-baikal.h
+--- a/driver-baikal.h
++++ b/driver-baikal.h
+@@ -51,6 +51,16 @@
+ 
+ #define BAIKAL_ENABLE_SETCLK    (1)
+ 
++/* Lab-only diagnostic. Normal builds leave this disabled.
++ * When enabled at compile time, BAIKAL_RAW_CLOCK_CODE may override the
++ * compact clock code sent in BAIKAL_SET_OPTION. This is not a user feature. */
++#ifndef BAIKAL_RAW_CLOCK_EXPERIMENT
++#define BAIKAL_RAW_CLOCK_EXPERIMENT (0)
++#endif
++#if BAIKAL_RAW_CLOCK_EXPERIMENT
++#warning "BAIKAL_RAW_CLOCK_EXPERIMENT enabled: lab-only raw BK-B clock-code build"
++#endif
++
+ #define BAIKAL_CHECK_STALE      (0)
+ #define BAIKAL_EN_HWE           (1)
+ #define BAIKAL_CLK_FIX          (0)
+diff --git a/driver-baikals.c b/driver-baikals.c
+--- a/driver-baikals.c
++++ b/driver-baikals.c
+@@ -42,6 +42,48 @@ static int baikal_clock_command_code(uint16_t clk)
+     return (clk == 0) ? 0 : ((clk / 10) % 20) + 2;
+ }
+ 
++static void baikal_log_raw_clock_experiment_build(void)
++{
++#if BAIKAL_RAW_CLOCK_EXPERIMENT
++    static bool warned;
++
++    if (!warned) {
++        warned = true;
++        applog(LOG_WARNING,
++               "BK-B RAW CLOCK EXPERIMENT ENABLED - lab-only build; raw codes can damage hardware");
++    }
++#endif
++}
++
++static int baikal_experiment_clock_code(int computed_code, uint16_t clk)
++{
++#if BAIKAL_RAW_CLOCK_EXPERIMENT
++    const char *raw = getenv("BAIKAL_RAW_CLOCK_CODE");
++    char *endptr = NULL;
++    long code;
++
++    if (!raw || *raw == '\0') {
++        return computed_code;
++    }
++
++    code = strtol(raw, &endptr, 10);
++    if (*raw == '\0' || (endptr && *endptr != '\0') || code < 0 || code > 255) {
++        applog(LOG_WARNING,
++               "BK-B raw clock experiment ignored invalid BAIKAL_RAW_CLOCK_CODE=%s for requested %d MHz",
++               raw, (int)clk);
++        return computed_code;
++    }
++
++    applog(LOG_WARNING,
++           "BK-B raw clock experiment overriding computed PLL code %d with raw code %ld for requested %d MHz",
++           computed_code, code, (int)clk);
++    return (int)code;
++#else
++    (void)clk;
++    return computed_code;
++#endif
++}
++
+ static void baikal_log_protocol_msg(const char *label, int requested_clock, const baikal_msg *msg)
+ {
+     applog(LOG_NOTICE,
+@@ -433,7 +475,8 @@ static bool baikal_setoption(struct cgpu_info *baikal, uint16_t clk, uint8_t mod
+ 
+     msg.miner_id    = baikal->miner_id;
+     msg.cmd         = BAIKAL_SET_OPTION;
+-    sent_clock_code = baikal_clock_command_code(clk);
++    baikal_log_raw_clock_experiment_build();
++    sent_clock_code = baikal_experiment_clock_code(baikal_clock_command_code(clk), clk);
+     previous_clock_code = miner->sent_clock_code;
+     log_protocol = (previous_clock_code == 0 || previous_clock_code != sent_clock_code);
+     msg.data[0] = sent_clock_code;
+diff --git a/driver-baikalu.c b/driver-baikalu.c
+--- a/driver-baikalu.c
++++ b/driver-baikalu.c
+@@ -42,6 +42,48 @@ static int baikal_clock_command_code(uint16_t clk)
+     return (clk == 0) ? 0 : ((clk / 10) % 20) + 2;
+ }
+ 
++static void baikal_log_raw_clock_experiment_build(void)
++{
++#if BAIKAL_RAW_CLOCK_EXPERIMENT
++    static bool warned;
++
++    if (!warned) {
++        warned = true;
++        applog(LOG_WARNING,
++               "BK-B RAW CLOCK EXPERIMENT ENABLED - lab-only build; raw codes can damage hardware");
++    }
++#endif
++}
++
++static int baikal_experiment_clock_code(int computed_code, uint16_t clk)
++{
++#if BAIKAL_RAW_CLOCK_EXPERIMENT
++    const char *raw = getenv("BAIKAL_RAW_CLOCK_CODE");
++    char *endptr = NULL;
++    long code;
++
++    if (!raw || *raw == '\0') {
++        return computed_code;
++    }
++
++    code = strtol(raw, &endptr, 10);
++    if (*raw == '\0' || (endptr && *endptr != '\0') || code < 0 || code > 255) {
++        applog(LOG_WARNING,
++               "BK-B raw clock experiment ignored invalid BAIKAL_RAW_CLOCK_CODE=%s for requested %d MHz",
++               raw, (int)clk);
++        return computed_code;
++    }
++
++    applog(LOG_WARNING,
++           "BK-B raw clock experiment overriding computed PLL code %d with raw code %ld for requested %d MHz",
++           computed_code, code, (int)clk);
++    return (int)code;
++#else
++    (void)clk;
++    return computed_code;
++#endif
++}
++
+ static void baikal_log_protocol_msg(const char *label, int requested_clock, const baikal_msg *msg)
+ {
+     applog(LOG_NOTICE,
+@@ -451,7 +493,8 @@ static bool baikal_setoption(struct cgpu_info *baikal, uint16_t clk, uint8_t mod
+ 
+     msg.miner_id    = baikal->miner_id;
+     msg.cmd         = BAIKAL_SET_OPTION;
+-    sent_clock_code = baikal_clock_command_code(clk);
++    baikal_log_raw_clock_experiment_build();
++    sent_clock_code = baikal_experiment_clock_code(baikal_clock_command_code(clk), clk);
+     previous_clock_code = miner->sent_clock_code;
+     log_protocol = (previous_clock_code == 0 || previous_clock_code != sent_clock_code);
+     msg.data[0] = sent_clock_code;

@@ -1,32 +1,20 @@
 <?php
+require_once __DIR__ . '/inc/web-auth.php';
 session_start();
-if ( !isset($_SESSION['_logged_']) ) $_SESSION['_logged_'] = false;
+if (!isset($_SESSION['_logged_'])) $_SESSION['_logged_'] = false;
 
-$configFolder='/opt/scripta/etc/';
-$configUipwd=$configFolder.'uipasswd';
+$configUipwd = '/opt/scripta/etc/uipasswd';
+$securityLog = '/opt/scripta/var/security.log';
 
-
-if ( isset( $_POST['userPassword'] ) and !empty( $_POST['userPassword'] ) )  {
-
-	$ret = @file_get_contents($configUipwd); 
-		
-	if (empty($ret) ) return json_encode(false);
-	
-	$data = explode('scripta:',$ret);
-
-	$pwd = md5($_POST['userPassword']); 
-	
-	if ( $data[1] == $pwd ) {
-		
-		$_SESSION['_logged_'] = true;
-		echo 1;
-	}
-	else  {		
-		echo 0;
-	 }
+if (!array_key_exists('userPassword', $_POST)) {
+    echo 0;
+    return;
 }
-else return json_encode(false);
-	
 
-
-?>
+$password = $_POST['userPassword'];
+$success = bs_web_auth_check($configUipwd, $password);
+if ($success) $_SESSION['_logged_'] = true;
+if (!bs_web_auth_log($securityLog, $success, $_SERVER, $password)) {
+    error_log('Web authentication audit update failed');
+}
+echo $success ? 1 : 0;

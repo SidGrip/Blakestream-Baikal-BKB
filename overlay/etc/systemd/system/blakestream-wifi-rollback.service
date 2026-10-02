@@ -1,0 +1,8 @@
+[Unit]
+Description=Roll back a failed Blakestream Wi-Fi change
+After=NetworkManager.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /opt/scripta/bin/wifi-settings.py tick
+TimeoutStartSec=40

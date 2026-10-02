@@ -1,0 +1,76 @@
+<h3>
+  Failover History
+  <small>
+    <a href ng-click="bsLoadFailoverHistory(1)">1h</a> -
+    <a href ng-click="bsLoadFailoverHistory(24)">24h</a> -
+    <a href ng-click="bsLoadFailoverHistory(168)">7d</a>
+    -
+    <a href ng-click="bsLoadFailoverHistory(bsFailoverWindow || 24)">refresh</a>
+    <span ng-show="bsFailoverWindow"> &mdash; window: {{bsFailoverWindow}}h</span>
+    <span ng-show="bsFailoverUpdated"> &mdash; updated {{1000*bsFailoverUpdated|bsTzDate:'HH:mm:ss':bsTzNonce}}</span>
+  </small>
+  <span class="pull-right bs-history-controls">
+    <label class="bs-utc-toggle bs-tip" data-tip="Display times in UTC (matches system logs)">
+      <input type="checkbox"
+             ng-model="settings.userShowSystemTime"
+             ng-change="sync('settings', settings, 1)"> show UTC
+    </label>
+    <button type="button" class="btn btn-default btn-sm"
+            ng-click="bsClearFailoverHistory()"
+            ng-disabled="!bsFailoverEvents.length && !bsFailoverOpen.length">
+      Clear History
+    </button>
+    <button type="button" class="btn btn-default btn-sm bs-tip"
+            ng-click="bsExportFailoverHistory()"
+            ng-disabled="!bsFailoverEvents.length && !bsFailoverOpen.length"
+            data-tip="Download visible failover events as CSV">
+      Export CSV
+    </button>
+  </span>
+</h3>
+
+<p class="help-block" ng-show="settings.userHelp">
+  Every time a board's primary pool drops stratum and per-asc routing moves it
+  to a backup pool, a row appears here. In-progress failovers (still routed
+  away from their primary) show at the top in amber. Closed events show
+  the destination pool and how long the failover lasted. Records are kept
+  for 7 days; older entries drop automatically.
+</p>
+
+<div ng-show="!bsFailoverEvents.length && !bsFailoverOpen.length" class="alert alert-info bs-history-empty">
+  No failover events. The miner has been routing every board to its primary
+  pool without interruption.
+</div>
+
+<div class="bs-history-scroll" ng-show="bsFailoverEvents.length || bsFailoverOpen.length">
+  <table class="table table-bordered table-right table-hover bs-history-table">
+    <thead>
+      <tr>
+        <th class="text-center">Board</th>
+        <th class="text-left">Failed Over From</th>
+        <th class="text-left">Failed Over To</th>
+        <th class="text-left">Started</th>
+        <th class="text-left">Ended</th>
+        <th>Duration</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr ng-repeat="e in bsFailoverOpen" class="bs-pool-row-failover">
+        <td class="text-center"><span class="bs-board-chip">{{e.board_id}}</span></td>
+        <td class="text-left">{{e.primary_pool_name || e.primary_pool_url || '—'}}</td>
+        <td class="text-left">{{e.effective_pool_name || e.effective_pool_url}}</td>
+        <td class="text-left">{{1000*e.start_ts|bsTzDate:'yyyy-MM-dd HH:mm:ss':bsTzNonce}}</td>
+        <td class="text-left text-warning"><em>in progress</em></td>
+        <td>{{bsFailoverOpenDuration(e)|duration}}</td>
+      </tr>
+      <tr ng-repeat="e in bsFailoverEvents">
+        <td class="text-center"><span class="bs-board-chip">{{e.board_id}}</span></td>
+        <td class="text-left">{{e.primary_pool_name || e.primary_pool_url || '—'}}</td>
+        <td class="text-left">{{e.effective_pool_name || e.effective_pool_url}}</td>
+        <td class="text-left">{{1000*e.start_ts|bsTzDate:'yyyy-MM-dd HH:mm:ss':bsTzNonce}}</td>
+        <td class="text-left">{{1000*e.end_ts|bsTzDate:'yyyy-MM-dd HH:mm:ss':bsTzNonce}}</td>
+        <td>{{e.duration_seconds|duration}}</td>
+      </tr>
+    </tbody>
+  </table>
+</div>

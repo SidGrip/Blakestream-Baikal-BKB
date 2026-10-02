@@ -136,7 +136,7 @@ scope.$watch('live', function (newlist) {
         gridLine:    '#2a2d33',
         labelColor:  '#9ba1ab',
         tooltipBg:   '#1a1d21',
-        tooltipText: '#fff'
+        tooltipText: '#e6f3ff'
       };
     }
     return {
@@ -153,7 +153,8 @@ scope.$watch('live', function (newlist) {
     restrict: 'A',
     scope: {
       boardData: '=',
-      range: '@'
+      range: '@',
+      experimental: '='
     },
     link: function (scope, element, attrs) {
       var chart = null;
@@ -162,12 +163,13 @@ scope.$watch('live', function (newlist) {
         return WINDOW_HOURS[r] ? r : 'hour';
       };
       var samplesInRange = function () {
-        if (!scope.boardData || !scope.boardData.samples) return [];
+        if (!scope.boardData) return [];
+        var samples = (scope.experimental ? scope.boardData.accepted_samples : scope.boardData.samples) || [];
         var hours = WINDOW_HOURS[rangeName()];
         var cutoff = (Math.floor(Date.now() / 1000) - hours * 3600);
         var out = [];
-        for (var i = 0; i < scope.boardData.samples.length; i++) {
-          var s = scope.boardData.samples[i];
+        for (var i = 0; i < samples.length; i++) {
+          var s = samples[i];
           if (s && s[0] >= cutoff) out.push([s[0] * 1000, s[1]]);
         }
         return out;
@@ -238,13 +240,17 @@ scope.$watch('live', function (newlist) {
           tooltip: {
             backgroundColor: t.tooltipBg,
             borderColor: t.line,
+            borderRadius: 4,
+            borderWidth: 1,
+            padding: 10,
             style: {color: t.tooltipText},
             formatter: function () {
               var v = this.y;
               var unit = ' MH/s';
               if (v >= 1000) { v = (v / 1000).toFixed(2); unit = ' GH/s'; }
               else { v = v.toFixed(0); }
-              return BlakestreamTZ.format(this.x, 'yyyy-MM-dd HH:mm') + '<br/><b>' + v + unit + '</b>';
+              return BlakestreamTZ.format(this.x, 'yyyy-MM-dd HH:mm') + '<br/>' +
+                (scope.experimental ? 'Accepted 15m: ' : 'Model: ') + '<b>' + v + unit + '</b>';
             }
           },
           plotOptions: {
@@ -264,6 +270,8 @@ scope.$watch('live', function (newlist) {
       };
 
       scope.$watch('boardData.samples', build);
+      scope.$watch('boardData.accepted_samples', build);
+      scope.$watch('experimental', rebuild);
       scope.$watch('boardData.range', build);
       scope.$on('bsTzChanged', function () { if (chart) build(); });
 
@@ -273,6 +281,66 @@ scope.$watch('live', function (newlist) {
       scope.$on('$destroy', function () {
         window.removeEventListener('bsThemeChanged', onThemeChanged);
         if (chart) { chart.destroy(); chart = null; }
+      });
+    }
+  };
+})
+
+// Auto-scroll a <pre> log pane to the bottom whenever its content changes,
+// unless the user has scrolled up (then we hold position so they can read).
+// Pass an expression that evaluates to true while polling is active; when
+// it goes false (paused), we stop forcing the scroll.
+.directive('bsAutoScroll', function () {
+  return {
+    restrict: 'A',
+    link: function (scope, element, attrs) {
+      var el = element[0];
+      var stickToBottom = true;
+      el.addEventListener('scroll', function () {
+        var atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 8;
+        stickToBottom = atBottom;
+      });
+      scope.$watch(function () { return el.textContent.length; }, function () {
+        var active = scope.$eval(attrs.bsAutoScroll);
+        if (active !== false && stickToBottom) {
+          el.scrollTop = el.scrollHeight;
+        }
+      });
+    }
+  };
+});
+
+// Angular 1.1.5 has no ngBlur directive.
+angular.module('Scripta.directives').directive('bsCommitOnBlur', function() {
+  return function(scope, element, attrs) {
+    var handler = function() {
+      scope.$apply(function() { scope.$eval(attrs.bsCommitOnBlur); });
+    };
+    element.on('blur', handler);
+    scope.$on('$destroy', function() { element.off('blur', handler); });
+  };
+});
+
+// bsRange: make <input type="range"> reliably two-way bind on drag under the
+// ancient AngularJS 1.1.5 (which has no native range-input handling). Updates
+// the model on every 'input' (live drag) and 'change' (release).
+angular.module('Scripta.directives').directive('bsRange', function() {
+  return {
+    restrict: 'A',
+    require: 'ngModel',
+    link: function(scope, element, attrs, ngModel) {
+      var safeApply = function(fn) {
+        var phase = scope.$root && scope.$root.$$phase;
+        if (scope.$$phase || phase) { fn(); } else { scope.$apply(fn); }
+      };
+      var handler = function() {
+        safeApply(function() { ngModel.$setViewValue(element.val()); });
+      };
+      element.on('input', handler);
+      element.on('change', handler);
+      scope.$on('$destroy', function() {
+        element.off('input', handler);
+        element.off('change', handler);
       });
     }
   };

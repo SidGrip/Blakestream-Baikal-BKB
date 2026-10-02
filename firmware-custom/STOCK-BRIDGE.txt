@@ -1,0 +1,8 @@
+# Vendor STM32F407VG stock bridge dump. Not stored in git and not downloaded
+# by QA. Supply the file with --dump or BKB_STOCK_DUMP. Identity checked before
+# any custom image is built. See firmware-dump/README.md.
+size=1048576
+md5=d5f844be2952fd713717a71a67e2be61
+sha256=bc19e0ff3b416a8aa21f47ae3b6f4e19c3c975ea7c1315718d28b10650532e7d
+reference_compiler=gcc-arm-none-eabi 13.2
+reference_v1_sha256=d2a1a66db73e8fb95cc482962b64011226ded70f107eb6301808aef65e076c8a

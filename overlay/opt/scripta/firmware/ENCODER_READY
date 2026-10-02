@@ -1,0 +1,14 @@
+# Validated-clock encoder and v1 coordinator readiness sentinel.
+#
+# Present once the accepted-work-validated sgminer clock table and bridge-global
+# coordinator are deployed:
+#   public 400 MHz candidate -> factory startup clock index 30.
+#   no other public MHz labels are enabled until hardware validation.
+#   global mode sends one SET_OPTION request with dest=1, then reads all three
+#   board echoes before marking the generation command-verified.
+#
+# Its presence is what unlocks the "Enable adjustable clocks — flash custom
+# firmware (v1)" action in Dev Tools. BOTH the PHP action
+# (firmware_flash_custom) and the root wrapper (bkb-firmware.sh flash-custom)
+# gate on this file, so the v1 flash is hard-blocked until its matching
+# coordinator ships alongside it. Removing this file re-blocks the enable-flash.

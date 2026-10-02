@@ -1,0 +1,5 @@
+# Keep narrow sudo/helper permissions valid after firmware extraction or
+# accidental metadata drift. The helper is silent unless it repairs something.
+# Initial setup runs through blakestream-system-perms.service before consumers.
+# Keep maintenance away from the five-minute alert / three-minute auth burst.
+4-59/15 * * * * root /opt/scripta/bin/repair-system-perms.sh

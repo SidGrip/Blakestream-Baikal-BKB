@@ -2,7 +2,7 @@
 <html lang="en" ng-app="Scripta">
 <head>
   <meta charset="utf-8">
-  <title>Blakestream-GaintB v2.1</title>
+  <title>Blakestream-GaintB v2.2</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="description" content="Blakestream miner controller">
   <meta name="author" content="Blakestream">
@@ -11,10 +11,11 @@
   <link href="css/font-awesome.min.css" rel="stylesheet">
   <link href="css/theme.css" rel="stylesheet">
   <link href="css/alertify.css" rel="stylesheet">
-  <link href="css/blakestream-dark.css" rel="stylesheet">
-  <script src="js/blakestream-theme.js"></script>
+    <link href="css/blakestream-dark.css?v=network-indicator-1" rel="stylesheet">
+  <script src="js/blakestream-theme.js?v=wifi-ui-1"></script>
 </head>
-<body ng-controller="CtrlMain">
+<body class="bs-dark" ng-controller="CtrlMain">
+  <script>window.BlakestreamTheme.init();</script>
   <header class="navbar navbar-static-top navbar-default scripta-trigger" role="banner">
     <div class="container">
       <div class="navbar-header">
@@ -71,7 +72,7 @@
           &nbsp;-&nbsp;
           Load {{100*status.pi.load|number:0}}
         </span>
-        <a href='http://www.lateralfactory.com/scripta/' target='_blank' rel='noopener noreferrer'>Scripta</a> by <a href='http://www.lateralfactory.com' target='_blank' rel='noopener noreferrer'>Lateral Factory</a>, modified by Baikal Miner, rebranded as <a href='https://github.com/SidGrip/Blakestream-Baikal-BKB' target='_blank' rel='noopener noreferrer'>Blakestream-GaintB v2.1</a> &mdash; GPLv3
+        <a href='http://www.lateralfactory.com/scripta/' target='_blank' rel='noopener noreferrer'>Scripta</a> by <a href='http://www.lateralfactory.com' target='_blank' rel='noopener noreferrer'>Lateral Factory</a>, modified by Baikal Miner, rebranded as <a href='https://github.com/SidGrip/Blakestream-Baikal-BKB' target='_blank' rel='noopener noreferrer'>Blakestream-GaintB v2.2</a> &mdash; GPLv3
       </p>
     </div>
   </footer>
@@ -81,9 +82,11 @@
   <script src="js/bootstrap.min.js"></script>
   <script src="js/angular.min.js"></script>
 
-  <script src="ng/app.js"></script>
+  <script src="ng/app.js?v=clock-display-2"></script>
   <script src="ng/services.js"></script>
-  <script src="ng/controllers.js"></script>
+  <script src="ng/controllers.js?v=clock-display-1"></script>
+  <script src="ng/network-settings.js?v=20260929-network-compact"></script>
+  <script src="ng/wifi-settings.js?v=wifi-ui-2"></script>
   <script src="ng/filters.js"></script>
   <script src="ng/directives.js"></script>
 </body>

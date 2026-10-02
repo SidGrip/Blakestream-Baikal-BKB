@@ -27,8 +27,79 @@ RUNTIME_CONF=/tmp/scripta-runtime-miner.conf
 BUILDER=/opt/scripta/bin/build-miner-runtime.py
 APPLIER=/opt/scripta/bin/apply-board-assignments.py
 LOCK=/var/run/blakestream-miner-restart.lock
+FW_OPERATION_LOCK=/run/blakestream/bkb-firmware.lock
+FW_OPERATION_PID=/run/blakestream/bkb-firmware.pid
+FW_OPERATION_MAX_AGE=1200
+SCRIPTA_CONF=/opt/scripta/etc/scripta.conf
+LOG_WRITER=/opt/scripta/bin/capped-log-writer.py
+SGMINER_LOG_MAX=${SGMINER_LOG_MAX:-4194304}
+SGMINER_LOG_KEEP=${SGMINER_LOG_KEEP:-2097152}
+
+# Logging is independent of Dev Tools visibility. Only an explicit SD choice
+# leaves RAM; absent or unreadable settings keep bounded RAM capture enabled.
+SGMINER_LOG_CONFIG_OK=0
+SGMINER_LOG_TARGET=$(/usr/bin/python -c "
+import json,sys
+valid=True
+try:
+  c=json.load(open('$SCRIPTA_CONF'))
+except Exception:
+  c={}
+  valid=False
+if not isinstance(c,dict):
+  c={}
+  valid=False
+target=c.get('userDevLogTarget')
+if target is not None and (not isinstance(target,(str,type(u''))) or target.upper() not in ('RAM','SD')):
+  valid=False
+target=target.upper() if isinstance(target,(str,type(u''))) else ''
+print('SD' if target=='SD' else 'RAM')
+sys.exit(0 if valid else 1)
+" 2>/dev/null) && SGMINER_LOG_CONFIG_OK=1
+case "$SGMINER_LOG_TARGET" in
+    SD)
+        SGMINER_LOG=/var/log/sgminer.log
+        ;;
+    *)
+        SGMINER_LOG_TARGET=RAM
+        SGMINER_LOG=/run/blakestream/sgminer.log
+        ;;
+esac
 
 log() { echo "$(date '+%Y-%m-%d %H:%M:%S') $*" | logger -t "$LOG_TAG"; echo "$*"; }
+
+firmware_operation_active() {
+    local pid now mtime age
+
+    [[ -f "$FW_OPERATION_LOCK" ]] || return 1
+    pid=$(head -n 1 "$FW_OPERATION_PID" 2>/dev/null | tr -dc '0-9')
+    if [[ -n "$pid" && -d "/proc/$pid" ]]; then
+        return 0
+    fi
+
+    now=$(date +%s)
+    mtime=$(stat -c '%Y' "$FW_OPERATION_LOCK" 2>/dev/null || echo 0)
+    age=$((now - mtime))
+    [[ "$age" -le "$FW_OPERATION_MAX_AGE" ]]
+}
+
+cleanup_legacy_log_tails() {
+    # Older dev builds launched sgminer through an orphanable tail -F wrapper:
+    #   bash -c tail -F /var/log/sgminer.log 2>&1
+    # The current launcher writes logs directly or through capped-log-writer.py,
+    # so an orphaned parent-owned tail is stale diagnostic noise.
+    local pid ppid args
+    while read -r pid ppid args; do
+        if [[ "$ppid" == "1" && "$args" == "bash -c tail -F /var/log/sgminer.log 2>&1" ]]; then
+            log "cleaning stale legacy sgminer log tail wrapper pid $pid"
+            pkill -TERM -P "$pid" -f '^tail -F /var/log/sgminer\.log$' 2>/dev/null || true
+            kill "$pid" 2>/dev/null || true
+        elif [[ "$ppid" == "1" && "$args" == "tail -F /var/log/sgminer.log" ]]; then
+            log "cleaning stale legacy sgminer log tail pid $pid"
+            kill "$pid" 2>/dev/null || true
+        fi
+    done < <(ps -eo pid,ppid,args --no-headers)
+}
 
 stop_sgminer() {
     for s in $(screen -ls 2>/dev/null | awk '/sgminer/ {print $1}'); do
@@ -36,6 +107,7 @@ stop_sgminer() {
     done
     sleep 1
     pkill -9 -f "$SGMINER " 2>/dev/null
+    cleanup_legacy_log_tails
 }
 
 fix_screen_dir() {
@@ -57,6 +129,61 @@ fix_screen_dir() {
     fi
 }
 
+protect_sgminer_oom() {
+    # The BK-B controller only has ~193 MiB RAM. Bursty diagnostics or PHP
+    # workers can trip the kernel lowmemorykiller, which otherwise treats
+    # sgminer like any other adj=0 process and may kill the miner first.
+    local pid
+    for pid in $(pgrep -f "^$SGMINER "; pgrep -f "^SCREEN -dmS sgminer" 2>/dev/null); do
+        if [[ -w "/proc/$pid/oom_score_adj" ]]; then
+            echo -900 > "/proc/$pid/oom_score_adj" 2>/dev/null || true
+        elif [[ -w "/proc/$pid/oom_adj" ]]; then
+            echo -16 > "/proc/$pid/oom_adj" 2>/dev/null || true
+        fi
+    done
+}
+
+api_command_ok() {
+    local port="$1"
+    /usr/bin/python - "$port" <<'PY'
+import json
+import socket
+import sys
+
+port = int(sys.argv[1])
+s = None
+try:
+    s = socket.socket()
+    s.settimeout(2)
+    s.connect(('127.0.0.1', port))
+    s.sendall(b'{"command":"version"}')
+    try:
+        s.shutdown(socket.SHUT_WR)
+    except socket.error:
+        pass
+    data = b''
+    while True:
+        chunk = s.recv(8192)
+        if not chunk:
+            break
+        data += chunk
+    text = data.decode('utf-8', 'replace').rstrip('\x00').strip()
+    parsed = json.loads(text)
+    status = parsed.get('STATUS') or []
+    if status and status[0].get('STATUS') in ('S', 'I'):
+        sys.exit(0)
+except Exception:
+    pass
+finally:
+    if s is not None:
+        try:
+            s.close()
+        except Exception:
+            pass
+sys.exit(1)
+PY
+}
+
 # Re-exec under flock if we don't already hold it. -n means non-blocking:
 # if another start/restart is already running, we exit immediately rather
 # than queue up (cron will fire us again in 30s anyway).
@@ -65,10 +192,51 @@ if [[ "${BS_LAUNCHER_LOCKED:-}" != "1" ]]; then
     exec flock -n "$LOCK" "$0" "$@" || exit 0
 fi
 
-# 1. Idempotent check — is sgminer already running?
-if pgrep -f "$SGMINER " >/dev/null 2>&1; then
-    # sgminer is running. Nothing to do.
+# Firmware reads and writes temporarily remove the STM32 USB bridge. Starting
+# sgminer during that interval makes board assignment fail and causes the cron
+# watchdog to enter a stop/start loop. Only dfu_flash.py's final restart may
+# bypass this guard, after it has returned the bridge to application mode.
+if [[ "${BS_FIRMWARE_RESTART:-}" != "1" ]] && firmware_operation_active; then
+    log "firmware operation active; miner start deferred"
     exit 0
+fi
+
+cleanup_legacy_log_tails
+
+# 1. Idempotent check — is sgminer already running?
+#    A wedged sgminer keeps its process alive while its API goes dead, which a
+#    plain pgrep can never catch — so a running instance must also answer an
+#    API probe. After 3 consecutive failed probes (~90s at the 30s cron
+#    cadence) the hung instance is killed and relaunched via the normal path
+#    below. The counter lives in tmpfs so a reboot clears it, and a young
+#    process (<60s) is never probed — its API may legitimately still be coming
+#    up.
+API_HANG_COUNT_FILE=/run/blakestream/miner-api-hang.count
+API_HANG_THRESHOLD=3
+API_HANG_MIN_UPTIME=60
+if pgrep -f "$SGMINER " >/dev/null 2>&1; then
+    protect_sgminer_oom
+    SG_PID=$(pgrep -f "$SGMINER " | head -1)
+    SG_UP=$(ps -o etimes= -p "$SG_PID" 2>/dev/null | tr -dc '0-9')
+    if [[ -z "$SG_UP" || "$SG_UP" -lt "$API_HANG_MIN_UPTIME" ]]; then
+        exit 0
+    fi
+    API_PORT=$(grep -o '"api-port"[^,}]*' "$RUNTIME_CONF" 2>/dev/null | head -1 | grep -o '[0-9]\+' || echo 4028)
+    if api_command_ok "$API_PORT"; then
+        rm -f "$API_HANG_COUNT_FILE" 2>/dev/null || true
+        exit 0
+    fi
+    FAILS=$(cat "$API_HANG_COUNT_FILE" 2>/dev/null | tr -dc '0-9')
+    FAILS=$(( ${FAILS:-0} + 1 ))
+    if [[ "$FAILS" -lt "$API_HANG_THRESHOLD" ]]; then
+        echo "$FAILS" > "$API_HANG_COUNT_FILE" 2>/dev/null || true
+        log "sgminer running but API probe failed ($FAILS/$API_HANG_THRESHOLD); restart after $API_HANG_THRESHOLD consecutive failures"
+        exit 0
+    fi
+    rm -f "$API_HANG_COUNT_FILE" 2>/dev/null || true
+    log "sgminer HUNG: process alive but API dead for $FAILS consecutive probes — killing and relaunching"
+    stop_sgminer
+    # fall through to the normal relaunch path below
 fi
 
 # 2. Reap any leftover empty screens
@@ -91,7 +259,33 @@ case $BUILD_RC in
     0)
         log "starting sgminer with runtime config: $SUMMARY"
         fix_screen_dir
-        screen -dmS sgminer "$SGMINER" -c "$RUNTIME_CONF" --api-listen
+        # A target change applies only when launching, never while the old
+        # process still has its log open during an ordinary watchdog check.
+        case "$SGMINER_LOG_TARGET" in
+            RAM) OLD_SGMINER_LOG=/var/log/sgminer.log ;;
+            SD)  OLD_SGMINER_LOG=/run/blakestream/sgminer.log ;;
+        esac
+        # Keep a bounded recent tail across destination changes. A config/read/
+        # write failure must not discard the previous diagnostic evidence.
+        if [[ "$SGMINER_LOG_CONFIG_OK" == "1" && -f "$OLD_SGMINER_LOG" ]]; then
+            if (set -o pipefail
+                tail -c "$SGMINER_LOG_KEEP" "$OLD_SGMINER_LOG" \
+                    | /usr/bin/python "$LOG_WRITER" "$SGMINER_LOG" "$SGMINER_LOG_MAX" "$SGMINER_LOG_KEEP"
+            ); then
+                rm -f "$OLD_SGMINER_LOG" 2>/dev/null || true
+            else
+                log "WARNING: could not move previous sgminer log; original retained"
+            fi
+        fi
+        mkdir -p "$(dirname "$SGMINER_LOG")" 2>/dev/null || true
+        chown root:www-data "$(dirname "$SGMINER_LOG")" 2>/dev/null || true
+        chmod 775 "$(dirname "$SGMINER_LOG")" 2>/dev/null || true
+        : >> "$SGMINER_LOG" || true
+        chown root:www-data "$SGMINER_LOG" 2>/dev/null || true
+        chmod 664 "$SGMINER_LOG" 2>/dev/null || true
+        printf "===== %s sgminer launch =====\n" "$(date '+%Y-%m-%d %H:%M:%S')" \
+            | /usr/bin/python "$LOG_WRITER" "$SGMINER_LOG" "$SGMINER_LOG_MAX" "$SGMINER_LOG_KEEP"
+        screen -dmS sgminer bash -c "'$SGMINER' --text-only -c '$RUNTIME_CONF' --api-listen 2>&1 | /usr/bin/python '$LOG_WRITER' '$SGMINER_LOG' '$SGMINER_LOG_MAX' '$SGMINER_LOG_KEEP'"
         ;;
     2)
         log "no boards assigned to any pool — sgminer not started (idle)"
@@ -111,12 +305,15 @@ API_PORT=$(grep -o '"api-port"[^,}]*' "$RUNTIME_CONF" 2>/dev/null | head -1 | gr
 api_ready=0
 for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
     sleep 1
-    if (echo > /dev/tcp/127.0.0.1/$API_PORT) 2>/dev/null; then
+    protect_sgminer_oom
+    if api_command_ok "$API_PORT"; then
         log "sgminer started OK (api ready on port $API_PORT after ${i}s)"
         api_ready=1
         break
     fi
 done
+
+protect_sgminer_oom
 
 # Apply per-board enable/disable based on board-assignments.json + temp-state.json
 # This is how 'idle' actually translates to a board not hashing - sgminer's

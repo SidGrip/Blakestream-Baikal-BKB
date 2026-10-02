@@ -1,0 +1,8 @@
+[Unit]
+Description=Apply a Blakestream Wi-Fi connection change
+After=NetworkManager.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /opt/scripta/bin/wifi-settings.py activate
+TimeoutStartSec=90

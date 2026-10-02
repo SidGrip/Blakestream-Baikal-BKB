@@ -1,0 +1,512 @@
+<h3>
+  Dev Tools
+  <small class="text-muted">runtime debugging surface</small>
+</h3>
+
+<ul class="nav nav-pills bs-dev-tabs">
+  <li ng-class="{active: devTab=='boards'}"><a ng-click="devTab='boards'">Boards</a></li>
+  <li ng-class="{active: devTab=='logs'}"><a ng-click="devTab='logs'">Logs</a></li>
+  <li ng-class="{active: devTab=='network'}"><a ng-click="devTab='network'">Network</a></li>
+  <li ng-class="{active: devTab=='api'}"><a ng-click="devTab='api'">API</a></li>
+  <li ng-class="{active: devTab=='firmware'}"><a ng-click="devTab='firmware'" class="bs-dev-tab-danger">Firmware</a></li>
+</ul>
+
+<div ng-switch="devTab" class="bs-dev-panel">
+
+  <!-- ============================== BOARDS ============================== -->
+  <div ng-switch-when="boards">
+    <div class="bs-activity-page">
+      <div class="bs-activity-bar">
+        <ul class="nav nav-pills bs-dev-tabs bs-activity-tabs">
+          <li ng-class="{active: devActivity.board==='all'}"><a ng-click="devActivity.board='all'">All</a></li>
+          <li ng-repeat="id in devActivityBoardIds" ng-class="{active: devActivity.board===id}"><a ng-click="devActivity.board=id">{{id}}</a></li>
+        </ul>
+        <ul class="nav nav-pills bs-dev-tabs bs-activity-tabs">
+          <li ng-class="{active: devActivity.mode==='totals'}"><a ng-click="devActivity.mode='totals'">Totals</a></li>
+          <li ng-class="{active: devActivity.mode==='deltas'}"><a ng-click="devActivity.mode='deltas'">Deltas</a></li>
+        </ul>
+        <button type="button" class="btn btn-default btn-sm bs-tip" data-tip="Refresh" aria-label="Refresh" ng-click="devActivityRefresh()">
+          <i class="fa" ng-class="{'fa-spinner fa-spin': devActivity.loading || devBoards.loading, 'fa-refresh': !devActivity.loading && !devBoards.loading}"></i>
+        </button>
+        <span class="bs-activity-state" ng-show="devActivity.state">{{devActivity.state}}</span>
+        <span class="bs-dev-meta text-danger" ng-show="devActivity.error">{{devActivity.error}}</span>
+        <span class="bs-dev-meta" ng-show="devActivity.updated">{{1000*devActivity.updated|bsTzDate:'HH:mm:ss':bsTzNonce}}</span>
+        <button type="button" class="btn btn-default btn-sm" ng-click="devMinerRestart()">Restart sgminer</button>
+      </div>
+
+      <div class="bs-activity-health">
+        <div class="bs-activity-bar">
+          <span class="bs-activity-k">Health</span>
+          <span class="bs-dev-meta text-danger" ng-show="devBoards.error">{{devBoards.error}}</span>
+          <span class="bs-dev-meta" ng-show="devBoards.updated">— {{1000*devBoards.updated|bsTzDate:'HH:mm:ss':bsTzNonce}}</span>
+        </div>
+        <div class="bs-activity-scroll">
+          <table class="table table-bordered table-hover bs-board-table" ng-show="devBoards.rows.length">
+            <thead><tr>
+              <th class="text-left">Board</th><th class="text-left">State</th><th>Temp</th><th>Fan</th>
+              <th>MHS 5s</th><th>MHS avg</th><th>Acc</th><th>Rej</th><th>HW</th><th>Last share</th><th>Action</th>
+            </tr></thead>
+            <tbody>
+              <tr ng-repeat="b in devBoards.rows" ng-show="devActivityShowBoard(b)" ng-class="{danger: b.temp>=80 || b.status=='Sick' || b.status=='Dead'}">
+                <td class="text-left">ASC {{b.id}}</td>
+                <td class="text-left" ng-class="{warning: !b.enabled}">{{b.enabled ? 'enabled' : 'disabled'}}<span ng-show="b.status"> · {{b.status}}</span></td>
+                <td ng-class="{warning: b.temp>=70, danger: b.temp>=80}">{{b.temp|number:0}}°C</td>
+                <td>{{b.fan===null ? '—' : b.fan + '%'}}</td>
+                <td>{{b.mhs5s|number:1}}</td>
+                <td>{{b.mhsav|number:1}}</td>
+                <td>{{b.accepted}}</td>
+                <td ng-class="{warning: b.rejected>0}">{{b.rejected}}</td>
+                <td ng-class="{warning: b.hw>0}">{{b.hw}}</td>
+                <td>{{b.last_share_age<0 ? 'never' : (b.last_share_age|duration)}}</td>
+                <td><button class="btn btn-default btn-xs" ng-click="devBoardSet(b, !b.enabled)">{{b.enabled ? 'Disable' : 'Enable'}}</button></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="help-block" ng-hide="devBoards.rows.length">No board data — sgminer API not reachable or no boards reporting.</p>
+      </div>
+
+      <div class="bs-activity-bar">
+        <span class="bs-activity-k">Trace</span>
+        <label class="bs-activity-check" ng-if="devActivity.trace.enabled===true || devActivity.trace.enabled===false">
+          <input type="checkbox" ng-checked="devActivity.trace.enabled===true" ng-click="devActivityTraceToggle($event)" ng-disabled="devActivityLocked()">
+          <span>{{devActivity.trace.enabled===true ? 'On' : 'Off'}}</span>
+        </label>
+        <ul class="nav nav-pills bs-dev-tabs bs-activity-tabs" ng-if="devActivity.trace.enabled!==true && devActivity.trace.enabled!==false">
+          <li ng-class="{disabled: devActivityLocked()}"><a ng-click="devActivityTrace('enable')">On</a></li>
+          <li ng-class="{disabled: devActivityLocked()}"><a ng-click="devActivityTrace('disable')">Off</a></li>
+        </ul>
+        <button type="button" class="btn btn-default btn-sm" ng-click="devActivityClear()" ng-disabled="devActivityLocked()">Clear</button>
+        <button type="button" class="btn btn-default btn-sm bs-tip" data-tip="Export" aria-label="Export" ng-click="devActivityExport()" ng-disabled="devActivityLocked()">
+          <i class="fa fa-download"></i>
+        </button>
+        <span><span class="bs-activity-k">live</span> {{devActivityNum(devActivity.trace.live)}}</span>
+        <span><span class="bs-activity-k">used</span> {{devActivityNum(devActivity.trace.used)}}</span>
+        <span><span class="bs-activity-k">capacity</span> {{devActivityNum(devActivity.trace.capacity)}}</span>
+        <span><span class="bs-activity-k">overwritten</span> {{devActivityNum(devActivity.trace.overwritten)}}</span>
+        <span><span class="bs-activity-k">dropped</span> {{devActivityNum(devActivity.trace.dropped)}}</span>
+        <span><span class="bs-activity-k">recorded</span> {{devActivityNum(devActivity.trace.recorded)}}</span>
+        <span ng-show="devActivity.trace.export">{{devActivity.trace.export}}</span>
+      </div>
+
+      <p class="bs-activity-legend">Locally valid nonces / local errors · not pool-accepted</p>
+
+      <div class="bs-activity-board" ng-repeat="b in devActivity.boards track by b.id" ng-show="devActivityShowBoard(b)">
+        <div class="bs-activity-title bs-activity-board-heading">
+          <span>Board {{b.id}}</span>
+          <button type="button" class="btn btn-default btn-xs bs-board-replaced" ng-disabled="devMeasuredBusy || !devActivity.csrf" ng-click="devMeasuredResetBoard(b.id)" aria-label="Board {{b.id}} replaced"><i class="fa fa-refresh" aria-hidden="true"></i> Board replaced</button>
+        </div>
+        <div class="bs-activity-facts">
+          <span><span class="bs-activity-k">Chip Count</span> {{devActivityNum(b.asic_count)}}</span>
+          <span><span class="bs-activity-k">Startup success</span> {{devActivityNum(b.asic_count_r)}}</span>
+          <span><span class="bs-activity-k">ASIC version</span> {{devActivityNum(b.asic_ver)}}</span>
+          <span><span class="bs-activity-k">Requested clock</span> {{devActivityNum(b.requested_clock)}}</span>
+          <span><span class="bs-activity-k">Attempted Index</span> {{devActivityNum(b.attempted_clock_index)}}</span>
+          <span><span class="bs-activity-k">Last ACK</span> {{devActivityNum(b.last_ack)}}</span>
+          <span><span class="bs-activity-k">Bridge Status Echo</span> {{devActivityNum(b.bridge_status_echo)}}</span>
+          <span><span class="bs-activity-k">Bridge Status Echo code</span> {{devActivityNum(b.bridge_status_echo_code)}}</span>
+          <span><span class="bs-activity-k">Command verified</span> {{devActivityYn(b.command_verified)}}</span>
+          <span><span class="bs-activity-k">Last info</span> {{devActivityYn(b.last_info_ok)}}</span>
+          <span><span class="bs-activity-k">Last result</span> {{devActivityYn(b.last_result_ok)}}</span>
+        </div>
+        <div class="bs-activity-scroll">
+          <table class="bs-activity-grid">
+            <thead>
+              <tr>
+                <th></th>
+                <th ng-repeat="c in devActivityChips track by c">{{c}}</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr ng-repeat="u in devActivityUnits track by u">
+                <th>{{u}}</th>
+                <td ng-repeat="c in devActivityChips track by c">
+                  <div class="bs-activity-nonce">{{devActivityCell(b, 'nonce', u, c)}}</div>
+                  <div class="bs-activity-err">{{devActivityCell(b, 'error', u, c)}}</div>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="bs-activity-group">
+          <div class="bs-activity-k">Results</div>
+          <div class="bs-activity-facts">
+            <span><span class="bs-activity-k">Unattributed IDs</span> {{devActivityCounter(b, 'discard', 'invalid_id')}}</span>
+            <span><span class="bs-activity-k">Invalid work idx</span> {{devActivityCounter(b, 'discard', 'invalid_workidx')}}</span>
+            <span><span class="bs-activity-k">Missing work</span> {{devActivityCounter(b, 'discard', 'missing_work')}}</span>
+            <span><span class="bs-activity-k">Algo mismatch</span> {{devActivityCounter(b, 'discard', 'algo_mismatch')}}</span>
+            <span><span class="bs-activity-k">Short reply</span> {{devActivityCounter(b, 'discard', 'short_reply')}}</span>
+            <span><span class="bs-activity-k">Reply mismatch</span> {{devActivityCounter(b, 'discard', 'reply_mismatch')}}</span>
+          </div>
+        </div>
+        <div class="bs-activity-group">
+          <div class="bs-activity-k">Timing</div>
+          <div class="bs-activity-facts">
+            <span><span class="bs-activity-k">Work wait sum</span> {{devActivityTiming(b, 'work_wait_us_sum')}}</span>
+            <span><span class="bs-activity-k">Work wait max (lifetime)</span> {{devActivityTiming(b, 'work_wait_us_max')}}</span>
+            <span><span class="bs-activity-k">Work wait count</span> {{devActivityTiming(b, 'work_wait_count')}}</span>
+            <span><span class="bs-activity-k">Request to ACK sum</span> {{devActivityTiming(b, 'request_to_ack_us_sum')}}</span>
+            <span><span class="bs-activity-k">Request to ACK max (lifetime)</span> {{devActivityTiming(b, 'request_to_ack_us_max')}}</span>
+            <span><span class="bs-activity-k">Request to ACK count</span> {{devActivityTiming(b, 'request_to_ack_count')}}</span>
+            <span><span class="bs-activity-k">ACK latency sum</span> {{devActivityTiming(b, 'ack_latency_us_sum')}}</span>
+            <span><span class="bs-activity-k">ACK latency max (lifetime)</span> {{devActivityTiming(b, 'ack_latency_us_max')}}</span>
+            <span><span class="bs-activity-k">ACK latency count</span> {{devActivityTiming(b, 'ack_latency_count')}}</span>
+            <span><span class="bs-activity-k">Poll gap max (lifetime)</span> {{devActivityTiming(b, 'poll_gap_us_max')}}</span>
+            <span><span class="bs-activity-k">Poll gap last</span> {{devActivityTiming(b, 'poll_gap_us_last')}}</span>
+            <span><span class="bs-activity-k">Uptime</span> {{devActivityTiming(b, 'uptime_us')}}</span>
+          </div>
+        </div>
+        <div class="bs-activity-group">
+          <div class="bs-activity-k">Work</div>
+          <div class="bs-activity-facts">
+            <span><span class="bs-activity-k">Requests</span> {{devActivityCounter(b, 'work', 'requests')}}</span>
+            <span><span class="bs-activity-k">Sends</span> {{devActivityCounter(b, 'work', 'sends')}}</span>
+            <span><span class="bs-activity-k">Skip overheat</span> {{devActivityCounter(b, 'work', 'skip_overheat')}}</span>
+            <span><span class="bs-activity-k">Skip no target</span> {{devActivityCounter(b, 'work', 'skip_no_target')}}</span>
+            <span><span class="bs-activity-k">Skip disabled</span> {{devActivityCounter(b, 'work', 'skip_disabled')}}</span>
+            <span><span class="bs-activity-k">Skip empty</span> {{devActivityCounter(b, 'work', 'skip_empty')}}</span>
+          </div>
+        </div>
+        <div class="bs-activity-group">
+          <div class="bs-activity-k">USB</div>
+          <div class="bs-activity-facts">
+            <span><span class="bs-activity-k">TX errors</span> {{devActivityCounter(b, 'usb', 'tx_error')}}</span>
+            <span><span class="bs-activity-k">RX errors</span> {{devActivityCounter(b, 'usb', 'rx_error')}}</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============================== LOGS ============================== -->
+  <div ng-switch-when="logs">
+    <!-- Storage / disk-usage: what is wearing the SD card -->
+    <div class="bs-dev-storage">
+      <div class="bs-storage-head">
+        <strong>Storage</strong>
+        <button class="btn btn-default btn-xs" ng-click="devLogsRefresh()" ng-disabled="devStorage.loading || devRecordersLoading || devRecorderRunning">
+          {{devStorage.loading ? 'Reading…' : 'Refresh'}}
+        </button>
+        <span class="bs-dev-meta" ng-show="devStorage.updated">— {{1000*devStorage.updated|bsTzDate:'HH:mm:ss':bsTzNonce}}</span>
+        <span class="bs-dev-meta text-danger" ng-show="devStorage.error">{{devStorage.error}}</span>
+      </div>
+
+      <div class="bs-storage-df-row">
+        <div class="bs-storage-df" ng-class="devDfClass(devStorage.ram_df)">
+          <div class="bs-storage-df-label">RAM (tmpfs)
+            <span ng-show="devStorage.ram_df">{{bsHumanBytes(devStorage.ram_df.used)}} / {{bsHumanBytes(devStorage.ram_df.total)}} ({{devStorage.ram_df.pct}}%)</span>
+          </div>
+          <div class="bs-storage-bar"><div class="bs-storage-bar-fill" ng-style="{width: (devStorage.ram_df.pct||0)+'%'}"></div></div>
+          <div class="bs-storage-sub">our files in RAM: {{bsHumanBytes(devStorage.ram_total)}}</div>
+        </div>
+        <div class="bs-storage-df" ng-class="devDfClass(devStorage.sd_df)">
+          <div class="bs-storage-df-label">SD card
+            <span ng-show="devStorage.sd_df">{{bsHumanBytes(devStorage.sd_df.used)}} / {{bsHumanBytes(devStorage.sd_df.total)}} ({{devStorage.sd_df.pct}}%)</span>
+          </div>
+          <div class="bs-storage-bar"><div class="bs-storage-bar-fill" ng-style="{width: (devStorage.sd_df.pct||0)+'%'}"></div></div>
+          <div class="bs-storage-sub">our files on SD: {{bsHumanBytes(devStorage.sd_total)}} — adds card wear</div>
+        </div>
+      </div>
+
+      <div class="bs-storage-toolbar">
+        <div class="bs-storage-actions">
+        <button class="btn btn-default btn-sm" ng-click="devSnapshot()" ng-disabled="devSnap.loading">
+          <i class="fa" ng-class="devSnap.loading ? 'fa-spinner fa-spin' : 'fa-camera'" aria-hidden="true"></i> Collect state now
+        </button>
+        <a class="btn btn-default btn-sm" href="f_dev.php?action=diagnostics_zip">
+          <i class="fa fa-download" aria-hidden="true"></i> Download diagnostics
+        </a>
+        </div>
+        <p class="bs-recorder-warning" role="status" ng-if="devRecorderWarning()"
+           ng-class="devRecorderWaitingOnly() ? 'text-muted' : 'text-warning'">
+          <i class="fa" ng-class="devRecorderWaitingOnly() ? 'fa-clock-o' : 'fa-exclamation-triangle'" aria-hidden="true"></i> {{devRecorderWarning()}}
+        </p>
+      </div>
+      <div class="bs-storage-tables table-responsive">
+        <table class="table table-bordered table-hover bs-storage-unified">
+          <colgroup><col class="bs-storage-save-col"><col class="bs-storage-file-col"><col class="bs-storage-location-col"><col class="bs-storage-location-col"></colgroup>
+          <thead><tr>
+            <th>Save to</th>
+            <th class="text-left">File</th>
+            <th class="text-left">RAM <small>/run/blakestream</small><a class="bs-storage-clearall" ng-click="devStorageClearAll('RAM')">Clear All</a></th>
+            <th class="text-left">SD card <small>/opt/scripta/var, /var/log</small><a class="bs-storage-clearall" ng-click="devStorageClearAll('SD')">Clear All</a></th>
+          </tr></thead>
+          <tbody>
+            <tr ng-repeat="row in devStorage.unified" ng-class="{'warning': row.sd && row.sd.size > 10485760}">
+              <td>
+                <select ng-show="row.target_key" class="bs-storage-target" ng-model="row.target" ng-change="devStorageSetTarget(row)" ng-disabled="row.saving || (devMeasuredBusy && row.target_key === 'measured-rates')">
+                  <option value="RAM">RAM</option>
+                  <option value="SD">SD</option>
+                </select>
+                <span ng-hide="row.target_key" class="bs-storage-fixed">{{row.ram &amp;&amp; row.ram.present ? 'RAM' : (row.sd &amp;&amp; row.sd.present ? 'SD' : '—')}}</span>
+              </td>
+              <td class="text-left"><code>{{devStorageDisplayName(row.name)}}</code></td>
+              <td class="text-left">
+                <span ng-show="row.ram &amp;&amp; row.ram.present">{{bsHumanBytes(row.ram.size)}} · {{row.ram.age_sec|duration}}
+                  <span class="bs-storage-grow" ng-show="row.ram.grew">+{{bsHumanBytes(row.ram.grew)}}</span>
+                  <span class="bs-storage-cap" ng-show="row.ram.cap_bytes">{{devCapPct(row.ram)}}% cap</span>
+                  <a class="bs-storage-act" ng-show="row.ram.size > 0" ng-click="devStorageView(row.ram)">view</a>
+                  <a class="bs-storage-act bs-storage-clear" ng-show="row.ram.clearable &amp;&amp; row.ram.size > 0" ng-click="devStorageClear(row.ram)">clear</a>
+                </span>
+                <span ng-hide="row.ram &amp;&amp; row.ram.present" class="text-muted">—</span>
+              </td>
+              <td class="text-left">
+                <span ng-show="row.sd &amp;&amp; row.sd.present">{{bsHumanBytes(row.sd.size)}} · {{row.sd.age_sec|duration}}
+                  <span class="bs-storage-grow" ng-show="row.sd.grew">+{{bsHumanBytes(row.sd.grew)}}</span>
+                  <span class="bs-storage-cap" ng-show="row.sd.cap_bytes">{{devCapPct(row.sd)}}% cap</span>
+                  <a class="bs-storage-act" ng-show="row.sd.size > 0" ng-click="devStorageView(row.sd)">view</a>
+                  <a class="bs-storage-act bs-storage-clear" ng-show="row.sd.clearable &amp;&amp; row.sd.size > 0" ng-click="devStorageClear(row.sd)">clear</a>
+                </span>
+                <span ng-hide="row.sd &amp;&amp; row.sd.present" class="text-muted">—</span>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="help-block">Files in <strong>RAM</strong> (tmpfs) cost no SD-card wear but clear on reboot; files on the <strong>SD card</strong> survive reboot but every write ages the card. Rows over 10&nbsp;MiB on SD are highlighted.</p>
+      <div class="bs-measured-band" ng-if="devMeasuredVisible">
+        <div class="bs-dev-controls">
+          <strong>Measured Rates</strong>
+          <span>{{devMeasured.target || 'Unavailable'}}</span>
+          <span ng-if="devMeasured.last_saved">Written {{1000*devMeasured.last_saved|bsTzDate:'MMM d HH:mm:ss':bsTzNonce}}</span>
+          <span ng-if="devMeasured.unsaved" class="text-warning">{{devMeasured.pending_intervals || 0}} buffered intervals</span>
+          <span title="Save buffered measurements to the selected RAM or SD storage now.">
+            <button class="btn btn-default btn-sm" aria-label="Write buffer: save buffered measurements to the selected RAM or SD storage now" ng-disabled="devMeasuredBusy || !devMeasured.unsaved" ng-click="devMeasuredUpdate('flush')"><i class="fa fa-save" aria-hidden="true"></i> Write buffer</button>
+          </span>
+          <button class="btn btn-default btn-sm" ng-disabled="devMeasuredBusy" ng-click="devMeasuredClear()"><i class="fa fa-trash" aria-hidden="true"></i> Clear All Data</button>
+          <a class="btn btn-default btn-sm" ng-href="{{devMeasuredDownload('readable')}}"><i class="fa fa-download" aria-hidden="true"></i> Download report</a>
+          <a class="btn btn-default btn-sm" ng-href="{{devMeasuredDownload('json')}}"><i class="fa fa-download" aria-hidden="true"></i> JSON</a>
+        </div>
+        <p class="text-danger" role="alert" ng-if="devMeasured.error">{{devMeasured.error}}</p>
+        <div ng-if="devMeasuredVisible">
+          <div class="bs-history-scroll bs-measured-scroll" tabindex="0" role="region" aria-label="Measured rate history">
+            <table class="table table-bordered bs-history-table bs-measured-table">
+              <thead><tr><th><span class="bs-measured-board-filter">Board <select class="bs-dev-header-select" ng-model="devMeasuredFilter.board" aria-label="Filter measured rates by board"><option value="all">All</option><option value="0">0</option><option value="1">1</option><option value="2">2</option></select></span></th><th>Index</th><th>Chips</th><th>Observed</th><th>Accepted Rate</th><th>Shares</th><th>Rejects</th><th>HW</th><th>Temp</th><th>Last Seen</th></tr></thead>
+              <tbody><tr ng-repeat="c in devMeasuredRows() | orderBy:'-last' track by c.context_id">
+                <td>{{c.context.board}}</td><td>{{c.context.index}}</td><td>{{c.context.startup}}/{{c.context.total}}</td>
+                <td>{{c.seconds|duration}}</td><td>{{c.difficulty*4.294967296/c.seconds|number:2}} GH/s<small class="bs-rate-source">{{c.fixed32 &amp;&amp; c.seconds &gt;= 21600 &amp;&amp; c.accepted &gt;= 10000 ? 'Your history' : 'Early history'}}</small></td>
+                <td>{{c.accepted}}</td><td>{{c.rejected}}</td><td>{{c.hw}}</td><td>{{c.temp_min|number:1}} / {{c.temp_max|number:1}} C</td><td>{{1000*c.last|bsTzDate:'MMM d HH:mm':bsTzNonce}}</td>
+              </tr><tr ng-if="!devMeasuredRows().length"><td colspan="10">No measured history{{devMeasuredFilter.board === 'all' ? '' : ' for Board ' + devMeasuredFilter.board}}</td></tr></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div ng-if="!devMeasuredVisible" class="bs-log-viewer">
+    <hr class="bs-dev-sep">
+
+    <div class="bs-dev-controls" ng-if="devLog.mode !== 'log'">
+      <strong>{{devLog.mode === 'snapshot' ? 'State snapshot' : devLog.status}}</strong>
+      <button class="btn btn-default btn-xs" ng-if="devLog.mode === 'snapshot' &amp;&amp; !devSnap.loading &amp;&amp; devSnap.text" ng-click="devSnapshotCopy()">
+        <i class="fa fa-copy" aria-hidden="true"></i> Copy
+      </button>
+    </div>
+    <div class="bs-dev-controls" ng-if="devLog.mode === 'log'">
+      <label>Source
+        <select ng-model="devLog.source" ng-change="devLogReset()"
+                ng-options="opt.id as opt.label for opt in devLogSourceList"></select>
+      </label>
+      <label class="bs-dev-filter">Filter
+        <input type="text" ng-model="devLog.filter" placeholder="grep substring (case-insensitive)">
+      </label>
+      <button class="btn btn-default btn-sm" ng-click="devLog.paused = !devLog.paused">
+        {{devLog.paused ? 'Resume' : 'Pause'}}
+      </button>
+      <div class="btn-group bs-log-format" ng-if="devLogIsClock()" role="group" aria-label="Clock log format">
+        <button class="btn btn-default btn-sm" ng-class="{active: devLog.format === 'readable'}"
+                ng-attr-aria-pressed="{{devLog.format === 'readable'}}" ng-click="devLogSetFormat('readable')">Readable</button>
+        <button class="btn btn-default btn-sm" ng-class="{active: devLog.format === 'raw'}"
+                ng-attr-aria-pressed="{{devLog.format === 'raw'}}" ng-click="devLogSetFormat('raw')">Raw JSON</button>
+      </div>
+      <a class="btn btn-default btn-sm" ng-if="devLogIsClock()" ng-href="{{devLogFileDownload()}}">
+        <i class="fa fa-download" aria-hidden="true"></i> Download JSON
+      </a>
+      <button class="btn btn-default btn-sm" ng-show="devLogCanClear()" ng-click="devLogClearSource()">{{devLogClearLabel()}}</button>
+      <button class="btn btn-default btn-sm" ng-show="devLogIsPruneOnly()" ng-click="devLogPrune()">Prune (keep 7 days)</button>
+      <a class="btn btn-default btn-sm" target="_blank" ng-hide="devLog.source.indexOf('path:')==0"
+         ng-href="f_dev.php?action=log_download&amp;source={{devLog.source}}&amp;target={{devLogTargetForSource()}}">Download Logs</a>
+      <span class="bs-dev-meta" ng-show="devLog.status">{{devLog.status}}</span>
+    </div>
+    <pre class="bs-dev-log-pane bs-dev-log-lines" bs-auto-scroll="devLog.mode === 'log' &amp;&amp; !devLog.paused">{{devLog.text}}</pre>
+    <p class="help-block" ng-show="devLog.mode === 'log' &amp;&amp; devLog.source==='sgminer'">
+      Sgminer log destination only takes effect on next miner restart.
+      RAM and SD logs are capped at {{devLogRamCap}} each.
+    </p>
+    </div>
+
+  </div>
+
+  <!-- ============================== NETWORK ============================== -->
+  <div ng-switch-when="network">
+    <p>
+      <button class="btn btn-default btn-sm" ng-click="devProbeRun()" ng-disabled="devProbeRunning">
+        <i class="fa fa-spinner fa-spin" ng-show="devProbeRunning"></i> {{devProbeRunning ? 'Probing…' : 'Probe all pools'}}
+      </button>
+      <span class="bs-dev-meta" ng-show="devProbeUpdated">
+        — last run {{devProbeUpdated|bsTzDate:'HH:mm:ss':bsTzNonce}}
+      </span>
+    </p>
+    <div class="table-responsive bs-probe-table" ng-show="devProbeResults.length">
+    <table class="table table-bordered table-right table-hover">
+      <thead>
+        <tr>
+          <th class="text-left">Pools</th>
+          <th class="text-left">Host</th>
+          <th>Port</th>
+          <th>TCP</th>
+          <th>ICMP</th>
+          <th>Min (ms)</th>
+          <th>Avg (ms)</th>
+          <th>Max (ms)</th>
+          <th>Jitter (ms)</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr ng-repeat="r in devProbeResults track by r.key">
+          <td class="text-left"><div ng-repeat="name in r.names track by $index">{{name}}</div></td>
+          <td class="text-left">{{r.host}}</td>
+          <td>{{r.port}}</td>
+          <td colspan="6" class="bs-probe-loading" ng-if="r.probing">
+            <i class="fa fa-spinner fa-spin"></i> probing {{r.host}}&hellip;
+          </td>
+          <td class="bs-probe-flip" ng-if="!r.probing" ng-class="{success: r.tcp.ok, danger: r.tcp && !r.tcp.ok}">{{r.tcp.ok ? 'OK' : r.tcp.error}}</td>
+          <td class="bs-probe-flip" ng-if="!r.probing" ng-class="{success: r.icmp.ok, warning: r.icmp.blocked}">{{r.icmp.ok ? ('OK ' + (r.icmp.avg|number:0) + ' ms') : (r.icmp.blocked ? 'blocked' : 'n/a')}}</td>
+          <td class="bs-probe-flip" ng-if="!r.probing">{{r.latency.count ? (r.latency.min|number:1) : 'n/a'}}</td>
+          <td class="bs-probe-flip" ng-if="!r.probing">{{r.latency.count ? (r.latency.avg|number:1) : 'n/a'}}</td>
+          <td class="bs-probe-flip" ng-if="!r.probing">{{r.latency.count ? (r.latency.max|number:1) : 'n/a'}}</td>
+          <td class="bs-probe-flip" ng-if="!r.probing" ng-class="{warning: r.latency.count && r.latency.jitter > 20, danger: r.latency.count && r.latency.jitter > 50}">{{r.latency.count ? (r.latency.jitter|number:1) : 'n/a'}}</td>
+        </tr>
+      </tbody>
+    </table>
+    </div>
+    <p class="help-block">
+      <em>Min/Avg/Max/Jitter</em> are the round-trip latency of a TCP connect to
+      the stratum port (the latency that actually matters for mining), in ms.
+      <em>TCP</em> shows whether that port is reachable. <em>ICMP</em> is a plain
+      ping; <em>blocked</em> means the pool answers stratum TCP but not ICMP.
+    </p>
+  </div>
+
+  <!-- ============================== API CONSOLE ============================== -->
+  <div ng-switch-when="api">
+    <form ng-submit="devApiRun()" class="bs-dev-api-form">
+      <label>Command
+        <select ng-model="devApi.command" ng-options="c for c in devApiCommonCommands"></select>
+      </label>
+      <label ng-show="devApi.command=='(other)'">Raw command
+        <input type="text" ng-model="devApi.customCommand" placeholder="e.g. lockstats">
+      </label>
+      <label>Parameter
+        <input type="text" ng-model="devApi.parameter" placeholder="(optional)">
+      </label>
+      <button type="submit" class="btn btn-default btn-sm" ng-disabled="!devApi.command">Run</button>
+      <span class="bs-dev-meta" ng-show="devApi.updated">
+        last response {{devApi.updated|bsTzDate:'HH:mm:ss':bsTzNonce}}
+      </span>
+    </form>
+    <p class="help-block">
+      Read-only: <code>summary</code>, <code>stats</code>, <code>coin</code>, <code>pools</code>, <code>devs</code>, <code>devdetails</code>, <code>config</code>, <code>notify</code>, <code>version</code>.
+      Control: <code>ascenable</code>/<code>ascdisable</code>/<code>ascidentify</code> (board no.), <code>enablepool</code>/<code>disablepool</code>/<code>switchpool</code> (pool no.), <code>poolpriority</code> (e.g. <code>0,2,1</code>), <code>quota</code>.
+      Put the bit after <code>|</code> in <strong>Parameter</strong> (e.g. command=<code>disablepool</code>, parameter=<code>0</code>). <code>(other)</code> sends any sgminer verb you type. Disruptive commands confirm first.
+    </p>
+    <p>
+      <button type="button" class="btn btn-default btn-xs" ng-click="devApiCopy()" ng-show="devApi.response">Copy</button>
+    </p>
+    <pre class="bs-dev-log-pane">{{devApi.response}}</pre>
+    <div ng-show="devApi.history.length">
+      <strong>Recent:</strong>
+      <ul class="list-inline">
+        <li ng-repeat="h in devApi.history">
+          <a class="bs-dev-history-link" ng-click="devApi.command=h.command; devApi.parameter=h.parameter">
+            {{h.command}}{{h.parameter ? '|'+h.parameter : ''}}
+          </a>
+        </li>
+      </ul>
+    </div>
+  </div>
+
+  <!-- ============================== FIRMWARE ============================== -->
+  <div ng-switch-when="firmware">
+    <div class="bs-fw-card">
+      <div class="bs-fw-identity">
+        <span class="bs-fw-badge"
+              ng-show="devFirmware.status.last_identity"
+              ng-class="{'bs-fw-stock': devFirmware.status.last_identity.identity=='STOCK', 'bs-fw-unknown': devFirmware.status.last_identity.identity=='UNKNOWN', 'bs-fw-custom': devFirmware.status.custom_active || devFirmware.status.custom_legacy}">
+          {{devFirmware.status.last_identity.identity}}
+        </span>
+        <span class="text-muted" ng-hide="devFirmware.status.last_identity">bridge-chip firmware unknown — click Verify</span>
+        <span class="bs-dev-meta" ng-show="devFirmware.status.last_identity">
+          md5 {{devFirmware.status.last_identity.chip_md5}} · read {{1000*devFirmware.status.last_identity.at|bsTzDate:'HH:mm:ss':bsTzNonce}}
+        </span>
+        <button class="btn btn-default btn-sm" ng-click="devFirmwareVerify()" ng-disabled="devFwBusy()">
+          {{devFirmware.verifying ? 'Reading chip…' : 'Verify chip'}}
+        </button>
+      </div>
+      <p class="help-block">
+        Enabling adjustable clocks is a <strong>one-time flash</strong> of the V1 firmware (below); after that the everyday <strong>Adjustable Clocks</strong> toggle and clock changes are software-only — no further flashing.<br>
+        Restoring stock firmware is the explicit flash that removes the capability.<br>
+        Writes touch only the chip's application area (never the ROM bootloader), take a pre-flash backup, and read-back-verify — reversible.
+      </p>
+    </div>
+
+    <div class="bs-fw-terminal" ng-show="devFwBusy()">
+      <div class="bs-fw-terminal-head">
+        <i class="fa fa-spinner fa-spin"></i> DFU in progress — {{devFwProgress.elapsed}}s elapsed · mining paused, do not power off
+      </div>
+      <div class="bs-fw-terminal-timing">{{devFirmwareTimingText()}}</div>
+      <pre class="bs-fw-terminal-body">{{devFwProgress.text || 'starting DFU…'}}</pre>
+    </div>
+    <div class="bs-fw-power-warning" ng-show="devFwBusy()">DO NOT POWER OFF</div>
+
+    <h4>Preflight</h4>
+    <table class="table table-bordered bs-fw-checks">
+      <tbody>
+        <tr ng-repeat="c in devFirmware.status.checks">
+          <td class="text-left">{{c.name}}</td>
+          <td class="text-left" ng-class="{'text-success': c.ok, 'text-danger': !c.ok}">{{c.ok ? 'OK' : 'FAIL'}} — {{c.detail}}</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <div class="bs-fw-write bs-fw-revert" ng-hide="devFirmware.status.last_identity.identity=='STOCK'">
+      <h4>Revert controller chip to stock firmware</h4>
+      <p class="help-block">1. dry run (validates the staged stock image, writes nothing) · 2. type <code>REVERT</code> · 3. flash stock firmware. Estimated total: {{devFirmwareRuntimeLabel('revert')}}, including backup, write, readback and restart. Timing updates after a successful run on this miner.</p>
+      <p>
+        <button class="btn btn-default btn-sm" ng-click="devFirmwareDryRun()" ng-disabled="!devFirmware.status.ready || devFwBusy()">1. Dry run</button>
+        <span class="text-success" ng-show="devFirmware.dryOk"> ✓ {{devFirmware.dryMsg}}</span>
+      </p>
+      <p ng-show="devFirmware.dryOk">
+        2. <input type="text" ng-model="devFirmware.confirmText" placeholder="type REVERT" class="bs-fw-confirm">
+        <button class="btn btn-danger btn-sm" ng-click="devFirmwareRevert()"
+                ng-disabled="devFirmware.confirmText!='REVERT' || devFwBusy()">
+          {{devFirmware.reverting ? 'Flashing…' : '3. Flash stock now'}}
+        </button>
+      </p>
+      <span class="text-danger" ng-show="devFirmware.error">{{devFirmware.error}}</span>
+      <pre class="bs-dev-log-pane" ng-show="devFirmware.output">{{devFirmware.output}}</pre>
+    </div>
+
+    <div class="bs-fw-write bs-fw-enable" ng-hide="devFirmware.status.custom_active">
+      <h4>{{devFirmware.status.custom_legacy ? 'Upgrade adjustable-clock firmware to V1' : 'Enable adjustable clocks — flash custom firmware (V1)'}}</h4>
+      <div class="bs-fw-blocked" ng-hide="devFirmware.status.encoder_ready">
+        <i class="fa fa-ban"></i> <strong>Blocked:</strong> the validated sgminer clock mapping and bridge-global coordinator are not deployed yet. Flashing V1 now would mis-drive the clocks. Deploy the matching binary and this unlocks — you can still dry-run to validate the staged image.
+      </div>
+      <p class="help-block">1. dry run (validates the staged V1 image, writes nothing) · 2. type <code>ENABLE</code> · 3. flash custom firmware. Estimated total: {{devFirmwareRuntimeLabel('flash-custom')}}, including backup, write, readback and restart. Timing updates after a successful run on this miner. After this the Adjustable Clocks toggle and clock changes are software-only — no further flashing.</p>
+      <p>
+        <button class="btn btn-default btn-sm" ng-click="devFirmwareDryRunCustom()" ng-disabled="!devFirmware.status.custom_present || devFwBusy()">1. Dry run</button>
+        <span class="text-success" ng-show="devFirmware.dryCustomOk"> ✓ {{devFirmware.dryCustomMsg}}</span>
+      </p>
+      <p ng-show="devFirmware.dryCustomOk">
+        2. <input type="text" ng-model="devFirmware.enableText" placeholder="type ENABLE" class="bs-fw-confirm">
+        <button class="btn btn-primary btn-sm" ng-click="devFirmwareFlashCustom()"
+                ng-disabled="devFirmware.enableText!='ENABLE' || devFwBusy() || !devFirmware.status.encoder_ready">
+          {{devFirmware.flashingCustom ? 'Flashing…' : '3. Flash V1 now'}}
+        </button>
+      </p>
+      <span class="text-danger" ng-show="devFirmware.enableError">{{devFirmware.enableError}}</span>
+      <pre class="bs-dev-log-pane" ng-show="devFirmware.enableOutput">{{devFirmware.enableOutput}}</pre>
+    </div>
+  </div>
+
+</div>

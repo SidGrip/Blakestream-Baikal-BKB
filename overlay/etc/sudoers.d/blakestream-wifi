@@ -1,0 +1,4 @@
+# Blakestream-GaintB: www-data may run only these Wi-Fi helper verbs.
+# Passwords and other fields travel on stdin. Worker/boot verbs are omitted.
+
+www-data ALL=(root) NOPASSWD: /opt/scripta/bin/wifi-settings.py status, /opt/scripta/bin/wifi-settings.py pending, /opt/scripta/bin/wifi-settings.py scan, /opt/scripta/bin/wifi-settings.py connect, /opt/scripta/bin/wifi-settings.py disconnect, /opt/scripta/bin/wifi-settings.py forget, /opt/scripta/bin/wifi-settings.py radio

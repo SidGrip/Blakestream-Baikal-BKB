@@ -1,5 +1,16 @@
-<button type="button" class="btn btn-default pull-right" ng-click="sync('settings',0,1)">Reload settings</button>
-<h3>Scr|pta</h3>
+<div class="clearfix">
+  <div class="pull-right" style="margin-top:20px;">
+    <button type="button" class="btn btn-default" ng-click="bsReloadSettingsTab()">Reload settings</button>
+  </div>
+  <h3 style="margin-top:20px;">Settings</h3>
+</div>
+<ul class="nav nav-pills bs-dev-tabs" role="tablist" aria-label="Settings sections">
+  <li ng-class="{active: bsSettingsTab === 'scripta'}"><a href="" role="tab" id="settings-scripta-tab" aria-controls="settings-scripta" aria-selected="{{bsSettingsTab === 'scripta'}}" ng-click="bsSelectSettingsTab('scripta')">Scripta</a></li>
+  <li ng-class="{active: bsSettingsTab === 'mining'}"><a href="" role="tab" id="settings-mining-tab" aria-controls="settings-mining" aria-selected="{{bsSettingsTab === 'mining'}}" ng-click="bsSelectSettingsTab('mining')">Mining</a></li>
+  <li ng-class="{active: bsSettingsTab === 'network'}"><a href="" role="tab" id="settings-network-tab" aria-controls="settings-network" aria-selected="{{bsSettingsTab === 'network'}}" ng-click="bsSelectSettingsTab('network')">Network</a></li>
+  <li ng-class="{active: bsSettingsTab === 'wifi'}"><a href="" role="tab" id="settings-wifi-tab" aria-controls="settings-wifi" aria-selected="{{bsSettingsTab === 'wifi'}}" ng-click="bsSelectSettingsTab('wifi')">Wi-Fi</a></li>
+</ul>
+<section id="settings-scripta" role="tabpanel" aria-labelledby="settings-scripta-tab" ng-show="bsSettingsTab === 'scripta'">
 <form name="formUser" class="form-horizontal">
   <fieldset>
     <!-- <div class="form-group"> -->
@@ -15,12 +26,12 @@
     <div class="form-group">
       <label class="control-label col-sm-3 col-md-2">Graph interval</label>
       <div class="col-sm-3 col-md-4">
-        <div class="btn-group">
-          <button type="button" class="btn btn-{{intervalAuto?'primary':'default'}}" ng-click="intervalSet(0)">Auto<span ng-show="intervalAuto">: {{interval}}</span></button>
-          <!-- <button type="button" class="btn btn-{{intervalMax==3?'primary':'default'}}" ng-click="intervalSet(3)">3</button> -->
-          <button type="button" class="btn btn-{{intervalMax==10?'primary':'default'}}" ng-click="intervalSet(10)">10</button>
-          <button type="button" class="btn btn-{{intervalMax==30?'primary':'default'}}" ng-click="intervalSet(50)">50</button>
-          <button type="button" class="btn btn-{{intervalMax==200?'primary':'default'}}" ng-click="intervalSet(200)">200</button>
+        <div class="btn-group bs-interval-buttons bs-setting-choices">
+          <button type="button" class="btn btn-default btn-sm" ng-class="{active: intervalAuto}" ng-click="intervalSet(0)">Auto<span ng-show="intervalAuto">: {{interval}}</span></button>
+          <!-- <button type="button" class="btn btn-default btn-sm" ng-class="{active: !intervalAuto && intervalMax==3}" ng-click="intervalSet(3)">3</button> -->
+          <button type="button" class="btn btn-default btn-sm" ng-class="{active: !intervalAuto && intervalMax==10}" ng-click="intervalSet(10)">10</button>
+          <button type="button" class="btn btn-default btn-sm" ng-class="{active: !intervalAuto && intervalMax==50}" ng-click="intervalSet(50)">50</button>
+          <button type="button" class="btn btn-default btn-sm" ng-class="{active: !intervalAuto && intervalMax==200}" ng-click="intervalSet(200)">200</button>
         </div>
       </div>
       <label for="liveMax" class="control-label col-sm-3 col-md-2">Graph points</label>
@@ -47,25 +58,6 @@
         </p>
       </div>
     </div>
-    <!-- Charts toggle. Default ON. ng-checked + ng-click avoids the form-dirty
-         feedback loop that ng-model would create with the auto-save handler. -->
-    <div class="form-group">
-      <label class="control-label col-sm-3 col-md-2">Charts</label>
-      <div class="col-sm-9 col-md-10">
-        <span class="bs-charts-toggle">
-          <input type="checkbox" id="userCharts"
-                 ng-checked="settings.userCharts !== false"
-                 ng-click="bsToggleCharts()">
-          <span class="bs-charts-toggle-label">Turn Charts {{settings.userCharts !== false ? 'ON' : 'OFF'}}</span>
-        </span>
-        <p class="help-block" ng-show="settings.userHelp">
-          Disable to reduce browser memory and bandwidth (Highcharts holds up to
-          7&nbsp;days of per-board samples in memory). The background recorder
-          keeps logging data regardless; turning charts back on will resume
-          rendering with all stored history.
-        </p>
-      </div>
-    </div>
   </fieldset>
 </form>
 
@@ -87,28 +79,87 @@
       </div>
     </div>
   </fieldset>
+</form>
+
+<form name="formUser2" class="form-horizontal">
+  <fieldset>
+    <div class="form-group">
+      <label class="control-label col-sm-3 col-md-2">Adjustable Clocks</label>
+      <div class="col-sm-3 col-md-4">
+        <span class="bs-charts-toggle">
+          <input type="checkbox" id="userAdjustableClocks"
+                 ng-model="settingsFeatures.userAdjustableClocks"
+                 ng-disabled="settingsFirmwareBusy()"
+                 ng-change="adjustableClocksToggleChanged()">
+          <span class="bs-charts-toggle-label">Enable Adjustable Clocks</span>
+        </span>
+      </div>
+      <label class="control-label col-sm-3 col-md-2">Auto Fan</label>
+      <div class="col-sm-3 col-md-4">
+        <span class="bs-charts-toggle">
+          <input type="checkbox" id="userAutoFan"
+                 ng-model="settingsFeatures.userAutoFan"
+                 ng-disabled="settingsFirmwareBusy()"
+                 ng-change="autoFanToggleChanged()">
+          <span class="bs-charts-toggle-label">Enable Auto Fan Control</span>
+        </span>
+      </div>
+      <div class="col-sm-9 col-md-10 col-sm-offset-3 col-md-offset-2">
+        <p class="help-block" ng-show="settings.userHelp">
+          <strong>Adjustable Clocks</strong> shows the simple global BK-B clock
+          editor on the Miner page. When saved for the first time, it verifies
+          the bridge-chip firmware and flashes V1 only if the chip is still
+          stock. Disabling returns the requested clock to 400 MHz; it does not
+          flash stock firmware.<br>
+          <strong>Auto Fan</strong> uses the hottest BK-B board temperature and
+          changes fan speed live (no sgminer restart). Configure the curve on the
+          Miner page; the temp watchdog still handles hard over-temp cutoff.
+        </p>
+      </div>
+    </div>
+    <div class="form-group">
+      <label class="control-label col-sm-3 col-md-2">Dev Tools</label>
+      <div class="col-sm-9 col-md-10">
+        <div class="bs-devtools-box">
+          <span class="bs-charts-toggle">
+            <input type="checkbox" id="userDev"
+                   ng-model="settingsFeatures.userDev"
+                   ng-disabled="settingsFirmwareBusy()">
+            <span class="bs-charts-toggle-label">Enable Dev Tools</span>
+          </span>
+          <p class="bs-devtools-note">Adds a <strong>Dev Tools</strong> tab with RAM/SD storage controls, a log viewer, the sgminer API console, recorder status, diagnostics export, and guarded firmware tools. It is off by default and safe to leave enabled.</p>
+        </div>
+      </div>
+    </div>
+  </fieldset>
   <p class="clearfix text-right">
-    <button type="button" class="btn btn-success" ng-click="sync('settings',settings,1);formUser.$setPristine()" ng-show="formUser.$dirty">Save settings</button>
+    <button type="button" class="btn btn-success bs-needs-save"
+            ng-click="saveUserSettings()"
+            ng-disabled="settingsFirmwareBusy()"
+            ng-show="bsUserSettingsDirty()">
+      {{settingsFirmwareBusy() ? 'Working...' : 'Save Settings'}}
+    </button>
     <button type="button" class="btn {{userPassword!=userPassword2?'btn-danger':'btn-success'}}" ng-click="sync('pass',userPassword,1);formPass.$setPristine()" ng-show="formPass.$dirty" ng-disabled="userPassword!=userPassword2">Save password</button>
   </p>
 </form>
 
 
+</section>
+<section id="settings-mining" role="tabpanel" aria-labelledby="settings-mining-tab" ng-show="bsSettingsTab === 'mining'">
 <form name="formMining" class="form-horizontal clearfix">
-  <h3>Mining</h3>
   <fieldset>
     <div class="form-group">
-      <label for="remoteEnable" class="control-label col-sm-3 col-md-2">Services</label>
+      <label class="control-label col-sm-3 col-md-2">Services</label>
       <div class="col-sm-9 col-md-10">
         <!-- <label class="checkbox-inline"> -->
         <!--  <input type="checkbox" id="remoteEnable" ng-model="settings.remoteEnable"> Enable Remote control -->
         <!-- </label> -->
-        <label class="checkbox-inline">
+        <span class="checkbox-inline">
           <input type="checkbox" id="recoverEnable" ng-model="settings.recoverEnable"> Automatic recovery
-        </label>
-        <label class="checkbox-inline">
+        </span>
+        <span class="checkbox-inline">
           <input type="checkbox" id="alertEnable" ng-model="settings.alertEnable"> E-mail alerts
-        </label>
+        </span>
 		
         <!-- <label class="checkbox-inline">
 			<input type="checkbox" id="donateEnable" ng-model="settings.donateEnable"> Enable Donation 
@@ -143,7 +194,7 @@
     </div>
   </fieldset>
   <p class="clearfix text-right">
-    <button type="button" class="btn btn-success" ng-click="sync('settings',settings,1);formMining.$setPristine()" ng-show="formMining.$dirty">Save settings</button>
+    <button type="button" class="btn btn-success bs-needs-save" ng-click="sync('settings',settings,1);formMining.$setPristine()" ng-show="formMining.$dirty">Save Settings</button>
   </p>
 </form>
 
@@ -231,6 +282,13 @@
   </fieldset>
    
   <p class="clearfix text-right">
-    <button type="button" class="btn btn-success" ng-click="sync('settings',settings,1);formMods.$setPristine()" ng-show="formMods.$dirty">Save settings</button>
+    <button type="button" class="btn btn-success bs-needs-save" ng-click="sync('settings',settings,1);formMods.$setPristine()" ng-show="formMods.$dirty">Save Settings</button>
   </p>
 </form>
+</section>
+<section id="settings-network" role="tabpanel" aria-labelledby="settings-network-tab" ng-show="bsSettingsTab === 'network'" ng-controller="CtrlNetworkSettings">
+      <div ng-include="'partials/network-settings.html?v=20260930-ui-backup'"></div>
+</section>
+<section id="settings-wifi" role="tabpanel" aria-labelledby="settings-wifi-tab" ng-show="bsSettingsTab === 'wifi'" ng-controller="CtrlWifiSettings">
+      <div ng-include="'partials/wifi-settings.html?v=wifi-connect-1'"></div>
+</section>
