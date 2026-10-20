@@ -36,8 +36,11 @@ class DiagnosticTests(unittest.TestCase):
                          ['network-events.log', 'system-events.log'])
         for message in ('wdt_restart', 'wdt_restart: routine tick'):
             self.assertEqual(logs.classify(record('kernel', message, _TRANSPORT='kernel', PRIORITY='3')), [])
-        for message in ('Out of memory: Killed process', 'mmc I/O error', 'Kernel panic'):
+        for message in ('Out of memory: Killed process', 'mmc I/O error', 'Kernel panic',
+                        "lowmemorykiller: LMK0-0 Killing 'python' (1234), adj 0,"):
             self.assertEqual(logs.classify(record('kernel', message, _TRANSPORT='kernel')), ['system-events.log'])
+        self.assertEqual(logs.classify(record('blakestream-miner', 'explicit restart requested (locked)')),
+                         ['system-events.log'])
         self.assertEqual(logs.classify(record('systemd', 'Started Network Manager.', UNIT='NetworkManager.service')), ['system-events.log'])
         self.assertEqual(logs.classify(record('systemd', 'Started Session 1', UNIT='session-1.scope')), [])
         self.assertEqual(logs.classify(record('sshd', 'session started')), [])
@@ -46,6 +49,17 @@ class DiagnosticTests(unittest.TestCase):
         self.assertEqual(logs.classify(record('lighttpd', 'PHP fatal error')), ['lighttpd-error.log'])
         self.assertEqual(logs.classify(record('sudo', 'session opened', _SYSTEMD_UNIT='lighttpd.service')), [])
         self.assertEqual(logs.classify(record('bs-fan', 'fan update', _SYSTEMD_UNIT='lighttpd.service')), ['cooling-events.log'])
+
+    def test_restart_and_low_memory_victim_are_saved(self):
+        entries = [
+            record('blakestream-miner', 'explicit restart requested (locked)'),
+            record('kernel', "lowmemorykiller: LMK0-0 Killing 'python' (1234), adj 0,",
+                   _TRANSPORT='kernel'),
+        ]
+        logs.collect({'userSystemLogTarget': 'SD'}, {}, 'boot-fixture', entries, {}, {})
+        output = (self.root/'sd/system-events.log').read_text()
+        self.assertIn('Miner: explicit restart requested (locked)', output)
+        self.assertIn("Killing 'python' (1234)", output)
 
     def test_secrets(self):
         for message in ('password=NOT-A-REAL-SECRET', 'password="spaces in value"',

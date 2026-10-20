@@ -29,9 +29,9 @@ spaces and run them from an unrelated working directory.
 
 | Phase | What it runs | Required on the machine |
 | --- | --- | --- |
-| `contract-php` | accepted-work, dev-activity, startup-count, firmware identity/timing, experimental Index settings, versioned profiles, network grouping, readable clock logs and measured-rate API guards | `php` |
-| `contract-node` | activity, unified Boards tab, Index controls/profiles, Fan-only labeling, firmware progress/completion, network requests, log-format races and measured-rate storage confirmations | `node` |
-| `contract-python` | clock configuration, bounded clock trials, firmware-job recovery guards, synchronized measured rates, persistence/service/image cleanup, recorders, report, wire contract and portable entry points | `python3`, `php`, `node`, and `git` (entry-point checks also run Node fixtures and create a local Git fixture) |
+| `contract-php` | memory accounting/API fields, bounded full-week chart/clock responses, selective history clears, accepted-work, dev-activity, startup-count, firmware identity/timing, experimental Index settings, versioned profiles, network grouping, readable clock logs and measured-rate API guards | `php` |
+| `contract-node` | uptime boundaries, activity, unified Boards tab, Index controls/profiles, Fan-only labeling, firmware progress/completion, network requests, log-format races and measured-rate storage confirmations | `node` |
+| `contract-python` | clock configuration, bounded clock trials, firmware-job recovery guards, synchronized measured rates, persistence/service/image cleanup, recorders (including full-week peak memory and lossless writes), report, wire contract and portable entry points | `python3`, `php`, `node`, and `git` (entry-point checks also run Node fixtures and create a local Git fixture) |
 | `emulation-v1` | `firmware-custom/smoke_assert_v1.py` on the tracked v1 image | `python3` and the `unicorn` module (2.1.4 is the version this tree was exercised with) |
 | `emulation-active-slots` | inactive-slot selection, active failures and readiness gates on the same V1 image | `python3` and `unicorn` |
 
@@ -289,7 +289,53 @@ thermal, and acceptance guards. A failed window remains failed.
 Transport fixtures cover NUL framing without EOF, split replies, one bounded
 connect/send/read deadline, trickle timeouts, byte limits, malformed JSON,
 stage-specific failure details, and unchanged restoration behavior. Controller
-memory tests check bounded log retention and staggered maintenance.
+memory tests check bounded log retention and staggered maintenance. The
+board-diagnostics test uses a full-field, three-board 18-hour fixture, generated
+in a separate process so fixture allocation cannot inflate the measured child
+RSS. The measurement runner also starts in a fresh interpreter to exclude
+allocator memory retained by earlier functional tests. Its children use fork
+rather than vfork, which can carry the parent's RSS high-water mark across
+exec on Linux. It compares plain and
+compact collection, requires at least a 20% peak
+memory reduction and a compact peak below 65,000 KiB, and checks identical
+retained data. A combined-process fixture loads, evaluates rates and rewrites a
+full clock week, then records diagnostics; it requires lossless output and a
+peak below 90,000 KiB and no more than 32 MiB above the clock phase. Clock-only
+fixtures are also generated outside the measurement parent. These host RSS
+limits are regression guards, not an ARM device memory guarantee. Tests also
+cover nested counter maps, unknown fields, failed
+later write batches, nonfinite values, and a cached, subprocess-free Python 2
+monotonic clock with uptime fallback.
+
+`test-hashrate-history.php` compares streamed chart responses byte-for-byte with
+the prior transformation, including accepted-work gaps, pool names, ordering,
+RAM/SD selection, authentication, malformed input and atomic file replacement.
+An isolated full-week PHP process checks that every sample survives without
+expanding the complete history into nested arrays. The optional `--compare`
+mode accepts a captured history file and prior endpoint for a real-data
+comparison; these private fixtures are not required by default QA.
+
+`test-clock-history-endpoint.php` compares clock runs and selective clears with
+the prior array transformation, including interval/profile/run selection,
+unknown fields, equal timestamps, ordering and RAM/SD routing. Generated week
+fixtures check bounded memory and lossless output. Staging failures, failed
+commits, corrupt input and collector-lock conflicts must preserve existing
+data. CGI checks run when `php-cgi` is available beside the selected PHP binary;
+they check headers, authentication, output buffering and early session release.
+The optional `--compare CLOCK_JSON PRIOR_ENDPOINT_PHP` mode also checks real
+captured data without accessing a miner.
+
+`test-capped-log-writer.py` injects read, allocation, open, partial-write and trim
+failures. It checks bounded pending bytes, the file-size cap, atomic tail
+replacement, external file replacement, and recovery through a real Linux pipe.
+Competing recoveries and existing readers must not create a second consumer;
+failed process inspection must leave the producer alone. No miner or network
+access is needed.
+
+Persistent output-failure fixtures verify that capture keeps draining the pipe,
+counts only unwritten log bytes, rate-limits warnings, and writes a recovery
+marker within the normal cap. A producer writes more than the pipe capacity
+while the destination fails, proving storage failure does not leave it blocked.
 
 Baseline tests cover canonical algorithm names, separate algorithm datasets,
 accepted-difficulty/time weighting, duplicate suppression, identity boundaries,

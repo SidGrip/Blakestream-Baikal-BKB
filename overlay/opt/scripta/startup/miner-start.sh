@@ -2,7 +2,7 @@
 # Blakestream-GaintB miner launcher (idempotent watchdog).
 #
 # Called by /etc/cron.d/scripta every ~30 seconds. Behaviour:
-#   - If sgminer is already running   -> NO-OP (do not disturb)
+#   - If sgminer is already running   -> check API and log capture
 #   - If sgminer is NOT running       -> generate runtime config + launch
 #   - If no boards are assigned       -> stay idle (kill any leftover screens)
 #
@@ -143,6 +143,20 @@ protect_sgminer_oom() {
     done
 }
 
+log_capture_present() {
+    # Healthy capture costs no Python watchdog worker. Match the reader's
+    # actual stdin pipe, not log mtime (a quiet miner is legitimate).
+    local pipe reader
+    pipe=$(readlink "/proc/$1/fd/1" 2>/dev/null) || return 1
+    [[ "$pipe" == pipe:\[*\] ]] || return 1
+    for reader in $(pgrep -f "^/usr/bin/python(2([.]7)?)? $LOG_WRITER " 2>/dev/null); do
+        if [[ "$(readlink "/proc/$reader/fd/0" 2>/dev/null)" == "$pipe" ]]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
 api_command_ok() {
     local port="$1"
     /usr/bin/python - "$port" <<'PY'
@@ -217,6 +231,12 @@ API_HANG_MIN_UPTIME=60
 if pgrep -f "$SGMINER " >/dev/null 2>&1; then
     protect_sgminer_oom
     SG_PID=$(pgrep -f "$SGMINER " | head -1)
+    # A dead logger is independent of API health. Recovery checks the actual
+    # pipe readers and the running miner's original destination, never mtime
+    # or today's settings. It never signals or restarts the miner.
+    if ! log_capture_present "$SG_PID" && ! /usr/bin/python "$LOG_WRITER" --recover "$SG_PID" "$SGMINER"; then
+        log "WARNING: sgminer log recovery could not be verified; miner left running"
+    fi
     SG_UP=$(ps -o etimes= -p "$SG_PID" 2>/dev/null | tr -dc '0-9')
     if [[ -z "$SG_UP" || "$SG_UP" -lt "$API_HANG_MIN_UPTIME" ]]; then
         exit 0
@@ -270,7 +290,7 @@ case $BUILD_RC in
         if [[ "$SGMINER_LOG_CONFIG_OK" == "1" && -f "$OLD_SGMINER_LOG" ]]; then
             if (set -o pipefail
                 tail -c "$SGMINER_LOG_KEEP" "$OLD_SGMINER_LOG" \
-                    | /usr/bin/python "$LOG_WRITER" "$SGMINER_LOG" "$SGMINER_LOG_MAX" "$SGMINER_LOG_KEEP"
+                    | /usr/bin/python "$LOG_WRITER" --once "$SGMINER_LOG" "$SGMINER_LOG_MAX" "$SGMINER_LOG_KEEP"
             ); then
                 rm -f "$OLD_SGMINER_LOG" 2>/dev/null || true
             else
@@ -284,8 +304,8 @@ case $BUILD_RC in
         chown root:www-data "$SGMINER_LOG" 2>/dev/null || true
         chmod 664 "$SGMINER_LOG" 2>/dev/null || true
         printf "===== %s sgminer launch =====\n" "$(date '+%Y-%m-%d %H:%M:%S')" \
-            | /usr/bin/python "$LOG_WRITER" "$SGMINER_LOG" "$SGMINER_LOG_MAX" "$SGMINER_LOG_KEEP"
-        screen -dmS sgminer bash -c "'$SGMINER' --text-only -c '$RUNTIME_CONF' --api-listen 2>&1 | /usr/bin/python '$LOG_WRITER' '$SGMINER_LOG' '$SGMINER_LOG_MAX' '$SGMINER_LOG_KEEP'"
+            | /usr/bin/python "$LOG_WRITER" --once "$SGMINER_LOG" "$SGMINER_LOG_MAX" "$SGMINER_LOG_KEEP"
+        screen -dmS sgminer bash -c "BS_SGMINER_LOG='$SGMINER_LOG' BS_SGMINER_LOG_MAX='$SGMINER_LOG_MAX' BS_SGMINER_LOG_KEEP='$SGMINER_LOG_KEEP' '$SGMINER' --text-only -c '$RUNTIME_CONF' --api-listen 2>&1 | /usr/bin/python '$LOG_WRITER' '$SGMINER_LOG' '$SGMINER_LOG_MAX' '$SGMINER_LOG_KEEP'"
         ;;
     2)
         log "no boards assigned to any pool — sgminer not started (idle)"

@@ -17,6 +17,27 @@ SPEC.loader.exec_module(L)
 
 
 class MemoryDefaults(unittest.TestCase):
+    def test_log_writer_oom_protection_and_legacy_fallback(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertFalse(L.protect_log_writer(tmp))
+            self.assertEqual(list(Path(tmp).iterdir()), [])
+            modern = Path(tmp) / 'oom_score_adj'
+            legacy = Path(tmp) / 'oom_adj'
+            modern.write_text('0')
+            legacy.write_text('0')
+            self.assertTrue(L.protect_log_writer(tmp))
+            self.assertEqual(modern.read_text(), '-900')
+            self.assertEqual(legacy.read_text(), '0')
+            modern.unlink()
+            self.assertTrue(L.protect_log_writer(tmp))
+            self.assertEqual(legacy.read_text(), '-16')
+
+    def test_php_worker_memory_is_bounded(self):
+        config = (ROOT / 'overlay/etc/lighttpd/conf-available/15-fastcgi-php.conf').read_text()
+        self.assertIn('"max-procs" => 1', config)
+        self.assertIn('"PHP_FCGI_CHILDREN" => "2"', config)
+        self.assertIn('"PHP_FCGI_MAX_REQUESTS" => "100"', config)
+
     def test_log_target_is_independent_of_dev_tools(self):
         launcher = (ROOT / 'overlay/opt/scripta/startup/miner-start.sh').read_text()
         block = launcher[launcher.index('SGMINER_LOG_MAX='):launcher.index('\nlog()')]

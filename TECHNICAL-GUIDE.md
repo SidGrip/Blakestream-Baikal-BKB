@@ -1194,6 +1194,59 @@ Security audit storage remains on SD; live temperature
 state and web access logging are unchanged. Image preparation removes these
 diagnostic logs and their cursor state.
 
+### Controller memory
+
+Lighttpd runs two PHP workers, recycling each after 100 requests so decoded
+history pages do not leave four large worker heaps resident indefinitely.
+The hashrate-chart endpoint validates the selected history file, retains board
+metadata and sample offsets, then streams samples from small decoded batches. Both passes use
+the same open file so an atomic recorder update cannot mix generations.
+Hour, day and week responses retain their model samples, accepted-work samples,
+null gaps and pool labels without decoding the entire week into PHP arrays.
+Clock History similarly keeps compact sample references for sorting and run
+grouping, decoding bounded batches when aggregating or emitting each board.
+Selective clears share the scheduled collector's lock, stage all destinations,
+and retain rollback copies until replacement succeeds. Invalid source data or
+a detected concurrent replacement makes a selective clear fail without
+overwriting the source. Read-only history requests release the session lock
+before processing so other tabs in the same login can continue polling.
+Clock and board-diagnostics collection share sample field names and repeated
+strings in memory, then encode samples in batches of 128 through `history_json.py`.
+Board diagnostics also packs its retained per-sample counter maps. This avoids
+retaining large dictionaries and a second complete encoded history during each
+save. The JSON schemas, individual samples, seven-day clock history, 18-hour
+board-diagnostics history and storage selections are unchanged. Failed writes
+leave the previous file intact. The diagnostics collector caches its Python 2
+monotonic-clock binding to `librt.so.1`, without spawning library-discovery tools;
+`/proc/uptime` remains the fallback. Automatic package updates and independent
+fan, temperature and network rollback checks are not disabled or deferred.
+The sgminer log writer requests the same low-memory-killer protection as
+sgminer itself; diagnostic collectors remain unprotected. System Events
+includes explicit miner-restart messages and legacy-kernel low-memory victim
+messages, subject to the normal bounded log retention.
+
+Log capture briefly retries transient output failures. If storage remains
+unwritable, it continues draining miner output and counts discarded log bytes
+instead of waiting indefinitely for storage. Warnings are rate-limited; when
+writing recovers, the log receives a gap marker and the journal records the
+discarded-byte count. No unbounded backlog is kept in RAM. Trimming streams the
+newest 2 MiB through a scratch file and replaces the log only after a complete
+write; the log remains capped at 4 MiB on RAM or SD. The temporary tail needs
+up to another 2 MiB plus its trim marker while replacement is in progress.
+The miner watchdog verifies pipe-reader ownership and can reattach capture
+without restarting sgminer. It uses the running pipeline's destination, not a
+newly selected destination that has not yet taken effect. Unknown readers or
+incomplete process inspection prevent automatic reattachment. Recovery cannot
+reconstruct bytes already lost when the previous reader exited. Existing
+firmware-operation guards still defer watchdog recovery while flashing.
+
+The footer uses `MemAvailable` where the kernel provides it. On older kernels,
+it estimates available memory from free pages, buffers and file cache,
+excluding `Shmem` from cache because RAM-backed files cannot simply be
+discarded. This is still an estimate, not a guarantee that an allocation will
+succeed. Controller uptime comes from `/proc/uptime`; days do not wrap and
+hours are displayed within a day.
+
 ### Clock-history logs
 
 Dev Tools > Logs defaults clock-history files to a readable UTC timeline. Each

@@ -471,16 +471,22 @@ function clock_sample_profile_matches($sample, $profile_key) {
 }
 
 function clock_aggregate_board($board_id, $samples) {
-    usort($samples, function($a, $b) {
-        return ((int)$a['t']) - ((int)$b['t']);
-    });
-    foreach ($samples as &$sample) {
-        if (is_array($sample) && isset($sample['pool'])) {
-            $sample['pool'] = clean_clock_pool_url($sample['pool']);
+    if ($samples instanceof BSClockHistorySamples) {
+        $first = $samples->at(0);
+        $latest = $samples->at(count($samples) - 1);
+    } else {
+        usort($samples, function($a, $b) {
+            return ((int)$a['t']) - ((int)$b['t']);
+        });
+        foreach ($samples as &$sample) {
+            if (is_array($sample) && isset($sample['pool'])) {
+                $sample['pool'] = clean_clock_pool_url($sample['pool']);
+            }
         }
+        unset($sample);
+        $latest = end($samples);
+        $first = isset($samples[0]) ? $samples[0] : array();
     }
-    unset($sample);
-    $latest = end($samples);
     $sample_count = count($samples);
     $sum_mhs5s = 0.0;
     $sum_clock = 0.0;
@@ -528,7 +534,7 @@ function clock_aggregate_board($board_id, $samples) {
         'id' => (int)$board_id,
         'status' => isset($latest['st']) ? $latest['st'] : '',
         'sample_count' => $sample_count,
-        'first_seen' => isset($samples[0]['t']) ? (int)$samples[0]['t'] : 0,
+        'first_seen' => isset($first['t']) ? (int)$first['t'] : 0,
         'last_seen' => isset($latest['t']) ? (int)$latest['t'] : 0,
         'clock' => isset($latest['c']) ? (int)$latest['c'] : 0,
         'reported_clock' => isset($latest['c']) ? (int)$latest['c'] : 0,
@@ -874,10 +880,11 @@ switch ($action) {
         break;
 
     case 'load_hashrate_history':
+        session_write_close();
         // Per-board samples in the requested window. ?hours=N (default 1).
         $hours = isset($_REQUEST['hours']) ? max(1, (int)$_REQUEST['hours']) : 1;
         $cutoff = time() - ($hours * 3600);
-        $hist = read_json_file($HASHRATE_HISTORY, array('boards' => array(), 'updated' => 0));
+        require_once __DIR__ . '/inc/hashrate-history.php';
         $saved = read_json_file($SAVED_POOLS, array('categories' => array()));
         // Map cleaned-url -> saved pool name for friendly labels.
         $pool_name_by_url = array();
@@ -891,47 +898,16 @@ switch ($action) {
                 }
             }
         }
-        $boards_out = array();
-        $boards_in = isset($hist['boards']) && is_array($hist['boards']) ? $hist['boards'] : array();
-        foreach ($boards_in as $b) {
-            $samples = isset($b['samples']) && is_array($b['samples']) ? $b['samples'] : array();
-            $window = array();
-            foreach ($samples as $s) {
-                if (is_array($s) && count($s) >= 2 && (int)$s[0] >= $cutoff) {
-                    $window[] = array((int)$s[0], (int)$s[1]);
-                }
-            }
-            // Resolve pool name (strip the "http://quota:N;" sgminer prefix).
-            $accepted_window = array();
-            foreach (isset($b['accepted_samples']) && is_array($b['accepted_samples']) ? $b['accepted_samples'] : array() as $s) {
-                if (is_array($s) && count($s) >= 2 && (int)$s[0] >= $cutoff) {
-                    $accepted_window[] = array((int)$s[0], $s[1] === null ? null : (float)$s[1]);
-                }
-            }
-            $url = isset($b['pool_url']) ? $b['pool_url'] : '';
-            $clean = preg_replace('|^https?://|', '', $url);
-            $clean = preg_replace('|^quota:\d+;|', '', $clean);
-            $name = isset($pool_name_by_url[$clean]) ? $pool_name_by_url[$clean] : null;
-            $boards_out[] = array(
-                'id' => isset($b['id']) ? (int)$b['id'] : 0,
-                'enabled' => isset($b['enabled']) ? (bool)$b['enabled'] : true,
-                'primary_pool_no' => isset($b['primary_pool_no']) ? (int)$b['primary_pool_no'] : -1,
-                'effective_pool_no' => isset($b['effective_pool_no']) ? (int)$b['effective_pool_no'] : -1,
-                'failover_active' => isset($b['failover_active']) ? (bool)$b['failover_active'] : false,
-                'pool_url' => $clean,
-                'pool_name' => $name,
-                'samples' => $window,
-                'accepted_samples' => $accepted_window,
-            );
+        // php.ini output_buffering=On must not retain the complete response.
+        // Leave bounded buffers and custom output handlers unchanged.
+        while ($buffer = ob_get_status()) {
+            if ($buffer['name'] !== 'default output handler' ||
+                    ($buffer['chunk_size'] > 0 && $buffer['chunk_size'] <= 8192)) break;
+            if (!@ob_end_flush()) break;
         }
-        usort($boards_out, function($a, $b) { return $a['id'] - $b['id']; });
-        $response = array(
-            'boards' => $boards_out,
-            'window_hours' => $hours,
-            'step_seconds' => isset($hist['step_seconds']) ? (int)$hist['step_seconds'] : 60,
-            'updated' => isset($hist['updated']) ? (int)$hist['updated'] : 0,
-        );
-        break;
+        ob_start(null, 8192);
+        bs_hashrate_history_emit($HASHRATE_HISTORY, $hours, $cutoff, $pool_name_by_url);
+        exit;
 
     case 'load_failover_history':
         // Failover events filtered to ?hours=N (default 24). Returns closed
@@ -978,142 +954,13 @@ switch ($action) {
         break;
 
     case 'load_clock_history':
-        // Clock diagnostics grouped into contiguous setting runs. This keeps
-        // old 400 MHz data visible when the user switches to 480 MHz, while
-        // still applying the selected window and the 7-day recorder cutoff.
+        session_write_close();
         $hours = isset($_REQUEST['hours']) ? max(1, (int)$_REQUEST['hours']) : 24;
         $cutoff = time() - ($hours * 3600);
-        $hist = read_json_file($CLOCK_HISTORY_READ, array('boards' => array(), 'updated' => 0));
-        $boards_in = isset($hist['boards']) && is_array($hist['boards']) ? $hist['boards'] : array();
-        $step = isset($hist['step_seconds']) ? max(1, (int)$hist['step_seconds']) : 60;
-        $all_samples = array();
-
-        foreach ($boards_in as $b) {
-            $board_id = isset($b['id']) ? (int)$b['id'] : 0;
-            $samples = isset($b['samples']) && is_array($b['samples']) ? $b['samples'] : array();
-            foreach ($samples as $s) {
-                if (is_array($s) && isset($s['t']) && (int)$s['t'] >= $cutoff) {
-                    $all_samples[] = array('board_id' => $board_id, 'sample' => $s);
-                }
-            }
-        }
-
-        usort($all_samples, function($a, $b) {
-            $ta = isset($a['sample']['t']) ? (int)$a['sample']['t'] : 0;
-            $tb = isset($b['sample']['t']) ? (int)$b['sample']['t'] : 0;
-            if ($ta === $tb) return ((int)$a['board_id']) - ((int)$b['board_id']);
-            return $ta - $tb;
-        });
-
-        $samples_by_time = array();
-        foreach ($all_samples as $row) {
-            $s = $row['sample'];
-            $t = isset($s['t']) ? (int)$s['t'] : 0;
-            if (!$t) continue;
-            if (!isset($samples_by_time[$t])) $samples_by_time[$t] = array();
-            $samples_by_time[$t][] = $row;
-        }
-        ksort($samples_by_time, SORT_NUMERIC);
-
-        $time_profiles = array();
-        foreach ($samples_by_time as $t => $rows) {
-            $profile = clock_time_profile_from_rows($rows);
-            if ($profile === null) continue;
-            $time_profiles[$t] = $profile;
-        }
-
-        $runs = array();
-        $time_to_run = array();
-        $latest_run_id = null;
-        $latest_run_end = 0;
-        $run_index = 0;
-        $current_run_id = null;
-        $current_run_key = null;
-        foreach ($time_profiles as $t => $profile) {
-            // Merge only adjacent samples with the same clock and routing.
-            // A -> B -> A is three runs; merging both A periods would include
-            // B's elapsed time in accepted-work deltas and distort hashrate.
-            if ($current_run_id === null || $current_run_key !== $profile['run_key']) {
-                $run_index++;
-                $current_run_id = 'run-' . $run_index;
-                $current_run_key = $profile['run_key'];
-                $runs[$current_run_id] = array(
-                    'id' => $current_run_id,
-                    'profile_key' => $profile['key'],
-                    'run_key' => $profile['run_key'],
-                    'clock' => $profile['clock'],
-                    'experimental' => $profile['experimental'],
-                    'recover' => $profile['recover'],
-                    'cutoff' => $profile['cutoff'],
-                    'fan' => $profile['fan'],
-                    'fan_mode' => $profile['fan_mode'],
-                    'start_ts' => (int)$t,
-                    'end_ts' => (int)$t,
-                    'active' => false,
-                    'boards_by_id' => array(),
-                    'sample_count' => 0,
-                );
-            }
-            // Keep the run's headline fan/recover/cutoff at the latest values seen
-            // within the clock segment (the clock defines the run; these may vary).
-            $runs[$current_run_id]['recover'] = $profile['recover'];
-            $runs[$current_run_id]['cutoff'] = $profile['cutoff'];
-            $runs[$current_run_id]['fan'] = $profile['fan'];
-            $runs[$current_run_id]['fan_mode'] = $profile['fan_mode'];
-            $runs[$current_run_id]['end_ts'] = (int)$t;
-            $time_to_run[$t] = $current_run_id;
-            if ((int)$t >= $latest_run_end) {
-                $latest_run_end = (int)$t;
-                $latest_run_id = $current_run_id;
-            }
-        }
-
-        foreach ($all_samples as $row) {
-            $s = $row['sample'];
-            $t = isset($s['t']) ? (int)$s['t'] : 0;
-            if (!$t || !isset($time_to_run[$t])) continue;
-            $run_id = $time_to_run[$t];
-            $board_id = (int)$row['board_id'];
-            if (!isset($runs[$run_id]['boards_by_id'][$board_id])) {
-                $runs[$run_id]['boards_by_id'][$board_id] = array();
-            }
-            $runs[$run_id]['boards_by_id'][$board_id][] = $s;
-            $runs[$run_id]['sample_count']++;
-        }
-
-        $runs_out = array();
-        foreach ($runs as $run_id => $run) {
-            $boards = array();
-            foreach ($run['boards_by_id'] as $board_id => $samples) {
-                $boards[] = clock_aggregate_board($board_id, $samples);
-            }
-            usort($boards, function($a, $b) { return $a['id'] - $b['id']; });
-            unset($run['boards_by_id']);
-            $run['boards'] = $boards;
-            $run['duration_seconds'] = max(0, $run['end_ts'] - $run['start_ts']);
-            $runs_out[] = $run;
-        }
-        if (!empty($runs_out)) {
-            foreach ($runs_out as &$run_out) {
-                $run_out['active'] = ($latest_run_id !== null && $run_out['id'] === $latest_run_id);
-            }
-            unset($run_out);
-        }
-        usort($runs_out, function($a, $b) {
-            if (!empty($a['active']) && empty($b['active'])) return -1;
-            if (empty($a['active']) && !empty($b['active'])) return 1;
-            return ((int)$b['end_ts']) - ((int)$a['end_ts']);
-        });
-
-        $response = array(
-            'runs' => $runs_out,
-            'window_hours' => $hours,
-            'step_seconds' => $step,
-            'updated' => isset($hist['updated']) ? (int)$hist['updated'] : 0,
-            'storage' => $CLOCK_HISTORY_PERSIST_SD ? 'SD' : 'RAM',
-            'read_path' => $CLOCK_HISTORY_READ,
-        );
-        break;
+        require_once __DIR__ . '/inc/clock-history-stream.php';
+        bs_clock_history_emit($CLOCK_HISTORY_READ, $hours, $cutoff,
+            $CLOCK_HISTORY_PERSIST_SD ? 'SD' : 'RAM');
+        exit;
 
     case 'clear_clock_history':
         $empty = array(
@@ -1151,101 +998,26 @@ switch ($action) {
             break;
         }
 
-        $hist = read_json_file($CLOCK_HISTORY_READ, array('boards' => array(), 'updated' => 0));
-        $boards = isset($hist['boards']) && is_array($hist['boards']) ? $hist['boards'] : array();
-        $target_times = array();
-        if ($run_key !== '') {
-            $samples_by_time = array();
-            foreach ($boards as $board) {
-                if (!is_array($board) || !isset($board['samples']) || !is_array($board['samples'])) {
-                    continue;
-                }
-                $board_id = isset($board['id']) ? (int)$board['id'] : 0;
-                foreach ($board['samples'] as $sample) {
-                    if (!is_array($sample)) continue;
-                    $t = isset($sample['t']) ? (int)$sample['t'] : 0;
-                    if ($t < $start || $t > $end) continue;
-                    if (!isset($samples_by_time[$t])) $samples_by_time[$t] = array();
-                    $samples_by_time[$t][] = array('board_id' => $board_id, 'sample' => $sample);
-                }
-            }
-            foreach ($samples_by_time as $t => $rows) {
-                $profile = clock_time_profile_from_rows($rows);
-                if ($profile !== null && isset($profile['run_key']) && $profile['run_key'] === $run_key) {
-                    $target_times[$t] = true;
-                }
-            }
-        }
-        $removed = 0;
-        foreach ($boards as &$board) {
-            if (!is_array($board) || !isset($board['samples']) || !is_array($board['samples'])) {
-                continue;
-            }
-            $kept = array();
-            foreach ($board['samples'] as $sample) {
-                if (!is_array($sample)) {
-                    $kept[] = $sample;
-                    continue;
-                }
-                $t = isset($sample['t']) ? (int)$sample['t'] : 0;
-                $in_range = ($t >= $start && $t <= $end);
-                $remove_sample = false;
-                if ($run_key !== '') {
-                    $remove_sample = isset($target_times[$t]);
-                } else {
-                    $remove_sample = ($in_range && clock_sample_profile_matches($sample, $profile_key));
-                }
-                if ($remove_sample) {
-                    $removed++;
-                    continue;
-                }
-                $kept[] = $sample;
-            }
-            $board['samples'] = $kept;
-        }
-        unset($board);
-
-        $hist['boards'] = $boards;
-        $hist['updated'] = time();
-        if (!isset($hist['version'])) $hist['version'] = 1;
-        if (!isset($hist['step_seconds'])) $hist['step_seconds'] = 60;
-        if (!isset($hist['max_age_seconds'])) $hist['max_age_seconds'] = 7 * 86400;
+        require_once __DIR__ . '/inc/clock-history-stream.php';
         $write_paths = $CLOCK_HISTORY_PERSIST_SD
             ? array($CLOCK_HISTORY_SD_BUFFER, $CLOCK_HISTORY_SD)
             : array($CLOCK_HISTORY_RAM);
-        if (!write_json_files($write_paths, $hist)) {
+        $response = bs_clock_history_clear($CLOCK_HISTORY_READ, $write_paths, $start, $end,
+            $profile_key, $run_key, time());
+        if ($response === false) {
             http_response_code(500);
             $response = array('error' => 'failed to write clock history');
-            break;
         }
-        $response = array('ok' => true, 'removed_samples' => $removed);
         break;
 
     case 'sysstats':
         // Read /proc/meminfo and /proc/loadavg for the dashboard footer.
-        $mem_total = 0;
-        $mem_available = 0;
-        $mem_free = 0;
-        $buffers = 0;
-        $cached = 0;
-        $meminfo = @file_get_contents('/proc/meminfo');
-        if ($meminfo !== false) {
-            foreach (explode("\n", $meminfo) as $line) {
-                if (preg_match('/^(\w+):\s+(\d+)/', $line, $m)) {
-                    if ($m[1] === 'MemTotal')     $mem_total = (int)$m[2];
-                    if ($m[1] === 'MemAvailable') $mem_available = (int)$m[2];
-                    if ($m[1] === 'MemFree')      $mem_free = (int)$m[2];
-                    if ($m[1] === 'Buffers')      $buffers = (int)$m[2];
-                    if ($m[1] === 'Cached')       $cached = (int)$m[2];
-                }
-            }
-        }
-        // Older kernels (3.4 sun8i) may not have MemAvailable; fall back.
-        if ($mem_available === 0) {
-            $mem_available = $mem_free + $buffers + $cached;
-        }
-        $mem_used = $mem_total - $mem_available;
-        $mem_pct = ($mem_total > 0) ? round(($mem_used / $mem_total) * 100) : 0;
+        require_once __DIR__ . '/inc/system-memory.php';
+        $memory = system_memory_stats(@file_get_contents('/proc/meminfo'));
+        $mem_total = $memory['total_kb'];
+        $mem_used = $memory['used_kb'];
+        $mem_available = $mem_total - $mem_used;
+        $mem_pct = $memory['used_pct'];
 
         $load1 = 0; $load5 = 0; $load15 = 0;
         $loadavg = @file_get_contents('/proc/loadavg');

@@ -42,6 +42,13 @@ Follow [BUILD.md](../BUILD.md) for the build order and prerequisites.
 | Script | Purpose |
 | --- | --- |
 | [qa](qa) | Run automated checks; use `--help` to list phases. |
+| [test-clock-history-memory.py](test-clock-history-memory.py) | Compare full-week recorder peak memory in isolated processes and verify lossless RAM/SD writes. |
+| [test-bkb-diagnostics-recorder.py](test-bkb-diagnostics-recorder.py) | Verify diagnostic capture, epochs, redaction, atomic retention, subprocess-free timing and full-field 18-hour peak memory against a plain baseline. |
+| [test-system-memory.php](test-system-memory.php) | Check legacy-kernel tmpfs accounting and `MemAvailable` handling. |
+| [test-hashrate-history.php](test-hashrate-history.php) | Verify lossless streamed chart responses, RAM/SD selection, authentication and bounded full-week PHP memory. |
+| [test-clock-history-endpoint.php](test-clock-history-endpoint.php) | Verify streamed clock runs, bounded full-week memory, selective clears, rollback, collector locking and CGI/session behavior. |
+| [test-capped-log-writer.py](test-capped-log-writer.py) | Inject log I/O failures and verify bounded retention, safe trimming and single-reader recovery without restarting the producer. |
+| [test-duration.js](test-duration.js) | Check uptime formatting across hour, day and long-running boundaries. |
 | [test-firmware-container.sh](test-firmware-container.sh) | Run isolated flash, recovery, web-user, sudo, and screen checks. |
 | [test-wifi-container.sh](test-wifi-container.sh) | Check NetworkManager profile storage and credentials in an isolated container. |
 | `test-*` | Contract fixtures and standalone integration helpers; see QA.md for phase membership. |

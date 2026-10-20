@@ -23,6 +23,9 @@ import socket
 import sys
 import time
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from history_json import HistorySample, compact_sample_hook, write_history_json
+
 try:
     string_types = (basestring,)
     text_type = unicode
@@ -527,12 +530,10 @@ def ensure_dir(path):
 def write_json_atomic(path, obj):
     parent = os.path.dirname(path)
     ensure_dir(parent)
-    text = json.dumps(obj, sort_keys=True, separators=(',', ':'), allow_nan=False)
-    data = text.encode('utf-8')
     tmp = '%s.%s.tmp' % (path, os.getpid())
     try:
-        with open(tmp, 'wb') as handle:
-            handle.write(data)
+        with open(tmp, 'w') as handle:
+            write_history_json(handle, obj, sort_keys=True, allow_nan=False)
         try:
             os.chmod(tmp, 0o664)
         except OSError:
@@ -550,10 +551,11 @@ def write_json_atomic(path, obj):
                 pass
 
 
-def read_json(path):
+def read_json(path, compact=False):
     with open(path, 'rb') as handle:
         text = handle.read().decode('utf-8')
-    return json.loads(text)
+    hook = compact_sample_hook(required=('t', 'a'), nested=('diag',)) if compact else None
+    return json.loads(text, object_hook=hook)
 
 
 def default_paths():
@@ -637,20 +639,39 @@ def call_api(cmd):
         return None
 
 
+_MONOTONIC_NATIVE = None
+_MONOTONIC_TRIED = False
+
+
 def monotonic_seconds():
+    global _MONOTONIC_NATIVE, _MONOTONIC_TRIED
     if hasattr(time, 'monotonic'):
         return float(time.monotonic())
-    try:
-        import ctypes
-        import ctypes.util
-        class Timespec(ctypes.Structure):
-            _fields_ = [('tv_sec', ctypes.c_long), ('tv_nsec', ctypes.c_long)]
-        librt = ctypes.CDLL(ctypes.util.find_library('rt') or 'librt.so.1', use_errno=True)
-        ts = Timespec()
-        if librt.clock_gettime(1, ctypes.byref(ts)) == 0:
-            return float(ts.tv_sec) + float(ts.tv_nsec) / 1e9
-    except Exception:
-        pass
+    if not _MONOTONIC_TRIED:
+        _MONOTONIC_TRIED = True
+        try:
+            import ctypes
+            class Timespec(ctypes.Structure):
+                _fields_ = [('tv_sec', ctypes.c_long), ('tv_nsec', ctypes.c_long)]
+            # The controller's Linux ABI supplies librt.so.1. Library discovery
+            # shells out on Python 2 and can fail while history occupies RAM.
+            librt = ctypes.CDLL('librt.so.1', use_errno=True)
+            clock_gettime = librt.clock_gettime
+            clock_gettime.argtypes = [ctypes.c_int, ctypes.POINTER(Timespec)]
+            clock_gettime.restype = ctypes.c_int
+
+            def native_clock():
+                ts = Timespec()
+                if clock_gettime(1, ctypes.byref(ts)) == 0:
+                    return float(ts.tv_sec) + float(ts.tv_nsec) / 1e9
+                return None
+            _MONOTONIC_NATIVE = native_clock
+        except Exception:
+            pass
+    if _MONOTONIC_NATIVE is not None:
+        value = _MONOTONIC_NATIVE()
+        if value is not None:
+            return value
     try:
         with open('/proc/uptime', 'rb') as handle:
             return float(handle.read().split()[0])
@@ -684,7 +705,7 @@ def normalize_history(data, retain):
             continue
         samples = []
         for sample in board.get('samples') or []:
-            if isinstance(sample, dict) and 't' in sample:
+            if isinstance(sample, (dict, HistorySample)) and 't' in sample:
                 samples.append(sample)
         boards.append({'id': bid, 'samples': samples})
     history = empty_history(retain)
@@ -699,7 +720,7 @@ def load_history(path, retain):
     if not os.path.exists(path):
         return empty_history(retain)
     try:
-        data = read_json(path)
+        data = read_json(path, compact=True)
     except (IOError, OSError, ValueError):
         raise HistoryError('unreadable history')
     return normalize_history(data, retain)
@@ -1235,7 +1256,7 @@ def finish_epochs(sample, extra, previous):
 
 
 def prune_samples(samples, retain, max_samples):
-    kept = [sample for sample in samples if isinstance(sample, dict) and 't' in sample]
+    kept = [sample for sample in samples if isinstance(sample, (dict, HistorySample)) and 't' in sample]
     kept.sort(key=lambda sample: float(sample.get('t') or 0))
     if not kept:
         return kept

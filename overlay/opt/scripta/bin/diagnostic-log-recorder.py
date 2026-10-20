@@ -29,13 +29,13 @@ SPECS = {
 }
 SENSITIVE = re.compile(r'password|passphrase|passwd|\bpsk\b|wep[-_ ]?key|secret|credential|authorization|cookie|token|api[-_ ]?key|private[-_ ]?key|\bpass\s*[:=]|://[^\s/]+@', re.I)
 NETWORK = re.compile(r'wlan|wi-?fi|xradio|80211|8189|realtek|\beth\d|\blink (?:is )?(?:up|down)|dhcp|carrier', re.I)
-FAULT = re.compile(r'error|fail|panic|oops|oom|out of memory|killed process|segfault|timed? ?out|i/o|read-only|overheat', re.I)
+FAULT = re.compile(r'error|fail|panic|oops|oom|out of memory|lowmemorykiller|killed process|segfault|timed? ?out|i/o|read-only|overheat', re.I)
 LIFECYCLE = re.compile(r'start(?:ed|ing)|stop(?:ped|ping)|restart|shutdown|reboot|watchdog', re.I)
 ROLLBACK_POLL = re.compile(r'^(?:Starting|Started|Stopping|Stopped) Roll back (?:a failed Blakestream Wi-Fi|an unconfirmed Blakestream network) change\.*$')
 LOG_LINE = re.compile(r'^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} UTC) ([^:]+): (.*)$')
 SOURCE_NAMES = {'NetworkManager': 'Network', 'wpa_supplicant': 'Wi-Fi', 'dhclient': 'DHCP',
                 'kernel': 'Driver', 'systemd': 'System', 'scripta_watchdog': 'Miner',
-                'bs-miner': 'Miner', 'bs-fan': 'Fan', 'bs-temp': 'Temperature',
+                'bs-miner': 'Miner', 'blakestream-miner': 'Miner', 'bs-fan': 'Fan', 'bs-temp': 'Temperature',
                 'fan': 'Fan', 'temperature': 'Temperature', 'lighttpd': 'Web server',
                 'php-cgi': 'PHP', 'collector': 'Logging'}
 
@@ -335,7 +335,7 @@ def classify(record):
         return []
     if tag in ('NetworkManager', 'wpa_supplicant', 'dhclient') or unit.startswith('blakestream-network-') or unit.startswith('blakestream-wifi-') or (kernel and NETWORK.search(message)):
         result.append('network-events.log')
-    if (kernel and (priority <= 4 or FAULT.search(message))) or (tag == 'systemd' and (priority <= 4 or (record.get('UNIT', '').endswith('.service') and LIFECYCLE.search(message)))) or tag in ('scripta_watchdog', 'bs-miner'):
+    if (kernel and (priority <= 4 or FAULT.search(message))) or (tag == 'systemd' and (priority <= 4 or (record.get('UNIT', '').endswith('.service') and LIFECYCLE.search(message)))) or tag in ('scripta_watchdog', 'bs-miner', 'blakestream-miner'):
         result.append('system-events.log')
     return result
 

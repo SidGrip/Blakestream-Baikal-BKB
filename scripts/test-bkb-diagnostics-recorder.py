@@ -829,6 +829,23 @@ def mem_child():
     gc.collect()
     paths = mod['default_paths']()
     last = float(os.environ['BKB_DIAG_MEM_LAST'])
+    clock_rss = 0
+    if os.environ.get('BKB_DIAG_MEM_MODE') == 'combined':
+        clock = load('clock_combined_memory', os.path.join(BIN, 'clock-history-recorder.py'))
+        clock_path = os.path.join(paths['runtime'], 'clock-seed.json')
+        history = clock.load_json(clock_path, {}, compact=True)
+        for board in history['boards']:
+            clock.accepted_work_rate(board['samples'], 3600)
+        clock.write_json_atomic(clock_path + '.result', history)
+        del history
+        gc.collect()
+        clock_rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    if os.environ.get('BKB_DIAG_MEM_MODE') == 'plain':
+        original_read = mod['read_json']
+        mod['read_json'] = lambda path, compact=False: original_read(path)
+        # Baseline: decoded dicts plus a complete encoded copy, as before.
+        mod['write_history_json'] = lambda handle, obj, **kwargs: handle.write(
+            json.dumps(obj, sort_keys=True, separators=(',', ':'), allow_nan=False))
     snapshot_now = snapshot(
         stat_row(DiagStatEpoch=1, DiagRouteEpoch=1, DiagEnableEpoch=1),
         dev_row(Accepted=10, **{'Difficulty Accepted': 320.0, 'Device Elapsed': 60000}),
@@ -841,88 +858,170 @@ def mem_child():
     rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
     size = os.path.getsize(paths['history'])
     kept = len(result['history']['boards'][0]['samples'])
-    sys.stdout.write('MEM rss_kb=%d elapsed=%.3f bytes=%d kept=%d\n' % (rss, elapsed, size, kept))
+    sys.stdout.write('MEM rss_kb=%d clock_rss_kb=%d elapsed=%.3f bytes=%d kept=%d\n' % (rss, clock_rss, elapsed, size, kept))
     return 0
 
 
-def test_memory():
+def write_memory_fixture(directory):
+    paths_for(directory)
+    os.makedirs(os.path.join(directory, 'fw'))
+    base = 1000000
+    names = list(mod['DIAG_MONOTONIC'])
+    seed = record(directory, stat_row(), dev_row(), 'stratum+tcp://eu3.example:3334', base)
+    template = seed['history']['boards'][0]['samples'][0]
+    boards = []
+    for bid in (0, 1, 2):
+        samples = []
+        for index in range(18 * 60):
+            sample = dict(template)
+            sample.update({
+                't': base + index * 60, 'tm': base + index * 60,
+                'a': index, 'da': index * 32, 'de': index * 60,
+                'se': 1, 'ses': 'd', 're': 1, 'rs': 'd', 'ee': 1, 'es': 'd',
+                'pe': '9:100', 'ps': 'api',
+                'diag': dict((name, index) for name in names),
+            })
+            samples.append(sample)
+        boards.append({'id': bid, 'samples': samples})
+    history = {'v': 1, 'step': 60, 'retain': mod['RETENTION_SECONDS'],
+               'updated': base, 'host': [], 'artifacts': [], 'boards': boards}
+    with open(os.path.join(directory, 'seed.json'), 'w') as handle:
+        json.dump(history, handle)
+    clock_test = load('clock_fixture', os.path.join(ROOT, 'scripts', 'test-clock-history-memory.py'))
+    clock_history = {'boards': [
+        {'id': bid, 'samples': [clock_test.sample(base + i * 60) for i in range(10081)]}
+        for bid in range(3)
+    ]}
+    with open(os.path.join(directory, 'clock-seed.json'), 'w') as handle:
+        json.dump(clock_history, handle, separators=(',', ':'))
+
+
+def memory_check():
     directory = tempfile.mkdtemp(prefix='bkb-mem-', dir='/tmp')
     try:
-        paths_for(directory)
-        os.makedirs(os.path.join(directory, 'fw'))
-        base = 1000000
-        count = 18 * 60
-        names = list(mod['DIAG_MONOTONIC'])
-        boards = []
-        for bid in (0, 1, 2):
-            samples = []
-            for index in range(count):
-                diag = {}
-                for name in names:
-                    diag[name] = index
-                samples.append({
-                    't': base + index * 60,
-                    'tm': base + index * 60,
-                    'a': index,
-                    'da': index * 32,
-                    'de': index * 60,
-                    'se': 1,
-                    'ses': 'd',
-                    're': 1,
-                    'rs': 'd',
-                    'ee': 1,
-                    'es': 'd',
-                    'pe': '9:100',
-                    'ps': 'api',
-                    'diag': diag,
-                })
-            boards.append({'id': bid, 'samples': samples})
-        history = {
-            'v': 1,
-            'step': 60,
-            'retain': mod['RETENTION_SECONDS'],
-            'updated': base,
-            'host': [],
-            'artifacts': [],
-            'boards': boards,
-        }
-        with open(paths_for(directory)['history'], 'wb') as handle:
-            handle.write(json.dumps(history).encode('utf-8'))
-        del history
-        del boards
+        # Generate the fixture in a separate process: its heap must not become
+        # the inherited RSS high-water floor of either measurement child.
+        subprocess.check_call([sys.executable, os.path.abspath(__file__), '--memory-seed', directory])
         env = os.environ.copy()
         env['BKB_DIAG_MEM_CHILD'] = '1'
-        env['BKB_DIAG_MEM_LAST'] = str(base + (count - 1) * 60)
+        env['BKB_DIAG_MEM_LAST'] = str(1000000 + (18 * 60 - 1) * 60)
         env['BKB_DIAG_RUNTIME'] = directory
         env['BKB_DIAG_HOST_PATH'] = paths_for(directory)['host_path']
         env['BKB_DIAG_FIRMWARE_DIR'] = os.path.join(directory, 'fw')
-        proc = subprocess.Popen(
-            [sys.executable, os.path.abspath(__file__)],
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
-        out, err = proc.communicate()
-        if not isinstance(out, str):
-            out = out.decode('utf-8', 'replace')
-            err = err.decode('utf-8', 'replace')
-        if proc.returncode != 0 or 'MEM ' not in out:
-            return fail('18h tick failed: %s' % err[-500:])
-        fields = {}
-        for token in out.strip().split()[1:]:
-            key, value = token.split('=', 1)
-            fields[key] = value
+        results = {}
+        for mode in ('plain', 'compact', 'combined'):
+            shutil.copyfile(os.path.join(directory, 'seed.json'), paths_for(directory)['history'])
+            env['BKB_DIAG_MEM_MODE'] = mode
+            proc = subprocess.Popen(
+                [sys.executable, os.path.abspath(__file__)],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env,
+                # Linux vfork/exec can inherit the parent's RSS high-water
+                # mark even after exec. Force fork from this small, single-
+                # threaded runner so each measurement starts independently.
+                preexec_fn=lambda: None)
+            out, err = proc.communicate()
+            if not isinstance(out, str):
+                out = out.decode('utf-8', 'replace')
+                err = err.decode('utf-8', 'replace')
+            if proc.returncode != 0 or 'MEM ' not in out:
+                return fail('18h %s tick failed: %s' % (mode, err[-500:]))
+            fields = dict(token.split('=', 1) for token in out.strip().split()[1:])
+            results[mode] = fields
+            shutil.copyfile(paths_for(directory)['history'], os.path.join(directory, mode + '.json'))
+        if mod['read_json'](os.path.join(directory, 'plain.json')) != mod['read_json'](os.path.join(directory, 'compact.json')):
+            return fail('compact history differs from uncompressed history')
+        if mod['read_json'](os.path.join(directory, 'compact.json')) != mod['read_json'](os.path.join(directory, 'combined.json')):
+            return fail('combined collector changed diagnostic history')
+        if mod['read_json'](os.path.join(directory, 'clock-seed.json')) != mod['read_json'](os.path.join(directory, 'clock-seed.json.result')):
+            return fail('combined collector changed clock history')
+        combined_rss = int(results['combined']['rss_kb'])
+        clock_rss = int(results['combined']['clock_rss_kb'])
+        sys.stdout.write('Combined week + 18h rss_kb=%d clock_rss_kb=%d\n' % (combined_rss, clock_rss))
+        if combined_rss > 90000 or combined_rss > clock_rss + 32768:
+            return fail('combined history exceeded peak memory budget')
+        fields = results['compact']
         rss = int(fields['rss_kb'])
         elapsed = float(fields['elapsed'])
         size = int(fields['bytes'])
         kept = int(fields['kept'])
-        sys.stdout.write('18h tick rss_kb=%d elapsed=%.3f bytes=%d kept=%d\n' % (rss, elapsed, size, kept))
+        sys.stdout.write('18h tick plain_rss_kb=%s compact_rss_kb=%d elapsed=%.3f bytes=%d kept=%d\n' %
+                         (results['plain']['rss_kb'], rss, elapsed, size, kept))
         if size >= 8 * 1024 * 1024:
             return fail('18h history is %d bytes' % size)
         if kept > mod['MAX_SAMPLES_PER_BOARD'] or kept < 18 * 60:
             return fail('18h tick kept %d samples' % kept)
         if elapsed > 20:
             return fail('18h tick took %.3fs' % elapsed)
-        if rss > 90000:
-            return fail('18h tick RSS %d KB exceeds 90 MB' % rss)
+        if rss > 65000 or rss >= int(results['plain']['rss_kb']) * 0.8:
+            return fail('18h tick RSS %d KB exceeds compact memory budget' % rss)
     finally:
+        shutil.rmtree(directory)
+    return 0
+
+
+def test_memory():
+    # Earlier functional tests may retain allocator arenas. Start a small
+    # measurement parent so its children do not inherit that RSS floor.
+    return subprocess.call([sys.executable, os.path.abspath(__file__), '--memory-check'])
+
+
+def test_compact_history_and_native_clock():
+    directory = tempfile.mkdtemp(prefix='bkb compact ')
+    native = getattr(time, 'monotonic', None)
+    original_popen = subprocess.Popen
+    try:
+        path = os.path.join(directory, 'history.json')
+        sample = {'t': 1, 'a': 2, 'diag': {'work_sends': 3, 'future': None},
+                  'future': {'quoted': 'a " b', 'unicode': u'\u00e9'}}
+        data = {'boards': [{'id': 0, 'samples': [sample] * 257}],
+                'host': [{'t': 1, 'name': 'host'}], 'artifacts': []}
+        mod['write_json_atomic'](path, data)
+        compact = mod['load_history'](path, 1000)
+        rows = compact['boards'][0]['samples']
+        if not all(isinstance(row, mod['HistorySample']) for row in rows):
+            return fail('history was not packed')
+        if rows[0].fields is not rows[1].fields:
+            return fail('history schemas were not shared')
+        if not isinstance(rows[0]['diag'], mod['HistorySample']):
+            return fail('diagnostic counters were not packed')
+        mod['write_json_atomic'](path, compact)
+        restored = mod['read_json'](path)
+        if restored['boards'] != data['boards'] or restored['host'] != data['host']:
+            return fail('compact round trip changed samples or host metadata')
+        with open(path, 'rb') as handle:
+            before = handle.read()
+        data['boards'][0]['samples'][-1] = {'t': float('nan'), 'a': 2}
+        try:
+            mod['write_json_atomic'](path, data)
+            return fail('nonfinite sample accepted')
+        except ValueError:
+            pass
+        with open(path, 'rb') as handle:
+            unchanged = handle.read() == before
+        if not unchanged or any(n.endswith('.tmp') for n in os.listdir(directory)):
+            return fail('failed later batch changed history or leaked temp file')
+
+        def no_spawn(*args, **kwargs):
+            raise AssertionError('monotonic clock spawned a process')
+        subprocess.Popen = no_spawn
+        if native is not None:
+            del time.monotonic
+        mod['_MONOTONIC_NATIVE'] = None
+        mod['_MONOTONIC_TRIED'] = False
+        first = mod['monotonic_seconds']()
+        clock = mod['_MONOTONIC_NATIVE']
+        second = mod['monotonic_seconds']()
+        if first is None or second < first or clock is None or mod['_MONOTONIC_NATIVE'] is not clock:
+            return fail('native monotonic clock unavailable or not cached')
+        mod['_MONOTONIC_NATIVE'] = lambda: None
+        if mod['monotonic_seconds']() is None:
+            return fail('proc uptime fallback unavailable')
+    finally:
+        if native is not None:
+            time.monotonic = native
+        subprocess.Popen = original_popen
+        mod['_MONOTONIC_NATIVE'] = None
+        mod['_MONOTONIC_TRIED'] = False
         shutil.rmtree(directory)
     return 0
 
@@ -938,6 +1037,7 @@ def main():
         test_hash_cache_and_running_inode,
         test_driver_host_sha,
         test_atomic_corrupt_retention,
+        test_compact_history_and_native_clock,
         test_memory,
     )
     for check in checks:
@@ -949,6 +1049,11 @@ def main():
 
 
 if __name__ == '__main__':
+    if len(sys.argv) == 2 and sys.argv[1] == '--memory-check':
+        sys.exit(memory_check())
+    if len(sys.argv) == 3 and sys.argv[1] == '--memory-seed':
+        write_memory_fixture(sys.argv[2])
+        sys.exit(0)
     if os.environ.get('BKB_DIAG_MEM_CHILD') == '1':
         sys.exit(mem_child())
     sys.exit(main())

@@ -331,3 +331,5 @@ Modifications are released under **GPLv3**. Scripta/controller changes are in
 `sgminer-build/patches/`. Preserve upstream license and copyright notices.
 This is an independent project, not affiliated with or endorsed by those authors
 or organizations.
+
+Thanks to [BlueDragon747](https://github.com/BlueDragon747) for his help with this project.

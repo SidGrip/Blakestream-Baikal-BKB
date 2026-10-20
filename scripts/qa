@@ -84,6 +84,9 @@ require_exec() {
 
 phase_contract_php() {
     require_exec php "${PHP_BIN}"
+    "${PHP_BIN}" "${ROOT}/scripts/test-system-memory.php"
+    "${PHP_BIN}" "${ROOT}/scripts/test-hashrate-history.php"
+    "${PHP_BIN}" "${ROOT}/scripts/test-clock-history-endpoint.php"
     "${PHP_BIN}" "${ROOT}/scripts/test-web-auth.php"
     "${PHP_BIN}" "${ROOT}/scripts/test-accepted-work.php"
     "${PHP_BIN}" "${ROOT}/scripts/test-dev-activity.php"
@@ -117,6 +120,7 @@ phase_firmware_container() {
 
 phase_contract_node() {
     require_exec node "${NODE_BIN}"
+    "${NODE_BIN}" "${ROOT}/scripts/test-duration.js"
     "${NODE_BIN}" "${ROOT}/scripts/test-web-password-ui.js"
     "${NODE_BIN}" "${ROOT}/scripts/test-dev-activity.js"
     "${NODE_BIN}" "${ROOT}/scripts/test-dev-boards-tab.js"
@@ -163,6 +167,8 @@ phase_contract_python() {
     "${PY_BIN}" "${ROOT}/scripts/test-firmware-container-runner.py"
     "${PY_BIN}" "${ROOT}/scripts/test-bkb-clock-trial.py"
     "${PY_BIN}" "${ROOT}/scripts/test-controller-memory.py"
+    "${PY_BIN}" "${ROOT}/scripts/test-capped-log-writer.py"
+    "${PY_BIN}" "${ROOT}/scripts/test-clock-history-memory.py"
     "${PY_BIN}" "${ROOT}/scripts/test-diagnostic-log-recorder.py"
     "${PY_BIN}" "${ROOT}/scripts/test-clock-baseline-export.py"
     "${PY_BIN}" "${ROOT}/scripts/test-accepted-work-recorder.py"

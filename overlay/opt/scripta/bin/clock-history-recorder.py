@@ -22,6 +22,8 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from measured_rate_service import Service
+from history_json import (HistorySample, compact_sample_hook,
+                          encode_history_sample, write_history_json)
 
 try:
     string_types = (basestring,)
@@ -47,10 +49,10 @@ TEMP_MIN = 1
 TEMP_MAX = 120
 
 
-def load_json(path, default):
+def load_json(path, default, compact=False):
     try:
         with open(path, 'r') as f:
-            return json.load(f)
+            return json.load(f, object_hook=compact_sample_hook() if compact else None)
     except (IOError, ValueError):
         return default
 
@@ -144,9 +146,7 @@ def write_json_atomic(path, data):
     tmp = '%s.%s.tmp' % (path, os.getpid())
     try:
         with open(tmp, 'w') as f:
-            # dumps uses the C encoder on Python 2.7; dump streams millions of
-            # Python-level chunks for a week of history and can time out on ARM.
-            f.write(json.dumps(data, separators=(',', ':')))
+            write_history_json(f, data)
         try:
             os.chmod(tmp, 0o664)
         except OSError:
@@ -270,9 +270,9 @@ def load_clock_history(persist_sd):
     if persist_sd:
         newest = newest_existing_path([SD_BUFFER_HISTORY, SD_HISTORY])
         if newest:
-            return load_json(newest, empty_history())
+            return load_json(newest, empty_history(), compact=True)
         return empty_history()
-    return load_json(RAM_HISTORY, empty_history())
+    return load_json(RAM_HISTORY, empty_history(), compact=True)
 
 
 def should_flush_sd(force, now):
@@ -298,7 +298,7 @@ def empty_accepted_rate(reason='measuring'):
 def accepted_work_rate(samples, window_seconds):
     result = empty_accepted_rate()
     valid_samples = [s for s in (samples or [])
-                     if isinstance(s, dict) and 't' in s]
+                     if isinstance(s, (dict, HistorySample)) and 't' in s]
     if len(valid_samples) < 2:
         return result
     valid_samples.sort(key=lambda s: int_or_default(s.get('t'), 0))
@@ -524,7 +524,8 @@ def main():
             'ls': int_or_default(dev.get('Last Share Time', 0), 0),
             'pool': clean_pool_url(pools_by_no.get(effective, '')),
         })
-        board['samples'] = [s for s in board['samples'] if isinstance(s, dict) and s.get('t', 0) >= cutoff]
+        board['samples'] = [s for s in board['samples']
+                            if isinstance(s, (dict, HistorySample)) and s.get('t', 0) >= cutoff]
 
     history['boards'] = sorted(boards_by_id.values(), key=lambda x: x.get('id', 0))
     history['updated'] = now
