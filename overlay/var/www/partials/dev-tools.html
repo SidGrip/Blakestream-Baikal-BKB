@@ -31,7 +31,6 @@
         <span class="bs-activity-state" ng-show="devActivity.state">{{devActivity.state}}</span>
         <span class="bs-dev-meta text-danger" ng-show="devActivity.error">{{devActivity.error}}</span>
         <span class="bs-dev-meta" ng-show="devActivity.updated">{{1000*devActivity.updated|bsTzDate:'HH:mm:ss':bsTzNonce}}</span>
-        <button type="button" class="btn btn-default btn-sm" ng-click="devMinerRestart()">Restart sgminer</button>
       </div>
 
       <div class="bs-activity-health">
@@ -58,7 +57,7 @@
                 <td ng-class="{warning: b.rejected>0}">{{b.rejected}}</td>
                 <td ng-class="{warning: b.hw>0}">{{b.hw}}</td>
                 <td>{{b.last_share_age<0 ? 'never' : (b.last_share_age|duration)}}</td>
-                <td><button class="btn btn-default btn-xs" ng-click="devBoardSet(b, !b.enabled)">{{b.enabled ? 'Disable' : 'Enable'}}</button></td>
+                <td><span class="text-muted">read only</span></td>
               </tr>
             </tbody>
           </table>
@@ -394,21 +393,15 @@
       <label>Command
         <select ng-model="devApi.command" ng-options="c for c in devApiCommonCommands"></select>
       </label>
-      <label ng-show="devApi.command=='(other)'">Raw command
-        <input type="text" ng-model="devApi.customCommand" placeholder="e.g. lockstats">
-      </label>
-      <label>Parameter
-        <input type="text" ng-model="devApi.parameter" placeholder="(optional)">
-      </label>
       <button type="submit" class="btn btn-default btn-sm" ng-disabled="!devApi.command">Run</button>
       <span class="bs-dev-meta" ng-show="devApi.updated">
         last response {{devApi.updated|bsTzDate:'HH:mm:ss':bsTzNonce}}
       </span>
     </form>
     <p class="help-block">
-      Read-only: <code>summary</code>, <code>stats</code>, <code>coin</code>, <code>pools</code>, <code>devs</code>, <code>devdetails</code>, <code>config</code>, <code>notify</code>, <code>version</code>.
-      Control: <code>ascenable</code>/<code>ascdisable</code>/<code>ascidentify</code> (board no.), <code>enablepool</code>/<code>disablepool</code>/<code>switchpool</code> (pool no.), <code>poolpriority</code> (e.g. <code>0,2,1</code>), <code>quota</code>.
-      Put the bit after <code>|</code> in <strong>Parameter</strong> (e.g. command=<code>disablepool</code>, parameter=<code>0</code>). <code>(other)</code> sends any sgminer verb you type. Disruptive commands confirm first.
+      This console is read-only. Only the listed status commands are accepted;
+      custom commands, parameters, pool changes, board changes, restarts, and
+      config-saving commands are rejected by the server.
     </p>
     <p>
       <button type="button" class="btn btn-default btn-xs" ng-click="devApiCopy()" ng-show="devApi.response">Copy</button>
@@ -418,8 +411,8 @@
       <strong>Recent:</strong>
       <ul class="list-inline">
         <li ng-repeat="h in devApi.history">
-          <a class="bs-dev-history-link" ng-click="devApi.command=h.command; devApi.parameter=h.parameter">
-            {{h.command}}{{h.parameter ? '|'+h.parameter : ''}}
+          <a class="bs-dev-history-link" ng-click="devApi.command=h.command">
+            {{h.command}}
           </a>
         </li>
       </ul>
@@ -439,9 +432,13 @@
         <span class="bs-dev-meta" ng-show="devFirmware.status.last_identity">
           md5 {{devFirmware.status.last_identity.chip_md5}} · read {{1000*devFirmware.status.last_identity.at|bsTzDate:'HH:mm:ss':bsTzNonce}}
         </span>
-        <button class="btn btn-default btn-sm" ng-click="devFirmwareVerify()" ng-disabled="devFwBusy()">
+        <button class="btn btn-default btn-sm" ng-click="devFirmwareVerify()" ng-disabled="devFwBusy() || devFirmware.status.recovery_required">
           {{devFirmware.verifying ? 'Reading chip…' : 'Verify chip'}}
         </button>
+      </div>
+      <div class="alert alert-danger" ng-show="devFirmware.status.recovery_required">
+        <strong>Bridge recovery required.</strong> The last write did not leave a read-back-verified application.
+        Mining is locked out and the bridge remains in DFU. Validate and flash the staged stock or V1 image below to recover.
       </div>
       <p class="help-block">
         Enabling adjustable clocks is a <strong>one-time flash</strong> of the V1 firmware (below); after that the everyday <strong>Adjustable Clocks</strong> toggle and clock changes are software-only — no further flashing.<br>
@@ -469,11 +466,11 @@
       </tbody>
     </table>
 
-    <div class="bs-fw-write bs-fw-revert" ng-hide="devFirmware.status.last_identity.identity=='STOCK'">
+    <div class="bs-fw-write bs-fw-revert" ng-hide="devFirmware.status.last_identity.identity=='STOCK' &amp;&amp; !devFirmware.status.recovery_required">
       <h4>Revert controller chip to stock firmware</h4>
       <p class="help-block">1. dry run (validates the staged stock image, writes nothing) · 2. type <code>REVERT</code> · 3. flash stock firmware. Estimated total: {{devFirmwareRuntimeLabel('revert')}}, including backup, write, readback and restart. Timing updates after a successful run on this miner.</p>
       <p>
-        <button class="btn btn-default btn-sm" ng-click="devFirmwareDryRun()" ng-disabled="!devFirmware.status.ready || devFwBusy()">1. Dry run</button>
+        <button class="btn btn-default btn-sm" ng-click="devFirmwareDryRun()" ng-disabled="(!devFirmware.status.ready &amp;&amp; !devFirmware.status.recovery_required) || devFwBusy()">1. Dry run</button>
         <span class="text-success" ng-show="devFirmware.dryOk"> ✓ {{devFirmware.dryMsg}}</span>
       </p>
       <p ng-show="devFirmware.dryOk">
@@ -487,7 +484,7 @@
       <pre class="bs-dev-log-pane" ng-show="devFirmware.output">{{devFirmware.output}}</pre>
     </div>
 
-    <div class="bs-fw-write bs-fw-enable" ng-hide="devFirmware.status.custom_active">
+    <div class="bs-fw-write bs-fw-enable" ng-hide="devFirmware.status.custom_active &amp;&amp; !devFirmware.status.recovery_required">
       <h4>{{devFirmware.status.custom_legacy ? 'Upgrade adjustable-clock firmware to V1' : 'Enable adjustable clocks — flash custom firmware (V1)'}}</h4>
       <div class="bs-fw-blocked" ng-hide="devFirmware.status.encoder_ready">
         <i class="fa fa-ban"></i> <strong>Blocked:</strong> the validated sgminer clock mapping and bridge-global coordinator are not deployed yet. Flashing V1 now would mis-drive the clocks. Deploy the matching binary and this unlocks — you can still dry-run to validate the staged image.

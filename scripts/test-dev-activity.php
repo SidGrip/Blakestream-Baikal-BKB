@@ -344,17 +344,21 @@ $good = dev_activity_parse_mutation('POST', json_encode(array('op' => 'clear', '
 expect($good['ok'] === true && $good['op'] === 'clear', 'strict csrf and op accepted');
 
 $spec = dev_activity_trace_spec('enable');
-expect(is_array($spec) && $spec['command'] === 'ascset' && $spec['parameter'] === '0,diag-trace,on', 'enable maps to diag-trace on');
-expect(dev_activity_trace_spec('disable')['parameter'] === '0,diag-trace,off', 'disable maps to off');
-expect(dev_activity_trace_spec('clear')['parameter'] === '0,diag-trace,clear', 'clear maps to clear');
-expect(dev_activity_trace_spec('export')['parameter'] === '0,diag-trace,export', 'export maps to export');
-expect(dev_activity_trace_spec('download') === null, 'download is not an ascset');
+expect(is_array($spec) && $spec['command'] === 'bkbtrace' && $spec['parameter'] === 'on', 'enable maps to constrained trace on');
+expect(dev_activity_trace_spec('disable')['parameter'] === 'off', 'disable maps to constrained trace off');
+expect(dev_activity_trace_spec('clear')['parameter'] === 'clear', 'clear maps to constrained trace clear');
+expect(dev_activity_trace_spec('export')['parameter'] === 'export', 'export maps to constrained trace export');
+expect(dev_activity_trace_spec('download') === null, 'download is not an API mutation');
 expect(dev_activity_mutation_kind('download') === 'file', 'download is a file op');
 expect(dev_activity_read_command() === 'stats', 'read command is stats');
 expect(dev_activity_sgminer_allowed('stats', '') === true, 'stats allowed');
-expect(dev_activity_sgminer_allowed('ascset', '0,diag-trace,on') === true, 'trace on allowed');
-expect(dev_activity_sgminer_allowed('ascset', '0,diag-trace,enable') === false, 'enable spelling rejected');
-expect(dev_activity_sgminer_allowed('ascset', '1,diag-trace,on') === false, 'non-zero asc rejected');
+foreach (array('on', 'off', 'clear', 'export') as $trace_op) {
+    expect(dev_activity_sgminer_allowed('bkbtrace', $trace_op) === true, 'exact trace op allowed: ' . $trace_op);
+}
+foreach (array('', 'enable', 'on,extra', 'on ', "on\n", '0,diag-trace,on') as $trace_op) {
+    expect(dev_activity_sgminer_allowed('bkbtrace', $trace_op) === false, 'non-canonical trace op rejected');
+}
+expect(dev_activity_sgminer_allowed('ascset', '0,diag-trace,on') === false, 'generic trace ascset rejected');
 expect(dev_activity_sgminer_allowed('ascset', '0,fan,80') === false, 'fan rejected');
 expect(dev_activity_sgminer_allowed('ascset', '0,reapply-clock,400') === false, 'reapply-clock rejected');
 expect(dev_activity_sgminer_allowed('ascidentify', '0') === false, 'ascidentify rejected');
@@ -445,7 +449,7 @@ $act_code = preg_replace('/\/\*.*?\*\//s', '', $act_slice);
 $act_code = preg_replace('/\/\/.*$/m', '', $act_code);
 expect(strpos($act_slice, 'dev_activity_read_command') !== false, 'activity uses the read command');
 expect(strpos($act_slice, 'dev_activity_decode_json') !== false, 'activity decodes with bigint strings');
-expect(strpos($act_code, 'ascset') === false && strpos($act_code, 'ascidentify') === false, 'activity case does not call ascset');
+expect(strpos($act_code, 'bkbtrace') === false && strpos($act_code, 'ascset') === false && strpos($act_code, 'ascidentify') === false, 'activity case does not call a mutation verb');
 expect(strpos($act_code, 'json_decode') === false, 'activity case does not raw-decode json');
 
 $tr = strpos($fdev, "case 'activity_trace':");
@@ -453,7 +457,7 @@ $tr_end = strpos($fdev, 'default:', $tr);
 $tr_slice = substr($fdev, $tr, $tr_end - $tr);
 $open_at = strpos($tr_slice, 'dev_activity_open_selected_export');
 $api_at = strpos($tr_slice, 'sgminer_api_exchange');
-expect($open_at !== false && $api_at !== false && $open_at < $api_at, 'download opens the fixed file before any ascset');
+expect($open_at !== false && $api_at !== false && $open_at < $api_at, 'download opens the fixed file before any mutation API call');
 expect(strpos($tr_slice, 'dev_activity_decode_json') !== false, 'trace response uses bigint decode');
 expect(strpos($tr_slice, 'dev_activity_read_stream') !== false && strpos($tr_slice, '4097') !== false, 'trace body read is capped');
 expect(strpos($tr_slice, 'file_get_contents') === false, 'trace body is not an unbounded read');
@@ -494,8 +498,8 @@ expect(strpos($ctrl, "get('f_dev.php?action=activity')") !== false, 'poll GET st
 expect(strpos($ctrl, "get('f_dev.php?action=board_health')") !== false, 'health read stays on board_health');
 expect(strpos($html, 'ng-switch-when="activity"') === false, 'activity is not a separate panel');
 expect(strpos($html, 'ng-switch-when="boards"') !== false, 'unified boards panel exists');
-expect(strpos($html, 'devMinerRestart()') !== false, 'restart stays on the boards panel');
-expect(strpos($html, 'devBoardSet(') !== false, 'enable and disable stay on the boards panel');
+expect(strpos($html, 'devMinerRestart()') === false, 'restart is not exposed through the raw miner API');
+expect(strpos($html, 'devBoardSet(') === false, 'board mutations are not exposed through the raw miner API');
 expect(strpos($html, 'Locally valid nonces / local errors · not pool-accepted') !== false, 'local contribution legend');
 expect(strpos($html, 'bs-activity-k">Results') !== false, 'results group is not labeled discard');
 expect(strpos($html, 'Unattributed IDs') !== false, 'unattributed id label');
@@ -510,7 +514,7 @@ $js_at = strpos($index, 'ng/dev-activity.js');
 $ctrl_at = strpos($index, 'ng/controllers.js');
 expect($js_at !== false && $ctrl_at !== false && $js_at < $ctrl_at, 'activity helper loads before the controller');
 expect(strpos($app, '20260930-ui-backup') !== false, 'partial cache tag bumped');
-expect(strpos($index, 'ng/controllers.js?v=fan-inputs-1') !== false, 'controller cache tag bumped');
+expect(strpos($index, 'ng/controllers.js?v=pool-catalog-status-1') !== false, 'controller cache tag bumped');
 expect(strpos($index, 'blakestream-dark.css?v=collector-wait-1') !== false, 'css cache tag bumped');
 
 echo "ok\n";

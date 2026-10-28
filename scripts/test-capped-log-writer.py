@@ -203,7 +203,13 @@ class LoggingTests(FixtureBase):
         self.assertNotIn('private exception payload', self.messages[-1])
 
     def test_cli_once_mode_and_invalid_recovery_arguments(self):
-        process = subprocess.Popen([sys.executable, WRITER, '--once', self.path, '8192', '4096'],
+        loader = ("import imp\nL=imp.load_source('writer',%r)\n" % WRITER if sys.version_info[0] == 2 else
+                  "import importlib.util\ns=importlib.util.spec_from_file_location('writer',%r)\nL=importlib.util.module_from_spec(s)\ns.loader.exec_module(L)\n" % WRITER)
+        harness = (loader +
+                   "L.LOG_PATHS=(%r,)\nL.protect_log_writer=lambda: True\n"
+                   "import sys\nsys.argv=[%r,'--once',%r,'8192','4096']\nsys.exit(L.main())\n" %
+                   (self.path, WRITER, self.path))
+        process = subprocess.Popen([sys.executable, '-c', harness],
                                    stdin=subprocess.PIPE, stderr=subprocess.PIPE)
         unused, errors = process.communicate(b'one-shot bytes\n')
         self.assertEqual(process.returncode, 0, errors)
@@ -585,8 +591,9 @@ def drain_fixture(kind, path, result_path):
         if kind == 'trim':
             raise OSError(errno.ENOSPC, 'injected')
         return real_rename(source, target)
-    if kind == 'trim':
+    if kind != 'parent':
         os.makedirs(os.path.dirname(path))
+    if kind == 'trim':
         write(path, b'x' * 8192)
     patches = [patch(L, 'LogOutput', ObservedOutput), patch(L, 'protect_log_writer', lambda: True),
                patch(L, 'report', messages.append), patch(L, 'capture_time', lambda: 0),

@@ -21,6 +21,7 @@ STATE = RAM + '/diagnostic-log-state.json'
 LOCK = RAM + '/diagnostic-logs.lock'
 MAX_BYTES = 1048576
 MAX_RECORDS = 2000
+READABLE_VERSION = 2
 SPECS = {
     'network-events.log': ('userNetworkLogTarget', RAM + '/network-events.log', SD + '/network-events.log'),
     'system-events.log': ('userSystemLogTarget', RAM + '/system-events.log', SD + '/system-events.log'),
@@ -151,6 +152,17 @@ def describe_event(tag, message):
     if tag in ('lighttpd', 'Web server'):
         message = re.sub(r'^\([\w.-]+\.\d+\)\s*', '', message)
         message = message.replace('FastCGI-stderr: ', '')
+        # lighttpd 1.4.35 calls SSL_shutdown even for unfinished handshakes.
+        # Keep one explanation; other TLS/handshake errors remain verbatim.
+        if message in ('SSL: 1 -1 error:140E0197:SSL routines:SSL_shutdown:shutdown while in init',
+                       'HTTPS client disconnected before the TLS handshake completed'):
+            return [descriptor(source, 'HTTPS client disconnected before the TLS handshake completed',
+                               'web.incomplete-tls-close')], []
+    if tag in ('bs-temp', 'Temperature'):
+        if message.startswith('temp-watchdog: waiting for sgminer API on port '):
+            return [descriptor(source, message, 'temperature.api-wait')], []
+        if message.startswith('temp-watchdog: temperature monitoring resumed '):
+            return [descriptor(source, message)], ['temperature.api-wait']
     if tag in ('fan', 'Fan'):
         match = re.match(r'auto=(True|False) status=(\S+) fan=(\d+)%\s*(.*)', message)
         if match:
@@ -409,9 +421,9 @@ def cooling_changes(previous, fan, temperature):
 def collect(config, state, boot_id, records, fan, temperature, oversized=False):
     if state.get('version') != 1:
         scrub_existing()
-    if state.get('readable_version') != 1:
+    if state.get('readable_version') != READABLE_VERSION:
         rewrite_existing()
-    seen = dict(state.get('events_seen', {}))
+    seen = dict(state.get('events_seen', {})) if state.get('boot_id') == boot_id else {}
     buckets = dict((key, []) for key in SPECS)
     if state.get('boot_id') != boot_id:
         buckets['system-events.log'].append(event_line('collector', 'boot ' + boot_id))
@@ -434,7 +446,7 @@ def collect(config, state, boot_id, records, fan, temperature, oversized=False):
     for name, (key, ram, sd) in SPECS.items():
         path = sd if config.get(key) == 'SD' else ram
         append_capped(path, buckets[name])
-    return {'version': 1, 'readable_version': 1, 'events_seen': seen, 'boot_id': boot_id, 'cursor': cursor,
+    return {'version': 1, 'readable_version': READABLE_VERSION, 'events_seen': seen, 'boot_id': boot_id, 'cursor': cursor,
             'cooling': cooling, 'updated_at': int(time.time()), 'ok': True}
 
 

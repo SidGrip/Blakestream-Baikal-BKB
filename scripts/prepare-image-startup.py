@@ -28,6 +28,11 @@ def prepare(root):
         lines = rc.read_text().splitlines(keepends=True)
         retained = []
         for line in lines:
+            if 'update_fw.py' in line and not line.lstrip().startswith('#'):
+                tokens = shlex.split(line, comments=True)
+                if tokens != ['sudo', '/usr/bin/update_fw.py']:
+                    raise ValueError('unexpected update_fw.py command in rc.local')
+                continue
             if 'ntpdate' in line and not line.lstrip().startswith('#'):
                 tokens = shlex.split(line, comments=True)
                 if tokens != ['sudo', '/usr/sbin/ntpdate', '-b', '-u', '0.pool.ntp.org']:
@@ -36,11 +41,53 @@ def prepare(root):
             retained.append(line)
         updated = ''.join(retained)
 
+    sshd = path('etc/ssh/sshd_config')
+    sshd_updated = None
+    if sshd.exists():
+        if sshd.is_symlink():
+            raise ValueError('refusing a symlinked sshd_config')
+        sshd_text = sshd.read_text()
+        active_allow_users = []
+        for line in sshd_text.splitlines():
+            stripped = line.strip()
+            if not stripped or stripped.startswith('#'):
+                continue
+            tokens = shlex.split(stripped, comments=True)
+            if tokens and tokens[0].lower() == 'allowusers':
+                active_allow_users.append(tokens)
+        if active_allow_users and active_allow_users != [['AllowUsers', 'root']]:
+            raise ValueError('unexpected AllowUsers policy in sshd_config')
+        if not active_allow_users:
+            sshd_updated = sshd_text
+            if sshd_updated and not sshd_updated.endswith('\n'):
+                sshd_updated += '\n'
+            sshd_updated += ('\n# Blakestream supports the documented root SSH bootstrap account only.\n'
+                             'AllowUsers root\n')
+
     links = {
         'etc/systemd/system/ntp.service': '/dev/null',
         'etc/systemd/system/sendmail.service': '/dev/null',
+        'etc/systemd/system/shellinabox.service': '/dev/null',
+        'etc/systemd/system/dnsmasq.service': '/dev/null',
+        'etc/systemd/system/smbd.service': '/dev/null',
+        'etc/systemd/system/nmbd.service': '/dev/null',
+        'etc/systemd/system/samba.service': '/dev/null',
+        'etc/systemd/system/samba-ad-dc.service': '/dev/null',
+        'etc/systemd/system/rsync.service': '/dev/null',
+        'etc/systemd/system/avahi-daemon.service': '/dev/null',
+        'etc/systemd/system/avahi-daemon.socket': '/dev/null',
+        'etc/systemd/system/dbus-org.freedesktop.Avahi.service': '/dev/null',
+        'etc/systemd/system/multi-user.target.wants/dnsmasq.service': '/dev/null',
+        'etc/systemd/system/multi-user.target.wants/avahi-daemon.service': '/dev/null',
+        'etc/systemd/system/sockets.target.wants/avahi-daemon.socket': '/dev/null',
         'etc/systemd/system/multi-user.target.wants/blakestream-system-perms.service':
             '../blakestream-system-perms.service',
+        'etc/systemd/system/multi-user.target.wants/blakestream-device-identity.service':
+            '../blakestream-device-identity.service',
+        'etc/systemd/system/multi-user.target.wants/blakestream-terminal.service':
+            '../blakestream-terminal.service',
+        'etc/systemd/system/multi-user.target.wants/blakestream-firmware-recovery.service':
+            '../blakestream-firmware-recovery.service',
         'etc/systemd/system/multi-user.target.wants/blakestream-firmware-firstboot.service':
             '../blakestream-firmware-firstboot.service',
         'etc/systemd/system/sysinit.target.wants/systemd-timesyncd.service':
@@ -51,12 +98,14 @@ def prepare(root):
         if target.exists() and not target.is_symlink():
             raise ValueError('refusing to replace a service override: ' + str(target))
 
-    pending = path('opt/scripta/etc/bkb-firmware-firstboot.pending')
+    pending = path('var/lib/blakestream-firstboot/firmware-firstboot.pending')
     if pending.is_symlink():
         raise ValueError('refusing a symlinked first-boot marker')
 
     if updated is not None and updated != rc.read_text():
         rc.write_text(updated)
+    if sshd_updated is not None:
+        sshd.write_text(sshd_updated)
     for target, value in targets:
         if target.is_symlink() and os.readlink(str(target)) == value:
             continue

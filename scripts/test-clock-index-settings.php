@@ -2,6 +2,7 @@
 /* PHP 5.6-compatible checks for experimental Index option validation.
  * Defines BKB_SETTINGS_LIB_ONLY before loading f_settings.php so the web
  * request path, session, and process launches do not run. */
+define('BKB_MINER_OPTION_POLICY', dirname(__DIR__) . '/overlay/opt/scripta/policy/miner-options.json');
 define('BKB_SETTINGS_LIB_ONLY', true);
 require dirname(__DIR__) . '/overlay/var/www/f_settings.php';
 

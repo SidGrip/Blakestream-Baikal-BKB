@@ -31,18 +31,32 @@ class StartupTests(unittest.TestCase):
 
     def test_only_obsolete_clock_command_is_removed(self):
         startup.prepare(self.root)
-        self.assertEqual(self.rc.read_text(), self.original.replace(
-            'sudo /usr/sbin/ntpdate -b -u 0.pool.ntp.org\n', ''))
+        expected = self.original.replace('sudo /usr/bin/update_fw.py\n', '')
+        expected = expected.replace('sudo /usr/sbin/ntpdate -b -u 0.pool.ntp.org\n', '')
+        self.assertEqual(self.rc.read_text(), expected)
         self.assertEqual(self.rc.stat().st_mode & 0o777, 0o755)
         self.assertEqual(os.readlink(self.root / 'etc/systemd/system/ntp.service'), '/dev/null')
         self.assertEqual(os.readlink(self.root / 'etc/systemd/system/sendmail.service'), '/dev/null')
+        self.assertEqual(os.readlink(self.root / 'etc/systemd/system/shellinabox.service'), '/dev/null')
+        self.assertEqual(os.readlink(self.root / 'etc/systemd/system/dnsmasq.service'), '/dev/null')
+        self.assertEqual(os.readlink(self.root / 'etc/systemd/system/smbd.service'), '/dev/null')
+        self.assertEqual(os.readlink(self.root / 'etc/systemd/system/nmbd.service'), '/dev/null')
+        self.assertEqual(os.readlink(self.root / 'etc/systemd/system/avahi-daemon.socket'), '/dev/null')
         self.assertEqual(os.readlink(self.root / 'etc/systemd/system/sysinit.target.wants/systemd-timesyncd.service'),
                          '/lib/systemd/system/systemd-timesyncd.service')
         self.assertEqual(os.readlink(self.root / 'etc/systemd/system/multi-user.target.wants/blakestream-system-perms.service'),
                          '../blakestream-system-perms.service')
+        self.assertEqual(os.readlink(self.root / 'etc/systemd/system/multi-user.target.wants/blakestream-device-identity.service'),
+                         '../blakestream-device-identity.service')
+        self.assertEqual(os.readlink(self.root / 'etc/systemd/system/multi-user.target.wants/blakestream-terminal.service'),
+                         '../blakestream-terminal.service')
+        self.assertEqual(os.readlink(self.root / 'etc/systemd/system/multi-user.target.wants/blakestream-firmware-recovery.service'),
+                         '../blakestream-firmware-recovery.service')
         self.assertEqual(os.readlink(self.root / 'etc/systemd/system/multi-user.target.wants/blakestream-firmware-firstboot.service'),
                          '../blakestream-firmware-firstboot.service')
-        self.assertTrue((self.root / 'opt/scripta/etc/bkb-firmware-firstboot.pending').is_file())
+        pending = self.root / 'var/lib/blakestream-firstboot/firmware-firstboot.pending'
+        self.assertTrue(pending.is_file())
+        self.assertEqual(pending.stat().st_mode & 0o777, 0o644)
         before = self.rc.stat().st_mtime_ns
         startup.prepare(self.root)
         self.assertEqual(self.rc.stat().st_mtime_ns, before)
@@ -54,6 +68,34 @@ class StartupTests(unittest.TestCase):
             startup.prepare(self.root)
         self.assertEqual(self.rc.read_text(), text)
         self.assertFalse((self.root / 'etc/systemd').exists())
+
+    def test_unexpected_factory_firmware_command_fails_without_changes(self):
+        text = self.original.replace('/usr/bin/update_fw.py', '/usr/bin/update_fw.py --force')
+        self.rc.write_text(text)
+        with self.assertRaisesRegex(ValueError, 'unexpected update_fw.py'):
+            startup.prepare(self.root)
+        self.assertEqual(self.rc.read_text(), text)
+        self.assertFalse((self.root / 'etc/systemd').exists())
+
+    def test_sshd_allows_only_documented_root_account(self):
+        ssh = self.root / 'etc/ssh'
+        ssh.mkdir()
+        config = ssh / 'sshd_config'
+        config.write_text('Port 22\nPermitRootLogin yes\n')
+        startup.prepare(self.root)
+        self.assertIn('AllowUsers root\n', config.read_text())
+        before = config.read_text()
+        startup.prepare(self.root)
+        self.assertEqual(config.read_text(), before)
+
+    def test_conflicting_sshd_allowlist_is_rejected(self):
+        ssh = self.root / 'etc/ssh'
+        ssh.mkdir()
+        config = ssh / 'sshd_config'
+        config.write_text('AllowUsers root baikal\n')
+        with self.assertRaisesRegex(ValueError, 'unexpected AllowUsers'):
+            startup.prepare(self.root)
+        self.assertEqual(config.read_text(), 'AllowUsers root baikal\n')
 
     def test_rc_symlink_is_rejected(self):
         other = self.root / 'outside'

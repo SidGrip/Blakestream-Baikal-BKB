@@ -1,10 +1,16 @@
 <?php
-session_start();
-if (!isset($_SESSION['_logged_']) || $_SESSION['_logged_'] === false) {
+require_once __DIR__ . '/inc/web-security.php';
+bs_secure_session_start();
+if (!isset($_SESSION['_logged_']) || $_SESSION['_logged_'] !== true) {
     header('Location: login.php' . (isset($_GET['network']) && $_GET['network'] === '1' ? '?network=1' : ''));
     die();
 }
 if (empty($_SESSION['bs_view_session'])) $_SESSION['bs_view_session'] = bin2hex(openssl_random_pseudo_bytes(16));
+$bsCsrf = bs_csrf_ensure($_SESSION);
+if ($bsCsrf === '') {
+    http_response_code(503);
+    die('Secure request token unavailable');
+}
 ?>
 <!DOCTYPE html>
 <html lang="en" ng-app="Scripta">
@@ -17,7 +23,6 @@ if (empty($_SESSION['bs_view_session'])) $_SESSION['bs_view_session'] = bin2hex(
     <link rel="shortcut icon" type="image/x-icon" href="img/favicon.ico"/>
     <link href="css/bootstrap.min.css" rel="stylesheet">
     <link href="css/font-awesome.min.css" rel="stylesheet">
-    <link rel="stylesheet" type="text/css" href="css/shellinabox.css">
 
     <link href="css/custom.css" rel="stylesheet">
     <link rel="stylesheet" href="css/ionicons.min.css">
@@ -33,8 +38,8 @@ if (empty($_SESSION['bs_view_session'])) $_SESSION['bs_view_session'] = bin2hex(
 </head>
 
 
-<body class="hold-transition skin-blue layout-top-nav bs-dark" ng-controller="CtrlMain" data-view-session="<?php echo htmlspecialchars($_SESSION['bs_view_session'], ENT_QUOTES, 'UTF-8'); ?>">
-<script>window.BlakestreamTheme.init();</script>
+<body class="hold-transition skin-blue layout-top-nav bs-dark" ng-controller="CtrlMain" data-view-session="<?php echo htmlspecialchars($_SESSION['bs_view_session'], ENT_QUOTES, 'UTF-8'); ?>" data-csrf="<?php echo htmlspecialchars($bsCsrf, ENT_QUOTES, 'UTF-8'); ?>">
+<script>window.BKB_CSRF_TOKEN = <?php echo json_encode($bsCsrf); ?>; window.BlakestreamTheme.init();</script>
 <header class="main-header scripta-trigger">
     <nav class="navbar navbar-static-top">
         <div class="container-fluid">
@@ -89,7 +94,7 @@ if (empty($_SESSION['bs_view_session'])) $_SESSION['bs_view_session'] = bin2hex(
                     </span>
 
                     <button class="btn btn-default btn-flat navbar-btn bs-navbar-action"
-                        onclick="location.href='f_logout.php'">
+                        ng-click="bsLogout()">
                     Logout
                     </button>
 
@@ -137,6 +142,8 @@ if (empty($_SESSION['bs_view_session'])) $_SESSION['bs_view_session'] = bin2hex(
 </footer>
 <script src="js/alertify.min.js">
 </script>
+<script src="js/blakestream-alertify-safe.js?v=20261024-text-only">
+</script>
 <script src="js/jquery.min.js">
 </script>
 <script src="js/highcharts.js">
@@ -150,66 +157,19 @@ if (empty($_SESSION['bs_view_session'])) $_SESSION['bs_view_session'] = bin2hex(
 <script src="js/app.min.js">
 </script>
 
-<script src="ng/app.js?v=fan-inputs-1">
+<script src="ng/app.js?v=https-terminal-1">
 </script>
 <script src="ng/services.js?v=20260518-clock-diagnostics">
 </script>
 <script src="ng/dev-activity.js?v=clock-index-1">
 </script>
-<script src="ng/controllers.js?v=fan-inputs-1">
+<script src="ng/controllers.js?v=pool-catalog-status-1">
 </script>
 <script src="ng/network-settings.js?v=20260930-ui-backup"></script>
 <script src="ng/wifi-settings.js?v=wifi-password-2"></script>
 <script src="ng/filters.js?v=20260518-clock-diagnostics">
 </script>
 <script src="ng/directives.js?v=fan-inputs-1">
-</script>
-<script>
-    $(document).ready(function() {
-
-            $.ajax( {
-                type: "POST",
-                url: "update/ctrl.php",
-                success: function(returnMessage) {
-                    if (returnMessage != 0) {
-                        var r = confirm(returnMessage);
-                        if (r == true) {
-                            $.ajax( {
-                                type: "POST",
-                                url: "update/start.php",
-                                success: function(returnMessage) {
-                                    alert(returnMessage);
-                                    window.location = "index.php";
-                                }
-                            });
-                        }
-                    }
-                },
-                error: function(returnMessage) {
-                    alert("Error");
-                    window.location = "index.php";
-                }
-            });
-
-
-        });
-
-    function ctrl_host(cmd) {
-        var retVal = prompt("Enter password : ", "");
-        if (retVal == null) Alert("Password required!");
-        else {
-            $.get('f_hostHardCtl.php?command=' + cmd + '&pass=' + retVal, function(data) {
-
-                    alert('msg: ' + data);
-                });
-        }
-    }
-
-    function open_terminal() {
-	url='http://'+location.host+':4200';
-	window.open(url);
-
-    }
 </script>
 </body>
 </html>

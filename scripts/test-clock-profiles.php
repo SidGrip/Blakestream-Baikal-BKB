@@ -4,14 +4,33 @@ require dirname(__DIR__) . '/overlay/var/www/inc/experimental-clock.php';
 // Load only the pure normalizer; no session, API requests or filesystem writes.
 $source = file_get_contents(dirname(__DIR__) . '/overlay/var/www/f_blakestream.php');
 $start = strpos($source, 'function clamp_int(');
-$end = strpos($source, '// Determine action', $start);
+$end = strpos($source, '// Actions are selected only by the query key', $start);
 if ($start === false || $end === false) exit(1);
 eval(substr($source, $start, $end - $start));
+$labelStart = strpos($source, 'function saved_label_valid(');
+$labelEnd = strpos($source, 'function bk_sgminer_api(', $labelStart);
+if ($labelStart === false || $labelEnd === false) exit(1);
+eval(substr($source, $labelStart, $labelEnd - $labelStart));
 function profile_expect($ok, $message) {
     if (!$ok) { fwrite(STDERR, 'FAIL: ' . $message . "\n"); exit(1); }
 }
 $profile = array('id' => 'trial', 'version' => 2, 'mapping' => 'bkb-v1-clock-index-1',
     'name' => 'Trial', 'experimental' => true, 'mode' => 'individual', 'clock_indices' => array(8, 30, 32));
+foreach (array('<img src=x>', '{{7*7}}', "bad\nname") as $badName) {
+    $badProfile = $profile; $badProfile['name'] = $badName;
+    profile_expect(bkb_clock_profile_error($badProfile) !== null, 'active markup profile name rejected');
+}
+profile_expect(saved_pools_error(array('categories' => array(array(
+    'id' => 'cat-1', 'name' => 'SAFE & SOUND', 'pools' => array())))) === null, 'normal category accepted');
+foreach (array('<img src=x>', '{{7*7}}', "bad\nname") as $badName) {
+    profile_expect(saved_pools_error(array('categories' => array(array(
+        'id' => 'cat-1', 'name' => $badName, 'pools' => array())))) !== null,
+        'active markup category name rejected');
+}
+profile_expect(strpos($source, '$saved_pools_error = saved_pools_error($saved_pools);') !== false,
+    'restored saved pools are revalidated on load');
+profile_expect(strpos($source, "'categories' => array(),") !== false,
+    'invalid restored pools fail closed without labels');
 $clean = normalize_clock_profiles(array('profiles' => array($profile)));
 profile_expect(!isset($clean['error']), 'valid profile');
 profile_expect($clean['profiles'][0]['clock_indices'] === array(8, 30, 32), 'raw indices retained');

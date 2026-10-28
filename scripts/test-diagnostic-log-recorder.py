@@ -223,6 +223,58 @@ class DiagnosticTests(unittest.TestCase):
                          'Miner: Starting miner: 3 boards assigned; 4 pool connections')
         self.assertIn('Driver: xradio timeout code -5', description('kernel', 'xradio timeout code -5'))
 
+    def test_incomplete_tls_shutdown_is_explained_once_and_other_errors_survive(self):
+        noise = record('lighttpd', '(connections.c.1702) SSL: 1 -1 '
+                       'error:140E0197:SSL routines:SSL_shutdown:shutdown while in init')
+        failures = [record('lighttpd', message) for message in (
+            'SSL: certificate verification failed', 'SSL: SSL_accept handshake failure',
+            'SSL: 1 -1 error:140E0197:SSL routines:SSL_shutdown:unexpected EOF',
+            'PHP fatal error: fixture')]
+        state = logs.collect({}, {}, 'boot', [noise] * 10 + failures, {}, {})
+        path = self.root/'ram/lighttpd-error.log'
+        content = path.read_text()
+        self.assertEqual(content.count('HTTPS client disconnected'), 1)
+        self.assertNotIn('shutdown while in init', content)
+        for failure in failures:
+            self.assertIn(failure['MESSAGE'], content)
+        state = logs.collect({}, state, 'boot', [noise], {}, {})
+        self.assertEqual(path.read_text(), content)
+        logs.collect({}, state, 'next-boot', [noise], {}, {})
+        self.assertEqual(path.read_text().count('HTTPS client disconnected'), 2)
+
+    def test_temperature_outage_recovery_and_persistent_warnings_are_kept(self):
+        waiting = record('bs-temp', 'temp-watchdog: waiting for sgminer API '
+                         'on port 4028; temperatures unavailable')
+        warning = record('bs-temp', 'temp-watchdog: WARNING temperature monitoring '
+                         'unavailable on port 4028 for 120s')
+        recovered = record('bs-temp', 'temp-watchdog: temperature monitoring resumed on port 4028')
+        fault = record('bs-temp', 'temp-watchdog: CRITICAL failed to write cutoff state')
+        refused = record('bs-temp', 'temp-watchdog: cannot query sgminer API '
+                         'on port 4028: [Errno 111] Connection refused')
+        logs.collect({}, {}, 'boot', [waiting] * 5 + [warning, recovered, fault, waiting, refused], {}, {})
+        content = (self.root/'ram/cooling-events.log').read_text()
+        self.assertEqual(content.count('waiting for sgminer API'), 2)
+        self.assertIn(warning['MESSAGE'], content)
+        self.assertIn(recovered['MESSAGE'], content)
+        self.assertIn(fault['MESSAGE'], content)
+        self.assertIn(refused['MESSAGE'], content, 'historical failures remain available')
+
+    def test_old_web_log_migration_preserves_faults_and_timestamps(self):
+        path = self.root/'ram/lighttpd-error.log'
+        path.parent.mkdir()
+        stamp = '2026-10-01 18:46:38 UTC '
+        path.write_text((stamp + 'Web server: SSL: 1 -1 error:140E0197:'
+                         'SSL routines:SSL_shutdown:shutdown while in init\n') * 5 +
+                        stamp + 'Web server: SSL: certificate verification failed\n')
+        state = logs.collect({}, {'version': 1, 'readable_version': 1, 'boot_id': 'boot'},
+                             'boot', [], {}, {})
+        content = path.read_text()
+        self.assertEqual(content.count('HTTPS client disconnected'), 1)
+        self.assertIn(stamp + 'Web server: SSL: certificate verification failed', content)
+        before = path.stat().st_mtime_ns
+        logs.collect({}, state, 'boot', [], {}, {})
+        self.assertEqual(before, path.stat().st_mtime_ns)
+
     def test_existing_ram_and_sd_logs_are_converted_once(self):
         for side in ('ram', 'sd'):
             path = self.root/side/'network-events.log'

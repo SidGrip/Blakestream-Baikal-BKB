@@ -27,5 +27,5 @@ for (const password of ['Synthetic-password', 'symbols +&?=#%"\\', '0', '']) {
   assert.strictEqual(new URLSearchParams(call.body).get('pass'), JSON.stringify(password));
 }
 $scope.sync('settings', 'load');
-assert.deepStrictEqual(calls.pop(), {method: 'GET', url: 'f_settings.php?settings="load"'});
+assert.deepStrictEqual(calls.pop(), {method: 'GET', url: 'f_settings.php?settings=%22load%22'});
 console.log('PASS password POST body encoding, no password in URL, unchanged settings reads');

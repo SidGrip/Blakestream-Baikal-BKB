@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "allowed_keys": [
+    "api-port",
+    "api-allow",
+    "api-groups",
+    "baikal-fan",
+    "baikal-options",
+    "baikal-clock-mode",
+    "baikal-board-clocks",
+    "baikal-experimental-clock-index",
+    "baikal-board-clock-index",
+    "blakestream-clock-scope",
+    "scan-time",
+    "no-submit-stale"
+  ],
+  "fixed_values": {
+    "api-port": "4028",
+    "api-allow": "B:127.0.0.1",
+    "api-groups": "B:*:restart:ascidentify:ascenable:ascdisable:bkbtrace:bkbfan:ascpool:ascfailover"
+  }
+}

@@ -9,11 +9,13 @@ Reads:
   /opt/scripta/etc/saved-pools.json       - user pool catalog (categories + pools)
   /opt/scripta/etc/board-assignments.json - board id -> pool id (or null = idle)
   /opt/scripta/etc/miner.options.json     - shared sgminer options
-  /run/blakestream/temp-state.json        - runtime temp-watchdog board state
+  /run/blakestream-control/temp-state.json - runtime temp-watchdog board state
 
 Writes:
-  /tmp/scripta-runtime-miner.conf       - sgminer JSON config for the launcher
-  /tmp/scripta-runtime-poolmap.json     - v2: saved pool id <-> runtime pool_no
+  /run/blakestream-miner/scripta-runtime-miner.conf
+                                        - sgminer JSON config for the launcher
+  /run/blakestream-miner/scripta-runtime-poolmap.json
+                                        - v2: saved pool id <-> runtime pool_no
                                           sidecar for the apply-board-assignments
                                           ascpool control plane
 
@@ -52,21 +54,27 @@ Exits:
 
 from __future__ import print_function
 import json
+import grp
 import os
 import re
+import stat
 import sys
 import collections
+import tempfile
 
 ETC_DIR = "/opt/scripta/etc"
-RUNTIME_DIR = "/run/blakestream"
+RUNTIME_DIR = "/run/blakestream-control"
 SAVED_POOLS = os.path.join(ETC_DIR, "saved-pools.json")
 ASSIGNMENTS = os.path.join(ETC_DIR, "board-assignments.json")
 OPTIONS = os.path.join(ETC_DIR, "miner.options.json")
+OPTION_POLICY = os.path.normpath(os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "..", "policy", "miner-options.json"))
 BRIDGE_GLOBAL_V1_READY = "/opt/scripta/firmware/BRIDGE_GLOBAL_V1_READY"
 TEMP_STATE = os.path.join(RUNTIME_DIR, "temp-state.json")
 FAILOVER_CONFIG = os.path.join(ETC_DIR, "failover-config.json")
-RUNTIME_CONF = "/tmp/scripta-runtime-miner.conf"
-RUNTIME_POOLMAP = "/tmp/scripta-runtime-poolmap.json"
+MINER_RUNTIME_DIR = "/run/blakestream-miner"
+RUNTIME_CONF = os.path.join(MINER_RUNTIME_DIR, "scripta-runtime-miner.conf")
+RUNTIME_POOLMAP = os.path.join(MINER_RUNTIME_DIR, "scripta-runtime-poolmap.json")
 BAIKAL_CLOCK_DEFAULT = 400
 BAIKAL_VALIDATED_CLOCKS = (400,)
 BAIKAL_RECOVER_DEFAULT = 40
@@ -91,12 +99,59 @@ def _unlink_if_exists(path):
         pass
 
 
+def _output_parent(path):
+    """Require a real, non-writable output directory before a root write."""
+    parent = os.path.dirname(os.path.abspath(path))
+    info = os.lstat(parent)
+    if not stat.S_ISDIR(info.st_mode) or stat.S_ISLNK(info.st_mode):
+        raise OSError("runtime output parent is not a real directory: %s" % parent)
+    if info.st_mode & 0o022:
+        raise OSError("runtime output parent is group/world writable: %s" % parent)
+    if os.geteuid() == 0 and info.st_uid != 0:
+        raise OSError("runtime output parent is not root-owned: %s" % parent)
+    if os.geteuid() != 0 and info.st_uid != os.geteuid():
+        raise OSError("test output parent is not owned by this process: %s" % parent)
+    return parent
+
+
+def _runtime_output_gid():
+    if os.geteuid() != 0:
+        return os.getegid()
+    return grp.getgrnam("www-data").gr_gid
+
+
 def write_json_atomic(path, data):
-    """Atomic temp + rename. Raises on failure."""
-    tmp = path + ".tmp"
-    with open(tmp, "w") as f:
-        json.dump(data, f, indent=4)
-    os.rename(tmp, path)
+    """Create an unpredictable regular file, sync it, then atomically rename."""
+    parent = _output_parent(path)
+    fd = -1
+    tmp = None
+    try:
+        fd, tmp = tempfile.mkstemp(prefix=".%s.tmp." % os.path.basename(path), dir=parent)
+        if os.geteuid() == 0:
+            os.fchown(fd, 0, _runtime_output_gid())
+        os.fchmod(fd, int("640", 8))
+        with os.fdopen(fd, "w") as handle:
+            fd = -1
+            json.dump(data, handle, indent=4)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.rename(tmp, path)
+        tmp = None
+        written = os.lstat(path)
+        if not stat.S_ISREG(written.st_mode) or stat.S_ISLNK(written.st_mode):
+            raise OSError("runtime output is not a regular file: %s" % path)
+        if written.st_mode & 0o022:
+            raise OSError("runtime output is writable outside root: %s" % path)
+        if os.geteuid() == 0 and written.st_uid != 0:
+            raise OSError("runtime output is not root-owned: %s" % path)
+    finally:
+        if fd >= 0:
+            os.close(fd)
+        if tmp is not None:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
 
 
 def load_json(path, default=None):
@@ -237,10 +292,7 @@ def board_clock_indices_equal(clock_index):
 
 def firmware_supports_clock_index(paths=None):
     if paths is None:
-        paths = (
-            os.path.join(RUNTIME_DIR, "bkb-firmware-identity.json"),
-            os.path.join(ETC_DIR, "bkb-firmware-identity.json"),
-        )
+        paths = (os.path.join(ETC_DIR, "bkb-firmware-identity.json"),)
     for path in paths:
         try:
             with open(path, "r") as handle:
@@ -277,6 +329,70 @@ def _saved_option_items(options_list):
     return items
 
 
+def load_miner_option_policy(path=None):
+    """Load the root-owned list of keys that may reach sgminer."""
+    path = OPTION_POLICY if path is None else path
+    try:
+        with open(path, "r") as handle:
+            policy = json.load(handle)
+    except (IOError, OSError, ValueError) as exc:
+        raise ExperimentalClockError("miner option policy unavailable: %s" % exc)
+    if not isinstance(policy, dict) or policy.get("version") != 1:
+        raise ExperimentalClockError("miner option policy has an unsupported version")
+    allowed = policy.get("allowed_keys")
+    fixed = policy.get("fixed_values")
+    if not isinstance(allowed, list) or not isinstance(fixed, dict):
+        raise ExperimentalClockError("miner option policy is malformed")
+    exact_allowed = []
+    for key in allowed:
+        text = _exact_text(key)
+        if text is None or not text or text in exact_allowed:
+            raise ExperimentalClockError("miner option policy contains an invalid key")
+        exact_allowed.append(text)
+    for key, value in fixed.items():
+        if _exact_text(key) not in exact_allowed or _exact_text(value) is None:
+            raise ExperimentalClockError("miner option policy contains an invalid fixed value")
+    return set(exact_allowed), fixed
+
+
+def validate_saved_option_value(key, value, fixed):
+    """Validate generic values not covered by the clock-specific validators."""
+    if key in fixed:
+        # Restored and hand-edited legacy values are accepted only as input;
+        # enforce_fixed_options() replaces them before anything reaches sgminer.
+        return
+    if key == "baikal-options":
+        text = _exact_text(value)
+        if text is None or re.match(r"^[0-9]{1,4}(?::[0-9]{1,3}){0,2}\Z", text) is None:
+            raise ExperimentalClockError(
+                "baikal-options must contain one to three colon-separated integers")
+    elif key == "baikal-clock-mode":
+        if _exact_text(value) not in ("global", "individual"):
+            raise ExperimentalClockError("baikal-clock-mode must be global or individual")
+    elif key == "baikal-board-clocks":
+        try:
+            normalize_baikal_board_clocks(value)
+        except (TypeError, ValueError) as exc:
+            raise ExperimentalClockError(str(exc))
+    elif key == "baikal-experimental-clock-index":
+        parse_experimental_flag(value)
+    elif key == "baikal-board-clock-index":
+        parse_board_clock_index(value)
+    elif key == CLOCK_SCOPE_KEY:
+        parse_clock_scope(value)
+    elif key == "scan-time":
+        text = _exact_text(value)
+        if text is None or re.match(r"^(?:0|[1-9][0-9]{0,2})\Z", text) is None:
+            raise ExperimentalClockError("scan-time must be an integer from 0 to 999")
+    elif key == "no-submit-stale":
+        if not (isinstance(value, bool) or _exact_text(value) in ("true", "false")):
+            raise ExperimentalClockError("no-submit-stale must be true or false")
+    elif key == "baikal-fan":
+        text = _exact_text(value)
+        if text is None or re.match(r"^(?:4[0-9]|[5-9][0-9]|100)\Z", text) is None:
+            raise ExperimentalClockError("baikal-fan must be an integer from 40 to 100")
+
+
 def explicit_saved_clock_mode(options_list):
     """Return baikal-clock-mode only when the saved list contains it once.
 
@@ -296,34 +412,39 @@ def explicit_saved_clock_mode(options_list):
 
 
 def load_saved_options(options_list):
-    """Flatten miner.options.json. Duplicate experimental keys fail closed."""
+    """Flatten only explicitly supported options. Every duplicate fails closed."""
+    allowed, fixed = load_miner_option_policy()
     options = {}
     mode_count = 0
-    for item in _saved_option_items(options_list):
-        if not isinstance(item, dict) or "key" not in item:
-            continue
-        key = item["key"]
-        if key == CLOCK_SCOPE_KEY:
-            if CLOCK_SCOPE_KEY in options:
-                raise ExperimentalClockError(
-                    "blakestream-clock-scope must appear once")
-            if "value" not in item:
-                raise ExperimentalClockError(
-                    "blakestream-clock-scope must be global or individual")
-            parse_clock_scope(item["value"])
-        if "value" not in item:
-            continue
-        if key in ("baikal-experimental-clock-index", "baikal-board-clock-index") and key in options:
-            raise ExperimentalClockError("%s must appear once" % key)
+    items = _saved_option_items(options_list)
+    if len(items) > 32:
+        raise ExperimentalClockError("too many miner options")
+    for item in items:
+        if not isinstance(item, dict) or "key" not in item or "value" not in item:
+            raise ExperimentalClockError("each miner option must contain key and value")
+        key = _exact_text(item["key"])
+        if key is None or key not in allowed:
+            raise ExperimentalClockError("unsupported miner option: %s" % item.get("key"))
+        if key in options:
+            raise ExperimentalClockError("duplicate miner option: %s" % key)
+        validate_saved_option_value(key, item["value"], fixed)
         if key == "baikal-clock-mode":
             mode_count += 1
         options[key] = item["value"]
     if 'baikal-fan' in options:
-        options['baikal-fan'] = str(max(40, min(100, int_or_default(options['baikal-fan'], 70))))
+        options['baikal-fan'] = str(int(options['baikal-fan']))
     flag = options.get("baikal-experimental-clock-index")
     if mode_count > 1 and (flag is True or flag == "true"):
         raise ExperimentalClockError(
             "duplicate baikal-clock-mode cannot authorize experimental Index")
+    return options
+
+
+def enforce_fixed_options(options, path=None):
+    """Overwrite security-managed values after parsing untrusted saved state."""
+    _allowed, fixed = load_miner_option_policy(path)
+    for key, value in fixed.items():
+        options[key] = value
     return options
 
 
@@ -618,8 +739,9 @@ def main():
     if has_backups:
         runtime["_failover_backup_count"] = len(backup_pools)
     # Make sure essential defaults exist
-    runtime.setdefault("api-port", "4028")
-    runtime.setdefault("api-allow", "W:127.0.0.1")
+    # These are security boundaries, not user defaults. Never let restored or
+    # manually edited configuration widen the loopback control plane.
+    enforce_fixed_options(runtime)
     runtime.setdefault("scan-time", "0")
     runtime.setdefault("no-submit-stale", True)
 

@@ -5,7 +5,11 @@
     },
     {
         "key": "api-allow",
-        "value": "W:127.0.0.1"
+        "value": "B:127.0.0.1"
+    },
+    {
+        "key": "api-groups",
+        "value": "B:*:restart:ascidentify:ascenable:ascdisable:bkbtrace:bkbfan:ascpool:ascfailover"
     },
     {
         "key": "baikal-fan",

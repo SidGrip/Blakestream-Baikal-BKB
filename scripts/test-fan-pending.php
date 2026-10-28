@@ -1,4 +1,5 @@
 <?php
+define('BKB_MINER_OPTION_POLICY', __DIR__ . '/../overlay/opt/scripta/policy/miner-options.json');
 define('BKB_SETTINGS_LIB_ONLY', true);
 require __DIR__ . '/../overlay/var/www/f_settings.php';
 $source = file_get_contents(__DIR__ . '/../overlay/var/www/f_status.php');
@@ -43,6 +44,39 @@ try {
   $json['status'] = 'error';
   file_put_contents($state, json_encode($json));
   check_fan(bs_read_fan_control_state($stats, $state, $settings, 1040)['status'] === 'error', 'errors stay errors');
+  $json['reason'] = 'temperature unavailable: [Errno 111] Connection refused';
+  file_put_contents($state, json_encode($json));
+  $stats['data']['STATS'][0]['Elapsed'] = 20;
+  $r = bs_read_fan_control_state($stats, $state, $settings, 1040);
+  check_fan($r['status'] === 'starting' && !$r['pending'] && $r['fan'] === 80,
+    'recent restart with live fan data waits for auto control');
+  check_fan(strpos($r['reason'], 'after miner restart') !== false, 'restart wait explains its cause');
+  $stats['data']['STATS'][0]['Elapsed'] = 120;
+  check_fan(bs_read_fan_control_state($stats, $state, $settings, 1040)['status'] === 'starting',
+    'startup grace includes the next controller interval');
+  foreach (array(121, -1, null, 'invalid') as $elapsed) {
+    $stats['data']['STATS'][0]['Elapsed'] = $elapsed;
+    check_fan(bs_read_fan_control_state($stats, $state, $settings, 1040)['status'] === 'error',
+      'persistent or unproven startup errors stay errors');
+  }
+  $stats['data']['STATS'][0]['Elapsed'] = 20;
+  $stats['data']['STATS'][0]['FanPercent'] = 0;
+  check_fan(bs_read_fan_control_state($stats, $state, $settings, 1040)['status'] === 'error',
+    'zero fan report is not a normal startup indication');
+  $stats['data']['STATS'][0]['FanPercent'] = 80;
+  $json['updated'] = 900;
+  file_put_contents($state, json_encode($json));
+  check_fan(bs_read_fan_control_state($stats, $state, $settings, 1040)['status'] === 'error',
+    'stale controller error is not hidden');
+  $json['updated'] = 1010;
+  $json['reason'] = 'failed to set 80%: rejected';
+  file_put_contents($state, json_encode($json));
+  check_fan(bs_read_fan_control_state($stats, $state, $settings, 1040)['status'] === 'error',
+    'fan-command failure is not a startup indication');
+  $json['status'] = 'emergency';
+  file_put_contents($state, json_encode($json));
+  check_fan(bs_read_fan_control_state($stats, $state, $settings, 1040)['status'] === 'emergency',
+    'emergency state is preserved');
 } finally {
   unlink($state);
   unlink($settings);

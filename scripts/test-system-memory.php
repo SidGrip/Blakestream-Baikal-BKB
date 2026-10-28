@@ -22,7 +22,7 @@ function bs_connection_status() { return array('type' => 'ethernet'); }
 $web = realpath(__DIR__ . '/../overlay/var/www');
 $source = file_get_contents($web . '/f_blakestream.php');
 $start = strpos($source, "    case 'sysstats':");
-$end = strpos($source, "    case 'delete_backup':", $start);
+$end = strpos($source, "    default:", $start);
 $case = substr($source, $start, $end - $start);
 $case = str_replace('__DIR__', var_export($web, true), $case);
 set_error_handler(function($severity, $message) { throw new Exception($message); });

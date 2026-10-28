@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Explicit, hardware-free integration phase. Run on a build machine.
+# Explicit, hardware-free integration phase for a Linux host with Docker.
 set -euo pipefail
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 IMAGE=${BKB_FIRMWARE_QA_IMAGE:-blakestream/firmware-qa:local}

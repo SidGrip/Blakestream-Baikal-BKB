@@ -1,4 +1,5 @@
 <?php
+require_once __DIR__ . '/inc/web-security.php';
 
 // cgminer() strips spaces before json_decode, so "Chip Count" arrives as
 // ChipCount. StartupSuccessCount has no spaces. A missing or invalid startup
@@ -58,9 +59,9 @@ if (defined('BS_STATUS_LIB_ONLY')) {
   return;
 }
 
-session_start();
+bs_secure_session_start();
 
-if ( !isset($_SESSION['_logged_']) || $_SESSION['_logged_'] === false ) {
+if ( !isset($_SESSION['_logged_']) || $_SESSION['_logged_'] !== true ) {
     die();
 }
 session_write_close();
@@ -81,7 +82,7 @@ include_once('inc/accepted-work.php');
 include_once('inc/measured-rates.php');
 include_once('inc/clock-baseline.php');
 
-function bs_read_fan_control_state($stats = null, $path = '/run/blakestream/fan-control-state.json',
+function bs_read_fan_control_state($stats = null, $path = '/run/blakestream-control/fan-control-state.json',
     $settings_path = '/opt/scripta/etc/scripta.conf', $now = null) {
   if ($now === null) $now = time();
   $state = array(
@@ -145,6 +146,9 @@ function bs_read_fan_control_state($stats = null, $path = '/run/blakestream/fan-
     $saw_baikal = false;
     $confirmed = true;
     $actual_fan = null;
+    $startup_grace = 120; // Startup plus one 60-second controller interval.
+    $recent_start = true;
+    $fan_reported = true;
 
     foreach ($stats['data']['STATS'] as $stat) {
       if (!is_array($stat) || !isset($stat['ID'])) {
@@ -155,6 +159,10 @@ function bs_read_fan_control_state($stats = null, $path = '/run/blakestream/fan-
         continue;
       }
       $saw_baikal = true;
+      $elapsed = isset($stat['Elapsed']) ? $stat['Elapsed'] : null;
+      if (!is_numeric($elapsed) || $elapsed < 0 || $elapsed > $startup_grace) $recent_start = false;
+      if (!isset($stat['FanPercent']) || !is_numeric($stat['FanPercent']) ||
+          $stat['FanPercent'] <= 0 || $stat['FanPercent'] > 100) $fan_reported = false;
       $pending = isset($stat['FanPending']) ? $stat['FanPending'] : null;
       $not_pending = $pending === false || $pending === 0 || $pending === '0' || $pending === 'false';
       if (!$not_pending || !isset($stat['FanPercent']) || (int)$stat['FanPercent'] !== $state['fan']) $confirmed = false;
@@ -168,6 +176,16 @@ function bs_read_fan_control_state($stats = null, $path = '/run/blakestream/fan-
       $state['pending'] = false;
     }
     if ($actual_fan !== null) $state['fan'] = $actual_fan;
+    // A controller tick during restart can leave an unavailable-temperature
+    // snapshot until the next minute. Live startup data makes that a bounded
+    // recovery state; command failures and persistent errors remain errors.
+    $error_age = $now - $state['updated'];
+    if ($state['status'] === 'error' && $saw_baikal && $recent_start && $fan_reported &&
+        $error_age >= 0 && $error_age <= $startup_grace &&
+        strpos($state['reason'], 'temperature unavailable:') === 0) {
+      $state['status'] = 'starting';
+      $state['reason'] = 'Waiting for auto fan control after miner restart; ' . $state['reason'];
+    }
   }
   if ($state['pending']) $state['wait_seconds'] = max(0, min(60, 60 - ($now - $since)));
   return $state;

@@ -60,7 +60,7 @@ function harness() {
   vm.runInContext(block('  var devLogPoll = function', '  var devLogTimer ='),context);
   vm.runInContext(block('  $scope.devSnap = ', '  $scope.devProbeRunning = '),context);
   vm.runInContext(block('  // ---------- Recorders ----------', '\n})'),context);
-  vm.runInContext(block("  $scope.$watch('devTab', function (tab)", '  // ---------- Board health actions'),context);
+  vm.runInContext(block("  $scope.$watch('devTab', function (tab)", '  // ---------- Firmware tab'),context);
   return {s:scope,c:context,calls:calls,timers:timers,tab:function(t){scope.devTab=t;watchers.forEach(function(fn){fn(t);});},
     take:function(action){var c=calls.find(function(c){return !c.used && c.url.includes('action='+action);});assert(c,action);c.used=true;return c;}};
 }
@@ -188,5 +188,5 @@ ts.devStorageSetTarget(diagnostic);
 targetHarness.take('storage_set_target').fail();
 assert(!diagnostic.saving);
 targetHarness.take('storage');
-assert(read('overlay/var/www/ng/app.js').includes('partials/dev-tools.html?v=collector-wait-2'));
+assert(read('overlay/var/www/ng/app.js').includes('partials/dev-tools.html?v=sgminer-api-readonly-1'));
 console.log('PASS shared Logs viewer, problem-only collector warnings, recovery, snapshots and response races');

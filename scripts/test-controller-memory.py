@@ -17,6 +17,18 @@ SPEC.loader.exec_module(L)
 
 
 class MemoryDefaults(unittest.TestCase):
+    @staticmethod
+    def fixture_log_writer(root, paths):
+        source = (ROOT / 'overlay/opt/scripta/bin/capped-log-writer.py').read_text()
+        old = "LOG_PATHS = ('/run/blakestream-miner/sgminer.log',\n             '/var/log/blakestream-miner/sgminer.log')"
+        replacement = 'LOG_PATHS = ' + repr(tuple(str(path) for path in paths))
+        if old not in source:
+            raise AssertionError('production log allowlist changed unexpectedly')
+        writer = root / 'capped-log-writer.py'
+        writer.write_text(source.replace(old, replacement, 1))
+        writer.chmod(0o755)
+        return writer
+
     def test_log_writer_oom_protection_and_legacy_fallback(self):
         with tempfile.TemporaryDirectory() as tmp:
             self.assertFalse(L.protect_log_writer(tmp))
@@ -74,11 +86,13 @@ class MemoryDefaults(unittest.TestCase):
                              'i=$((i + 1))\ndone\nprintf "last stderr line\\n" >&2\n')
             miner.chmod(0o755)
             ram, sd = root / 'ram.log', root / 'sd.log'
-            block = block.replace('/run/blakestream/sgminer.log', shlex.quote(str(ram))).replace('/var/log/sgminer.log', shlex.quote(str(sd)))
+            block = block.replace('/run/blakestream-miner/sgminer.log', shlex.quote(str(ram))).replace('/var/log/blakestream-miner/sgminer.log', shlex.quote(str(sd)))
+            block = block.replace('chown root:www-data "$SGMINER_LOG" || exit 1', ':')
+            writer = self.fixture_log_writer(root, (ram, sd))
             for target, destination in [('RAM', ram), ('SD', sd)]:
                 env = dict(os.environ, SGMINER_LOG_TARGET=target, SGMINER_LOG=str(destination), SGMINER_LOG_CONFIG_OK='1',
                            SGMINER_LOG_MAX='8192', SGMINER_LOG_KEEP='4096', SGMINER=str(miner),
-                           LOG_WRITER=str(ROOT / 'overlay/opt/scripta/bin/capped-log-writer.py'), RUNTIME_CONF='unused')
+                           LOG_WRITER=str(writer), RUNTIME_CONF='unused')
                 prelude = 'log() { :; }\nfix_screen_dir() { :; }\nscreen() { shift 2; "$@"; }\n'
                 subprocess.run(['bash', '-c', prelude + block], env=env, check=True)
                 output = destination.read_bytes()
@@ -87,39 +101,16 @@ class MemoryDefaults(unittest.TestCase):
                 self.assertIn(b'Accepted fixture share 1999', output)
                 self.assertIn(b'last stderr line', output)
 
-    def test_log_cleanup_only_runs_when_launching(self):
+    def test_launcher_never_imports_or_deletes_sealed_logs(self):
         launcher = (ROOT / 'overlay/opt/scripta/startup/miner-start.sh').read_text()
-        cleanup = launcher.index('case "$SGMINER_LOG_TARGET" in', launcher.index('# 4. Decide what to launch'))
-        self.assertGreater(cleanup, launcher.index('if pgrep -f "$SGMINER "'))
-        self.assertGreater(cleanup, launcher.index('if api_command_ok "$API_PORT"'))
-        self.assertGreater(cleanup, launcher.index('case $BUILD_RC in\n    0)'))
-        self.assertNotIn('rm -f /var/log/sgminer.log', launcher[:cleanup])
-        self.assertNotIn('rm -f /run/blakestream/sgminer.log', launcher[:cleanup])
-        block = launcher[cleanup:launcher.index('\n        mkdir -p', cleanup)]
-        block = block.replace('/usr/bin/python', shlex.quote(sys.executable))
-        with tempfile.TemporaryDirectory(prefix='bkb memory ') as tmp:
-            ram, sd = Path(tmp) / 'ram.log', Path(tmp) / 'sd.log'
-            block = block.replace('/run/blakestream/sgminer.log', shlex.quote(str(ram))).replace('/var/log/sgminer.log', shlex.quote(str(sd)))
-            for target, keep_ram, keep_sd in [('RAM', True, False), ('SD', False, True)]:
-                ram.write_text('RAM log\n')
-                sd.write_text('SD log\n')
-                env = dict(os.environ, SGMINER_LOG_TARGET=target, SGMINER_LOG=str(ram if target == 'RAM' else sd),
-                           SGMINER_LOG_CONFIG_OK='1', SGMINER_LOG_MAX='8192', SGMINER_LOG_KEEP='4096',
-                           LOG_WRITER=str(ROOT / 'overlay/opt/scripta/bin/capped-log-writer.py'))
-                subprocess.run(['bash', '-c', 'log() { :; }\n' + block], env=env, check=True)
-                self.assertEqual(ram.exists(), keep_ram)
-                self.assertEqual(sd.exists(), keep_sd)
-                self.assertIn(b'RAM log', (ram if keep_ram else sd).read_bytes())
-                self.assertIn(b'SD log', (ram if keep_ram else sd).read_bytes())
-            for overrides in [{'SGMINER_LOG_CONFIG_OK':'0'}, {'LOG_WRITER':'/nonexistent/writer'}]:
-                ram.write_text('RAM evidence\n')
-                sd.write_text('SD evidence\n')
-                env.update(overrides)
-                subprocess.run(['bash', '-c', 'log() { :; }\n' + block], env=env, check=True,
-                               stderr=subprocess.DEVNULL)
-                self.assertEqual(ram.read_text(), 'RAM evidence\n')
-                self.assertEqual(sd.read_text(), 'SD evidence\n')
-                env['SGMINER_LOG_CONFIG_OK']='1'
+        self.assertIn('SGMINER_LOG=/run/blakestream-miner/sgminer.log', launcher)
+        self.assertIn('SGMINER_LOG=/var/log/blakestream-miner/sgminer.log', launcher)
+        self.assertNotIn('/run/blakestream/sgminer.log', launcher)
+        self.assertNotIn('rm -f "$SGMINER_LOG"', launcher)
+        self.assertNotIn('mv "$SGMINER_LOG"', launcher)
+        prepare = (ROOT / 'overlay/opt/scripta/bin/prepare-runtime-dir.sh').read_text()
+        self.assertIn('/run/blakestream/sgminer.log', prepare)
+        self.assertIn('Never migrate or read these former privileged outputs', prepare)
 
     def test_ram_cap_matches_launcher_and_storage_ui(self):
         self.assertEqual(L.DEFAULT_MAX_BYTES, 4194304)
@@ -128,7 +119,7 @@ class MemoryDefaults(unittest.TestCase):
         self.assertIn('SGMINER_LOG_MAX=${SGMINER_LOG_MAX:-4194304}', launcher)
         self.assertIn('SGMINER_LOG_KEEP=${SGMINER_LOG_KEEP:-2097152}', launcher)
         self.assertIn('$SGMINER_CAP = 4194304;', (ROOT / 'overlay/var/www/f_dev.php').read_text())
-        self.assertIn("storage_stat('sgminer.log', '/var/log/sgminer.log', $SGMINER_CAP)",
+        self.assertIn("storage_stat('sgminer.log', '/var/log/blakestream-miner/sgminer.log', $SGMINER_CAP)",
                       (ROOT / 'overlay/var/www/f_dev.php').read_text())
         self.assertIn("$scope.devLogRamCap = '4 MiB';", (ROOT / 'overlay/var/www/ng/controllers.js').read_text())
 

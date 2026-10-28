@@ -23,7 +23,7 @@ failure();
 assert.equal(scope.bsConnectionIcon(), 'fa-question-circle');
 assert.equal(scope.bsConnectionLabel(), 'Connection status unavailable');
 const html = fs.readFileSync(path.join(root, 'overlay/var/www/index.php'), 'utf8');
-const theme = html.indexOf('bs-theme-toggle'), indicator = html.indexOf('bs-connection-indicator'), logout = html.indexOf("location.href='f_logout.php'");
+const theme = html.indexOf('bs-theme-toggle'), indicator = html.indexOf('bs-connection-indicator'), logout = html.indexOf('ng-click="bsLogout()"');
 assert(theme < indicator && indicator < logout);
 assert(html.includes('ng-class="bsConnectionIcon()"'));
 const indicatorTag = html.match(/<span\b[^>]*class="[^"]*bs-connection-indicator[^>]*>/);
@@ -37,7 +37,7 @@ assert(css.includes("mask: url('../img/ethernet.png') center / contain no-repeat
 assert(fs.readFileSync(path.join(root,'overlay/var/www/img/ethernet.png')).subarray(1,4).equals(Buffer.from('PNG')));
 assert(!/\.bs-connection-indicator:(?:hover|active|focus)/.test(css), 'status has no pressed or focus styles');
 const styles = [css];
-for (const file of ['login.php','partials/miner.html','partials/terminal.html']) {
+for (const file of ['login.php','partials/miner.html']) {
   const text = fs.readFileSync(path.join(root, 'overlay/var/www', file), 'utf8');
   for (const match of text.matchAll(/<style\b[^>]*>([\s\S]*?)<\/style>/g)) styles.push(match[1]);
 }
@@ -51,7 +51,7 @@ for (const style of styles) {
     assert(!style.slice(end, lineEnd < 0 ? style.length : lineEnd).trim(), 'no declarations following style comments');
   }
 }
-const logoutButton = html.match(/<button\b[^>]*onclick="location\.href='f_logout\.php'"[^>]*>/);
+const logoutButton = html.match(/<button\b[^>]*ng-click="bsLogout\(\)"[^>]*>/);
 assert(logoutButton, 'Logout button exists');
 assert(!/bs-tip|data-tip|\btitle=/.test(logoutButton[0]), 'Logout label needs no tooltip');
 console.log('PASS read-only connection indicator, labels, section-only style comments and tooltip-free Logout');

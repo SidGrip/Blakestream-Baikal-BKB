@@ -4,17 +4,20 @@ import fcntl
 import json
 import os
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
 import time
 
 ETC = '/opt/scripta/etc'
-RUN = '/run/blakestream'
+RUN = '/run/blakestream-firmware'
 FW = '/opt/scripta/firmware'
-PENDING = ETC + '/bkb-firmware-firstboot.pending'
-RESULT = ETC + '/bkb-firmware-firstboot.json'
-LOG = '/opt/scripta/var/firmware-firstboot.log'
+STATE = '/var/lib/blakestream-firstboot'
+PENDING = STATE + '/firmware-firstboot.pending'
+RECOVERY_REQUIRED = STATE + '/firmware-recovery-required'
+RESULT = STATE + '/result.json'
+LOG = '/var/log/blakestream-firstboot/firmware-firstboot.log'
 LAUNCH_LOCK = '/var/run/blakestream-miner-restart.lock'
 ACTIVE = RUN + '/bkb-firstboot-active'
 WRAPPER = '/opt/scripta/bin/bkb-firmware.sh'
@@ -51,7 +54,7 @@ def remove(path):
         pass
 
 
-def write_json(path, data):
+def write_json(path, data, mode=0o664):
     directory = os.path.dirname(path)
     os.makedirs(directory, exist_ok=True)
     fd, temporary = tempfile.mkstemp(prefix='.firstboot-', dir=directory)
@@ -61,10 +64,26 @@ def write_json(path, data):
             handle.write('\n')
             handle.flush()
             os.fsync(handle.fileno())
-            os.fchmod(handle.fileno(), 0o664)
+            os.fchmod(handle.fileno(), mode)
             os.fchown(handle.fileno(), 0, 33)
         os.replace(temporary, path)
         sync_directory(directory)
+    finally:
+        remove(temporary)
+
+
+def ensure_pending(reason):
+    """Persist the boot retry trigger without trusting an existing pathname."""
+    fd, temporary = tempfile.mkstemp(prefix='.firstboot-pending-', dir=STATE)
+    try:
+        with os.fdopen(fd, 'w') as handle:
+            handle.write(reason + '\n')
+            handle.flush()
+            os.fsync(handle.fileno())
+            os.fchmod(handle.fileno(), 0o644)
+            os.fchown(handle.fileno(), 0, 0)
+        os.replace(temporary, PENDING)
+        sync_directory(STATE)
     finally:
         remove(temporary)
 
@@ -76,9 +95,53 @@ def clear_capability():
 
 
 def clear_identity():
-    for directory in (ETC, RUN):
-        remove(directory + '/bkb-firmware-identity.json')
-        sync_directory(directory)
+    remove(ETC + '/bkb-firmware-identity.json')
+    sync_directory(ETC)
+
+
+def validate_secure_dir(path):
+    if os.path.islink(path) or not os.path.isdir(path):
+        raise RuntimeError('Unsafe privileged state directory: ' + path)
+    if os.geteuid() == 0:
+        info = os.stat(path)
+        if info.st_uid != 0 or stat.S_IMODE(info.st_mode) & 0o022:
+            raise RuntimeError('Privileged state directory is writable by non-root: ' + path)
+
+
+def valid_pending():
+    try:
+        info = os.lstat(PENDING)
+    except OSError:
+        return False
+    if not stat.S_ISREG(info.st_mode) or stat.S_ISLNK(info.st_mode):
+        return False
+    return os.geteuid() != 0 or (info.st_uid == 0 and stat.S_IMODE(info.st_mode) & 0o022 == 0)
+
+
+def recovery_hold_present():
+    try:
+        info = os.lstat(RECOVERY_REQUIRED)
+    except OSError:
+        return False
+    if not stat.S_ISREG(info.st_mode) or stat.S_ISLNK(info.st_mode):
+        raise RuntimeError('Unsafe firmware recovery marker')
+    if info.st_nlink != 1:
+        raise RuntimeError('Unsafe firmware recovery marker link count')
+    if os.geteuid() == 0 and (info.st_uid != 0 or stat.S_IMODE(info.st_mode) != 0o600):
+        raise RuntimeError('Unsafe firmware recovery marker metadata')
+    return True
+
+
+def open_firstboot_log():
+    flags = os.O_WRONLY | os.O_APPEND | os.O_CREAT | getattr(os, 'O_NOFOLLOW', 0)
+    fd = os.open(LOG, flags, 0o640)
+    info = os.fstat(fd)
+    if not stat.S_ISREG(info.st_mode) or (os.geteuid() == 0 and info.st_uid != 0):
+        os.close(fd)
+        raise RuntimeError('Unsafe first-boot log')
+    os.fchmod(fd, 0o640)
+    os.fchown(fd, 0, 33)
+    return os.fdopen(fd, 'a')
 
 
 def mark_custom_capability(digest):
@@ -132,13 +195,11 @@ def restore_bridge(log):
 def verify_chip(log):
     # Reuse the guarded double-read path. The launcher lock and boot ordering
     # keep mining stopped until identity and settings have both been saved.
+    if recovery_hold_present():
+        raise RecoveryError('Bridge recovery hold prevents identity read')
     for name in ('result.env', 'result-applied', 'abort', 'meta.env', 'phase'):
         remove(RUN + '/bkb-firmware-' + name)
     progress = RUN + '/bkb-firmware-progress.log'
-    with open(progress, 'w'):
-        pass
-    os.chmod(progress, 0o664)
-    os.chown(progress, 0, 33)
     try:
         rc = run_command([WRAPPER, 'run-job', 'verify'], 110, log)
         with open(RUN + '/bkb-firmware-result.env') as handle:
@@ -163,8 +224,6 @@ def verify_chip(log):
                 log.write(handle.read())
         for name in ('bkb-firmware.lock', 'bkb-firmware.pid', 'bkb-firmware-abort'):
             remove(RUN + '/' + name)
-        for path in ('/tmp/bkb-chip-readback.bin', '/tmp/bkb-chip-readback.bin.2'):
-            remove(path)
 
 
 def default_clock_options(options):
@@ -177,13 +236,26 @@ def default_clock_options(options):
 
 
 def reconcile(verifier=verify_chip):
-    if not os.path.exists(PENDING):
+    validate_secure_dir(RUN)
+    validate_secure_dir(os.path.dirname(LOG))
+    validate_secure_dir(os.path.dirname(RESULT))
+    # Never undo the boot service's DFU hold. A user flash interrupted on the
+    # first boot can coexist with the factory pending marker; only a later
+    # read-back-verified recovery flash may clear this persistent gate.
+    if recovery_hold_present():
+        ensure_pending('bridge recovery required before first-boot identity read')
+        print('Bridge recovery required; first-boot identity read deferred')
+        return 1
+    # A previous boot may have died with the bridge outside application mode.
+    # Recover that state before considering a new identity read.
+    if os.path.exists(ACTIVE):
+        return recover()
+    if not valid_pending():
         return 0
     if os.path.exists(RESULT):
         remove(PENDING)
+        sync_directory(STATE)
         return 0
-    os.makedirs(RUN, exist_ok=True)
-    os.makedirs(os.path.dirname(LOG), exist_ok=True)
     with open(LAUNCH_LOCK, 'a') as lock:
         try:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -198,9 +270,9 @@ def skip_busy(reason):
     # Do not retry on another boot, when the user may have saved new choices.
     # Leave the active operation's configuration and firmware state alone.
     write_json(RESULT, {'at': int(time.time()), 'ok': False, 'identity': 'UNKNOWN',
-                       'error': reason + '; automatic first-boot check skipped'})
+                       'error': reason + '; automatic first-boot check skipped'}, 0o640)
     remove(PENDING)
-    sync_directory(ETC)
+    sync_directory(STATE)
     print(reason + '; automatic first-boot check skipped')
     return 1
 
@@ -211,10 +283,8 @@ def reconcile_locked(verifier):
     outcome = {'at': int(time.time()), 'ok': False, 'identity': 'UNKNOWN',
                'adjustable_clocks': False}
     settings = None
-    write_json(ACTIVE, {'pid': os.getpid()})
-    with open(LOG, 'a') as log:
-        os.chmod(LOG, 0o664)
-        os.chown(LOG, 0, 33)
+    write_json(ACTIVE, {'pid': os.getpid()}, 0o600)
+    with open_firstboot_log() as log:
         log.write('First-boot bridge check: read only\n')
         try:
             settings = read_json(settings_path)
@@ -234,7 +304,6 @@ def reconcile_locked(verifier):
             if digest in CUSTOM_IMAGES and not os.path.isfile(FW + '/ENCODER_READY'):
                 raise RuntimeError('Clock encoder is not ready; adjustable clocks remain disabled')
             write_json(ETC + '/bkb-firmware-identity.json', record)
-            write_json(RUN + '/bkb-firmware-identity.json', record)
             if digest in CUSTOM_IMAGES:
                 mark_custom_capability(digest)
             settings['userAdjustableClocks'] = digest in CUSTOM_IMAGES
@@ -251,25 +320,39 @@ def reconcile_locked(verifier):
         log.write(json.dumps(outcome, sort_keys=True) + '\n')
         log.flush()
         os.fsync(log.fileno())
-    write_json(RESULT, outcome)
+    write_json(RESULT, outcome, 0o640)
     # The first-boot result has already been applied. Do not let a later web
     # poll reapply the verification result over the user's saved choices.
-    with open(RUN + '/bkb-firmware-result-applied', 'w') as handle:
+    applied = RUN + '/bkb-firmware-result-applied'
+    fd = os.open(applied, os.O_WRONLY | os.O_CREAT | os.O_TRUNC |
+                 getattr(os, 'O_NOFOLLOW', 0), 0o660)
+    with os.fdopen(fd, 'w') as handle:
         handle.write('first-boot\n')
-    os.chmod(RUN + '/bkb-firmware-result-applied', 0o664)
-    os.chown(RUN + '/bkb-firmware-result-applied', 0, 33)
-    remove(PENDING)
-    sync_directory(ETC)
-    if not outcome.get('recovery_required'):
+        handle.flush()
+        os.fsync(handle.fileno())
+        os.fchmod(handle.fileno(), 0o660)
+        os.fchown(handle.fileno(), 0, 33)
+    if outcome.get('recovery_required'):
+        ensure_pending('bridge recovery required')
+    else:
+        remove(PENDING)
+        sync_directory(STATE)
         remove(ACTIVE)
     print(json.dumps(outcome, sort_keys=True))
     return 0 if outcome['ok'] else 1
 
 
 def recover():
+    if recovery_hold_present():
+        ensure_pending('bridge recovery required before first-boot cleanup')
+        print('Bridge recovery required; first-boot GPIO restore suppressed')
+        return 1
     if not os.path.exists(ACTIVE):
         return 0
-    with open(LOG, 'a') as log:
+    validate_secure_dir(RUN)
+    validate_secure_dir(os.path.dirname(LOG))
+    validate_secure_dir(os.path.dirname(RESULT))
+    with open_firstboot_log() as log:
         restored = restore_bridge(log)
     try:
         if not os.path.exists(RESULT):
@@ -280,17 +363,20 @@ def recover():
             clear_identity()
             write_json(RESULT, {'at': int(time.time()), 'ok': False,
                 'identity': 'UNKNOWN', 'adjustable_clocks': False,
-                'error': 'First-boot firmware check interrupted'})
+                'error': 'First-boot firmware check interrupted'}, 0o640)
         result = read_json(RESULT)
         result['recovery_required'] = not restored
-        write_json(RESULT, result)
+        write_json(RESULT, result, 0o640)
     finally:
         for name in ('bkb-firmware.lock', 'bkb-firmware.pid', 'bkb-firmware-abort',
                      'bkb-firmware-result.env'):
             remove(RUN + '/' + name)
-        remove(PENDING)
         if restored:
+            remove(PENDING)
             remove(ACTIVE)
+            sync_directory(STATE)
+        else:
+            ensure_pending('bridge recovery retry required')
     return 0 if restored else 1
 
 

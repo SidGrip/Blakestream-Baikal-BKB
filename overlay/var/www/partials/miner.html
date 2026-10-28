@@ -459,7 +459,7 @@
       <button type="button" class="btn btn-default" ng-click="cgminerHardCtl('0')">Restart linux process (30s)</button>
       <button type="button" class="btn btn-default" ng-click="bsRestart()">Reload Blakestream pools</button>
     </div>
-    <label>Advanced options from <a href="https://github.com/sgminer-dev/sgminer" target="_blank" rel="noopener noreferrer">SGMINER's Github page</a>.</label>
+    <label>Supported SGMINER options. Option names and loopback API controls are security-managed.</label>
 
     <form name="optionForm" class="form-horizontal">
       <div class="row">
@@ -469,22 +469,23 @@
       </div>
       <div class="form-group" ng-repeat="option in options" ng-hide="option.key === 'baikal-options' || option.key === 'baikal-board-clocks' || option.key === 'baikal-clock-mode' || option.key === 'baikal-experimental-clock-index' || option.key === 'baikal-board-clock-index' || (settings.userAutoFan && option.key === 'baikal-fan')">
         <div class="col-sm-2">
-          <input type="text" ng-model="option.key" class="form-control" required>
+          <input type="text" ng-model="option.key" class="form-control" readonly required>
         </div>
         <div class="col-sm-3">
           <div class="input-group">
             <input type="text" ng-model="option.value" ng-change="bsOptionChanged(option)" class="form-control" required>
-            <div class="input-group-btn">
-              <button type="button" ng-click="optionRemove($index)" data-tip="We suggest you back up before making any changes." class="btn btn-default pull-right bs-tip">&times;</button>
-            </div>
           </div>
         </div>
         <div class="col-sm-6">
           <input type="text" class="form-control" ng-model="option.description">
         </div>
+        <div class="col-sm-1">
+          <button type="button" class="btn btn-default" ng-click="optionRemove($index)"
+                  title="Remove this saved option">Remove</button>
+        </div>
       </div>
+      <span class="help-block">Unsupported options restored from an older backup must be removed before saving or restarting.</span>
       <button type="button" class="btn btn-default" ng-click="optionBack()">Reload Options</button>
-      <button type="button" class="btn btn-default" ng-click="optionAdd({'key':'x'})">Add Options</button>
       <button type="button" ng-show="optionForm.$dirty && optionForm.$valid" class="btn btn-success" ng-click="optionSave()">Save Options</button>
     </form>
     </section>

@@ -133,9 +133,18 @@ if (isset($argv[1]) && $argv[1] === '--worker') {
     $source = str_replace(array("'/opt/scripta/etc'", "'/opt/scripta/var'", "'/run/blakestream'", '__DIR__', 'time()'),
         array(var_export($tmp . '/etc', true), var_export($tmp . '/sd', true),
             var_export($tmp . '/ram', true), var_export($www, true), (string)$cfg['now']), $source);
+    $source = str_replace("@file_get_contents('php://input', false, null, 0, 1048577)",
+        var_export(json_encode($cfg['payload']), true), $source);
     session_save_path($tmp);
     session_id('clock-test-' . getmypid());
-    session_start(); $_SESSION['_logged_'] = $cfg['auth']; session_write_close();
+    $token = str_repeat('c', 64);
+    session_start(); $_SESSION['_logged_'] = $cfg['auth']; $_SESSION['web_csrf'] = $token; session_write_close();
+    $mutation = $cfg['action'] === 'clear_clock_run';
+    $_SERVER['REQUEST_METHOD'] = $mutation ? 'POST' : 'GET';
+    $_SERVER['HTTP_HOST'] = 'miner.test';
+    if ($mutation) $_SERVER['HTTP_X_BKB_CSRF'] = $token;
+    $_GET = array('action' => $cfg['action']);
+    if ($cfg['hours'] !== 'default') $_GET['hours'] = $cfg['hours'];
     $_REQUEST = array('action' => $cfg['action'], 'data' => json_encode($cfg['payload']));
     if ($cfg['hours'] !== 'default') $_REQUEST['hours'] = $cfg['hours'];
     chdir($www);

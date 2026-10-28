@@ -7,33 +7,47 @@ function bs_backup_name($name) {
 
 function bs_backup_request($method, $query, $post, $files, $token) {
     $verbs = array('backup' => 'snapshot', 'restore' => 'restore', 'export' => 'export', 'rename' => 'rename', 'delete' => 'delete');
-    $actions = array_intersect(array_keys($query), array_keys($verbs));
-    if (count($actions) > 1) return array('error' => 'Choose one backup operation', 'code' => 400);
+    $query_actions = array_values(array_intersect(array_keys($query), array_keys($verbs)));
+    $post_actions = array_values(array_intersect(array_keys($post), array_keys($verbs)));
+    if (count($query_actions) + count($post_actions) > 1)
+        return array('error' => 'Choose one backup operation', 'code' => 400);
     if ($files) {
-        if ($method !== 'POST' || $actions || !isset($files['file'])) return array('error' => 'Invalid upload', 'code' => 400);
+        if ($method !== 'POST' || $query_actions || $post_actions || !isset($files['file']))
+            return array('error' => 'Invalid upload', 'code' => 400);
         $verb = 'import';
         $name = isset($post['name']) ? $post['name'] : 'import-' . gmdate('Ymd-His') . '-' . substr(sha1(uniqid('', true)), 0, 6);
+    } elseif ($method === 'GET') {
+        if ($post_actions) return array('error' => 'Invalid backup request', 'code' => 400);
+        $key = count($query_actions) ? reset($query_actions) : null;
+        if ($key !== null && $key !== 'export')
+            return array('error' => 'POST required', 'code' => 405);
+        $verb = $key === null ? 'list' : 'export';
+        $name = $key === null ? '' : $query[$key];
+    } elseif ($method === 'POST') {
+        if ($query_actions || count($post_actions) !== 1)
+            return array('error' => 'Choose one backup operation', 'code' => 400);
+        $key = reset($post_actions);
+        if ($key === 'export') return array('error' => 'GET required', 'code' => 405);
+        $verb = $verbs[$key];
+        $name = $key === 'backup' ? (isset($post['name']) ? $post['name'] : '') : $post[$key];
     } else {
-        if ($method !== 'GET') return array('error' => 'GET or multipart upload required', 'code' => 405);
-        $key = count($actions) ? reset($actions) : null;
-        $verb = $key === null ? 'list' : $verbs[$key];
-        $name = $key === 'backup' ? (isset($query['name']) ? $query['name'] : '') : ($key === null ? '' : $query[$key]);
+        return array('error' => 'GET or POST required', 'code' => 405);
     }
     if (!in_array($verb, array('list', 'export'), true)) {
-        $given = $verb === 'import' ? (isset($post['csrf']) ? $post['csrf'] : null) : (isset($query['csrf']) ? $query['csrf'] : null);
+        $given = isset($post['csrf']) ? $post['csrf'] : null;
         if (!dev_activity_csrf_accept($token, $given)) return array('error' => 'Session token expired; reload Backup', 'code' => 403);
     }
     if ($verb !== 'list' && !bs_backup_name($name)) return array('error' => 'Invalid backup name', 'code' => 400);
     $payload = $verb === 'list' ? array() : array('name' => $name);
     if ($verb === 'snapshot') {
-        if (!is_string($query['backup']) || strlen($query['backup']) > 12000) return array('error' => 'Invalid backup selection', 'code' => 400);
-        $items = json_decode($query['backup'], true);
+        if (!is_string($post['backup']) || strlen($post['backup']) > 12000) return array('error' => 'Invalid backup selection', 'code' => 400);
+        $items = json_decode($post['backup'], true);
         if (!is_array($items) || count($items) > 64) return array('error' => 'Invalid backup selection', 'code' => 400);
         $payload['items'] = $items;
     }
     if ($verb === 'rename') {
-        if (!isset($query['to']) || !bs_backup_name($query['to'])) return array('error' => 'Invalid new name', 'code' => 400);
-        $payload['to'] = $query['to'];
+        if (!isset($post['to']) || !bs_backup_name($post['to'])) return array('error' => 'Invalid new name', 'code' => 400);
+        $payload['to'] = $post['to'];
     }
     return array('verb' => $verb, 'payload' => $payload);
 }
@@ -65,18 +79,49 @@ function bs_backup_helper($verb, $payload) {
     stream_set_blocking($pipes[1], false);
     stream_set_blocking($pipes[2], false);
     $out = ''; $bytes = 0; $failed = false; $deadline = microtime(true) + 55;
+    $termDeadline = null; $killDeadline = null; $sentKill = false;
     do {
         $chunk = stream_get_contents($pipes[1], 65536);
         $err = stream_get_contents($pipes[2], 65536);
-        $out .= $chunk; $bytes += strlen($chunk) + strlen($err);
+        if (!is_string($chunk)) $chunk = '';
+        if (!is_string($err)) $err = '';
+        if (!$failed) $out .= $chunk;
+        $bytes += strlen($chunk) + strlen($err);
+        $now = microtime(true);
         $state = proc_get_status($proc);
-        if ($bytes > 1048576 || microtime(true) > $deadline) {
-            $failed = true; proc_terminate($proc, 9); break;
+        if (!$failed && ($bytes > 1048576 || $now > $deadline)) {
+            $failed = true;
+            // Give Python enough time to replay a full 32 MiB journal on a
+            // conservative ~1 MiB/s legacy SD card, plus fsync overhead.
+            @proc_terminate($proc, 15);
+            $termDeadline = $now + 45.0;
+        } elseif ($failed && !$sentKill && $state['running'] && $now >= $termDeadline) {
+            // A wedged helper must not hold a PHP worker indefinitely.
+            @proc_terminate($proc, 9);
+            $sentKill = true;
+            $killDeadline = $now + 1.0;
         }
         if (!$state['running'] && feof($pipes[1]) && feof($pipes[2])) break;
+        if ($failed && !$state['running'] && $now >= $termDeadline) break;
+        if ($sentKill && $now >= $killDeadline) break;
         usleep(20000);
     } while (true);
-    fclose($pipes[1]); fclose($pipes[2]); proc_close($proc);
+    fclose($pipes[1]); fclose($pipes[2]);
+    // Reap the direct child. If TERM/KILL did not stop it, make one final
+    // bounded KILL attempt before proc_close rather than abandoning it.
+    $state = proc_get_status($proc);
+    if ($state['running']) {
+        if (!$sentKill) {
+            @proc_terminate($proc, 9);
+            $sentKill = true;
+        }
+        $reapDeadline = microtime(true) + 1.0;
+        do {
+            usleep(20000);
+            $state = proc_get_status($proc);
+        } while ($state['running'] && microtime(true) < $reapDeadline);
+    }
+    proc_close($proc);
     $result = $failed ? null : json_decode($out, true);
     return is_array($result) && isset($result['ok']) ? $result : array('ok' => false, 'error' => $failed ? 'busy' : 'io');
 }

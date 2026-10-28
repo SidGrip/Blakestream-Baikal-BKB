@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import importlib.util
+import copy
 import json
 import tempfile
 import unittest
@@ -35,6 +36,26 @@ class Baselines(unittest.TestCase):
         self.write()
         return E.collect(algorithm, [str(self.run)])
 
+    def test_shipped_table_matches_public_baseline(self):
+        repo = Path(__file__).resolve().parent.parent
+        public = json.loads((repo / 'overlay/opt/scripta/etc/clock-baseline.json').read_text())
+        document = (repo / 'CLOCK-BASELINE.md').read_text()
+        self.assertEqual([r['clock_index'] for r in public['rows']], list(range(8, 33)))
+        self.assertTrue(public['power_measured'])
+        self.assertEqual(public['power_scope'], 'whole-miner-wall-power')
+        self.assertIn('| Index | Accepted GH/s per board | Combined GH/s | Estimated MHz | Average power (W) |',
+                      document)
+        for row in public['rows']:
+            mhz = '400' if row['clock_index'] == 30 else '~%d' % round(row['estimated_mhz'])
+            line = '| %d | %.2f | %.2f | %s | %.1f |' % (
+                row['clock_index'], row['ghs'], row['ghs'] * 3, mhz, row['average_watts'])
+            self.assertIn(line, document)
+            self.assertEqual(row['measured_boards'], [0, 1, 2])
+            self.assertEqual(row['contexts'], [[row['clock_index']] * 3])
+            self.assertGreaterEqual(row['board_seconds'], 3600 * row['board_windows'])
+        for secret in ('/home/', '/root/', 'source_report', 'password', 'worker'):
+            self.assertNotIn(secret, json.dumps(public))
+
     def public_data(self):
         self.leg['host_sha256'] = 'a' * 64
         self.leg['bridge_artifact_sha256'] = PUBLIC_BRIDGE
@@ -46,6 +67,96 @@ class Baselines(unittest.TestCase):
                          source_report='/private/candidate/legs/clock_index32.json')
         data['observations'].append(candidate)
         return data
+
+    def metered_data(self):
+        data = self.public_data()
+        data['observations'].pop()
+        for row in data['observations']:
+            row['power'] = {'kind': 'whole-miner-wall-power', 'per_board_watts': None,
+                            'seconds': 1801, 'coverage': 1.0, 'average_watts': 100,
+                            'energy_wh': 100 * 1801 / 3600}
+        return data
+
+    def test_power_is_counted_once_per_three_board_window(self):
+        data = self.metered_data()
+        for row in data['observations']:
+            row['power']['private_path'] = '/private/meter-capture'
+        public = E.public_baseline(data, 'a' * 64, PUBLIC_BRIDGE)
+        row = public['rows'][0]
+        self.assertTrue(public['power_measured'])
+        self.assertEqual(public['power_scope'], 'whole-miner-wall-power')
+        self.assertAlmostEqual(row['average_watts'], 100)
+        self.assertNotIn('power', row)
+        self.assertNotIn('energy_wh', json.dumps(public))
+        self.assertNotIn('/private/', json.dumps(public))
+
+    def test_power_is_duration_weighted(self):
+        data = self.metered_data()
+        extra = copy.deepcopy(data['observations'])
+        for row in extra:
+            row['source_report'] = '/another/legs/reference.json'
+            row['device_elapsed_seconds'] = 3602
+            row['difficulty_delta'] *= 4
+            row['power'].update(seconds=3602, average_watts=300, energy_wh=300 * 3602 / 3600)
+        data['observations'].extend(extra)
+        row = E.public_baseline(data, 'a' * 64, PUBLIC_BRIDGE)['rows'][0]
+        self.assertAlmostEqual(row['average_watts'], 700 / 3)
+
+    def test_partial_power_keeps_gaps_and_no_whole_window_energy(self):
+        data = self.metered_data()
+        for row in data['observations']:
+            row['power'].update(coverage=1792 / 1801, observed_seconds=1792, missing_seconds=9,
+                                longest_missing_seconds=9, observed_energy_wh=100 * 1792 / 3600,
+                                energy_wh=None)
+        power = E.validated_power(data['observations'][0]['power'])
+        self.assertEqual(power['missing_seconds'], 9)
+        self.assertIsNone(power['energy_wh'])
+        self.assertLess(power['coverage'], 1)
+        row = E.public_baseline(data, 'a' * 64, PUBLIC_BRIDGE)['rows'][0]
+        self.assertAlmostEqual(row['average_watts'], 100)
+
+    def test_invalid_or_inconsistent_power_refused(self):
+        for key, value in [('average_watts', float('nan')), ('coverage', 0.98),
+                           ('energy_wh', 1000), ('per_board_watts', 33), ('seconds', True),
+                           ('longest_missing_seconds', 31), ('observed_seconds', 1600)]:
+            data = self.metered_data()
+            for row in data['observations']:
+                row['power'][key] = value
+            with self.subTest(key=key), self.assertRaises(ValueError):
+                E.public_baseline(data, 'a' * 64, PUBLIC_BRIDGE)
+        data = self.metered_data()
+        data['observations'][0]['power'].update(average_watts=200, energy_wh=200 * 1801 / 3600)
+        with self.assertRaises(ValueError):
+            E.public_baseline(data, 'a' * 64, PUBLIC_BRIDGE)
+
+    def test_missing_power_or_mixed_indices_cannot_claim_per_index_wall_power(self):
+        data = self.metered_data()
+        del data['observations'][0]['power']
+        self.assertFalse(E.public_baseline(data, 'a' * 64, PUBLIC_BRIDGE)['power_measured'])
+        data = self.metered_data()
+        for row in data['observations']:
+            row['indices'] = [30, 31, 32]
+            row['index'] = row['indices'][row['id']]
+        public = E.public_baseline(data, 'a' * 64, PUBLIC_BRIDGE)
+        self.assertFalse(public['power_measured'])
+        self.assertTrue(all('average_watts' not in row for row in public['rows']))
+
+    def test_power_window_must_match_accepted_window(self):
+        data = self.metered_data()
+        for row in data['observations']:
+            row['power'].update(seconds=3600, energy_wh=100)
+        with self.assertRaises(ValueError):
+            E.public_baseline(data, 'a' * 64, PUBLIC_BRIDGE)
+
+    def test_collect_retains_metered_windows_and_checks_duration(self):
+        self.leg['power'] = self.metered_data()['observations'][0]['power']
+        self.leg['power_measured'] = True
+        data = self.collect()
+        self.assertTrue(data['power_measured'])
+        self.assertTrue(all(row['power']['coverage'] == 1 for row in data['observations']))
+        self.leg['power'].update(seconds=3600, energy_wh=100)
+        with self.assertRaises(ValueError):
+            self.collect()
 
     def test_shared_public_example_recomputes_work_not_model_rate(self):
         data = self.public_data()

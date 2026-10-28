@@ -5,7 +5,8 @@
 // is dead, the fetch failed, and the failures showed as PHP warnings on the
 // page. We use a static local banner instead.
 
-session_start();
+require_once __DIR__ . '/inc/web-security.php';
+bs_secure_session_start();
 $loginTarget = isset($_GET['network']) && $_GET['network'] === '1' ? 'index.php#/settings?section=network' : 'index.php';
 if ( isset($_SESSION['_logged_']) and ($_SESSION['_logged_'] === true) )  {
         header('location: ' . $loginTarget);
@@ -170,14 +171,12 @@ if ( isset($_SESSION['_logged_']) and ($_SESSION['_logged_'] === true) )  {
     </div>
   </footer>
   <script src="js/alertify.min.js"></script>
+  <script src="js/blakestream-alertify-safe.js?v=20261024-text-only"></script>
   <script src="js/jquery.min.js"></script>
   <script src="js/network-login.js?v=20260929-network-compact"></script>
   <script src="js/highcharts.js"></script>
   <script src="js/bootstrap.min.js"></script>
   <script>
-      if (window.location.protocol != "http:")
-          window.location.href = "http:" + window.location.href.substring(window.location.protocol.length);
-
       $(document).ready(function() {
 		$('#formLogin').on('submit', function(e) {
 			e.preventDefault();

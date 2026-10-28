@@ -74,9 +74,9 @@ def main():
         listed = run([APPLY, '--list'], unrelated)
         check(listed.returncode == 0, 'apply --list failed: %s' % listed.stdout)
         names = [line.strip() for line in listed.stdout.splitlines() if line.strip()]
-        check(len(names) == 34, 'expected 34 patches, got %d' % len(names))
+        check(len(names) == 36, 'expected 36 patches, got %d' % len(names))
         check(not any(name.startswith('0003-') for name in names), 'rejected 0003 was listed')
-        check(names[-1].startswith('0035-'), 'last patch is not 0035: %s' % names[-1:])
+        check(names[-1].startswith('0037-'), 'last patch is not 0037: %s' % names[-1:])
 
         pinned = run([FETCH, '--print-pin'], spaced_cwd)
         check(pinned.returncode == 0 and pinned.stdout.strip() == PIN,
@@ -144,7 +144,7 @@ def main():
         check(not os.path.exists(forbid_log), 'contract-node invoked a forbidden tool')
 
         relocated = os.path.join(spaced_cwd, 'relocated checkout')
-        for directory in ('scripts', 'overlay'):
+        for directory in ('scripts', 'overlay', 'firmware-custom'):
             shutil.copytree(os.path.join(ROOT, directory), os.path.join(relocated, directory),
                             symlinks=True,
                             ignore=shutil.ignore_patterns('__pycache__', '*.pyc'))

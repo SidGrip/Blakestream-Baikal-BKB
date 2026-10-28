@@ -484,7 +484,7 @@ def test_hash_cache_and_running_inode():
             break
     if sleep_src is None:
         return fail('sleep binary is required for the running-inode test')
-    directory = tempfile.mkdtemp(prefix='bkb-exe-', dir='/tmp')
+    directory = tempfile.mkdtemp(prefix='bkb-exe-')
     path = os.path.join(directory, 'sleep')
     shutil.copy(sleep_src, path)
     os.chmod(path, 0o755)
@@ -569,7 +569,7 @@ def test_driver_host_sha():
             break
     if sleep_src is None:
         return fail('sleep binary is required for the driver-hash test')
-    directory = tempfile.mkdtemp(prefix='bkb-driver-sha-', dir='/tmp')
+    directory = tempfile.mkdtemp(prefix='bkb-driver-sha-')
     path = os.path.join(directory, 'sleep')
     shutil.copy(sleep_src, path)
     os.chmod(path, 0o755)
@@ -897,12 +897,16 @@ def write_memory_fixture(directory):
 
 
 def memory_check():
-    directory = tempfile.mkdtemp(prefix='bkb-mem-', dir='/tmp')
+    directory = tempfile.mkdtemp(prefix='bkb-mem-')
     try:
+        env = os.environ.copy()
+        # Use one allocator for every measurement. Python arena retention can
+        # otherwise skew relative RSS across interpreter versions.
+        env['PYTHONMALLOC'] = 'malloc'
         # Generate the fixture in a separate process: its heap must not become
         # the inherited RSS high-water floor of either measurement child.
-        subprocess.check_call([sys.executable, os.path.abspath(__file__), '--memory-seed', directory])
-        env = os.environ.copy()
+        subprocess.check_call([sys.executable, os.path.abspath(__file__), '--memory-seed', directory],
+                              env=env)
         env['BKB_DIAG_MEM_CHILD'] = '1'
         env['BKB_DIAG_MEM_LAST'] = str(1000000 + (18 * 60 - 1) * 60)
         env['BKB_DIAG_RUNTIME'] = directory

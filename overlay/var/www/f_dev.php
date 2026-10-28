@@ -1,8 +1,9 @@
 <?php
-session_start();
+require_once __DIR__ . '/inc/web-security.php';
+bs_secure_session_start();
 
 // Auth gate 1: must be logged in
-if (!isset($_SESSION['_logged_']) || $_SESSION['_logged_'] === false) {
+if (!isset($_SESSION['_logged_']) || $_SESSION['_logged_'] !== true) {
     http_response_code(403);
     echo json_encode(array('ok' => false, 'error' => 'forbidden'));
     exit;
@@ -12,7 +13,7 @@ if (!isset($_SESSION['_logged_']) || $_SESSION['_logged_'] === false) {
 $ETC = '/opt/scripta/etc';
 $SCRIPTA_CONF = $ETC . '/scripta.conf';
 $cfg = @json_decode(@file_get_contents($SCRIPTA_CONF), true);
-$action = isset($_REQUEST['action']) ? $_REQUEST['action'] : '';
+$action = isset($_GET['action']) && is_string($_GET['action']) ? $_GET['action'] : '';
 $settingsFirmwareActions = array(
     'firmware_status' => true,
     'firmware_progress' => true,
@@ -26,8 +27,8 @@ if ((!is_array($cfg) || empty($cfg['userDev'])) && !isset($settingsFirmwareActio
     exit;
 }
 
-// Activity mutations use a session CSRF token. Mint it before the lock drops.
-// Other actions do not check this token.
+// Activity operations retain their narrower token as defense in depth. Every
+// mutation also passes the shared header-token and origin/method policy below.
 require_once __DIR__ . '/inc/dev-activity.php';
 require_once __DIR__ . '/inc/firmware-identity.php';
 require_once __DIR__ . '/inc/experimental-clock.php';
@@ -36,12 +37,26 @@ require_once __DIR__ . '/inc/clock-log.php';
 require_once __DIR__ . '/inc/measured-rates.php';
 require_once __DIR__ . '/inc/web-auth.php';
 require_once __DIR__ . '/inc/diagnostic-logs.php';
+require_once __DIR__ . '/inc/sgminer-api-policy.php';
 if (!isset($_SESSION['dev_csrf']) || !dev_activity_csrf_well_formed($_SESSION['dev_csrf'])) {
     $minted = dev_activity_csrf_mint();
     if ($minted !== '') $_SESSION['dev_csrf'] = $minted;
 }
 $dev_activity_csrf = (isset($_SESSION['dev_csrf']) && dev_activity_csrf_well_formed($_SESSION['dev_csrf']))
     ? $_SESSION['dev_csrf'] : '';
+$web_csrf = bs_csrf_ensure($_SESSION);
+$devReadActions = array(
+    'log_tail', 'log_download', 'network_pools', 'network_probe', 'recorder_status',
+    'recorder_health', 'state_snapshot', 'diagnostics_zip', 'board_health', 'storage',
+    'measured_rates', 'measured_rates_download', 'file_download', 'file_view',
+    'firmware_status', 'firmware_progress', 'activity'
+);
+$devMutationActions = array(
+    'log_clear', 'sgminer_api', 'recorder_run', 'measured_rates_update', 'storage_set_target',
+    'firmware_verify', 'firmware_revert', 'firmware_flash_custom', 'firmware_abort',
+    'storage_clear', 'storage_clear_all', 'log_prune', 'activity_trace'
+);
+bs_enforce_action($action, $devReadActions, $devMutationActions, $web_csrf);
 
 // Both auth gates passed. Release the session lock so a long firmware op
 // cannot block concurrent progress polls.
@@ -74,11 +89,11 @@ function sgminer_log_target($cfg) {
 function sgminer_log_paths_for_target($target) {
     $target = normalize_log_target($target);
     if ($target === 'RAM') {
-        // /run/blakestream is the canonical tmpfs runtime dir. /run/sgminer.log
-        // is a legacy fallback for units already launched by older dev builds.
-        return array('/run/blakestream/sgminer.log', '/run/sgminer.log');
+        // Root writes the RAM log below a sealed parent; the web UI receives
+        // file-level access but cannot replace it with a symlink.
+        return array('/run/blakestream-miner/sgminer.log');
     }
-    return array('/var/log/sgminer.log');
+    return array('/var/log/blakestream-miner/sgminer.log');
 }
 
 function first_existing_path($paths) {
@@ -221,14 +236,14 @@ function normalize_log_text($source, $text) {
 
 function lighttpd_log_path($kind) {
     if ($kind === 'access') {
-        return first_existing_path(array('/run/blakestream/lighttpd-access.log', '/var/log/lighttpd/access.log'));
+        return first_existing_path(array('/run/blakestream-web/access.log', '/var/log/lighttpd/access.log'));
     }
     $cfg = read_json('/opt/scripta/etc/scripta.conf');
     return bs_diagnostic_source_path('lighttpd', $cfg);
 }
 
 function temp_state_path() {
-    return first_existing_path(array('/run/blakestream/temp-state.json', '/opt/scripta/etc/temp-state.json'));
+    return first_existing_path(array('/run/blakestream-control/temp-state.json', '/opt/scripta/etc/temp-state.json'));
 }
 
 function dev_recorder_specs() {
@@ -354,11 +369,11 @@ function storage_clearable_paths() {
     // and simply rebuild after a truncate. NOT security.log (intrusion evidence
     // — that one is pruned to 7 days instead, never wiped).
     $paths = array(
-        '/run/blakestream/sgminer.log',
-        '/var/log/sgminer.log',
-        '/run/blakestream/lighttpd-access.log',
+        '/run/blakestream-miner/sgminer.log',
+        '/var/log/blakestream-miner/sgminer.log',
+        '/run/blakestream-web/access.log',
         '/var/log/lighttpd/access.log',
-        '/run/blakestream/temp-state.json', '/opt/scripta/etc/temp-state.json',
+        '/opt/scripta/etc/temp-state.json',
         '/run/blakestream/hashrate-history.json', '/opt/scripta/var/hashrate-history.json',
         '/run/blakestream/pool-history.json', '/opt/scripta/var/pool-history.json',
         '/run/blakestream/failover-events.json', '/opt/scripta/var/failover-events.json',
@@ -376,17 +391,18 @@ function storage_view_source($path) {
         if ($path === bs_diagnostic_path($name, 'RAM') || $path === bs_diagnostic_path($name, 'SD')) return $spec['source'];
     }
     $map = array(
-        '/run/blakestream/sgminer.log' => 'sgminer',
-        '/var/log/sgminer.log' => 'sgminer',
+        '/run/blakestream-miner/sgminer.log' => 'sgminer',
+        '/var/log/blakestream-miner/sgminer.log' => 'sgminer',
         '/run/blakestream/lighttpd-error.log' => 'lighttpd',
         '/var/log/lighttpd/error.log' => 'lighttpd',
-        '/run/blakestream/lighttpd-access.log' => 'lighttpd_access',
+        '/run/blakestream-web/access.log' => 'lighttpd_access',
         '/var/log/lighttpd/access.log' => 'lighttpd_access',
-        '/run/blakestream/temp-state.json' => 'temp_state',
+        '/run/blakestream-control/temp-state.json' => 'temp_state',
         '/var/log/syslog' => 'syslog',
         '/var/log/kern.log' => 'kern',
         '/var/log/daemon.log' => 'daemon',
         '/var/log/auth.log' => 'auth',
+        '/var/log/blakestream-security/ssh.log' => 'ssh',
     );
     return isset($map[$path]) ? $map[$path] : '';
 }
@@ -450,17 +466,18 @@ function storage_report() {
     global $dev_activity_csrf;
     $SGMINER_CAP = 4194304; // mirrors capped-log-writer.py DEFAULT_MAX_BYTES (4 MiB)
     $ram = array(
-        storage_stat('sgminer.log', '/run/blakestream/sgminer.log', $SGMINER_CAP),
+        storage_stat('sgminer.log', '/run/blakestream-miner/sgminer.log', $SGMINER_CAP),
         storage_stat('hashrate-history.json', '/run/blakestream/hashrate-history.json'),
         storage_stat('pool-history.json', '/run/blakestream/pool-history.json'),
         storage_stat('failover-events.json', '/run/blakestream/failover-events.json'),
         storage_stat('clock-history.json', '/run/blakestream/clock-history.json'),
-        storage_stat('temp-state.json', '/run/blakestream/temp-state.json'),
-        storage_stat('lighttpd-access.log', '/run/blakestream/lighttpd-access.log'),
+        storage_stat('temp-state.json', '/run/blakestream-control/temp-state.json'),
+        storage_stat('lighttpd-access.log', '/run/blakestream-web/access.log'),
     );
     $sd = array(
-        storage_stat('sgminer.log', '/var/log/sgminer.log', $SGMINER_CAP),
+        storage_stat('sgminer.log', '/var/log/blakestream-miner/sgminer.log', $SGMINER_CAP),
         storage_stat('security.log', '/opt/scripta/var/security.log'),
+        storage_stat('ssh-auth.log', '/var/log/blakestream-security/ssh.log'),
         storage_stat('hashrate-history.json', '/opt/scripta/var/hashrate-history.json'),
         storage_stat('pool-history.json', '/opt/scripta/var/pool-history.json'),
         storage_stat('failover-events.json', '/opt/scripta/var/failover-events.json'),
@@ -532,10 +549,7 @@ function firmware_identity_for_md5($md5) {
     return isset($k[$md5]) ? $k[$md5] : 'UNKNOWN';
 }
 function firmware_identity_paths() {
-    return array(
-        '/run/blakestream/bkb-firmware-identity.json',
-        '/opt/scripta/etc/bkb-firmware-identity.json',
-    );
+    return array('/opt/scripta/etc/bkb-firmware-identity.json');
 }
 function firmware_last_identity() {
     foreach (firmware_identity_paths() as $path) {
@@ -682,7 +696,7 @@ function firmware_record_flash_runtime($action, $seconds, $path = null) {
     return true;
 }
 function firmware_job_paths() {
-    $base = '/run/blakestream';
+    $base = '/run/blakestream-firmware';
     return array(
         'lock' => $base . '/bkb-firmware.lock',
         'pid' => $base . '/bkb-firmware.pid',
@@ -692,6 +706,7 @@ function firmware_job_paths() {
         'progress' => $base . '/bkb-firmware-progress.log',
         'abort' => $base . '/bkb-firmware-abort',
         'applied' => $base . '/bkb-firmware-result-applied',
+        'recovery' => '/var/lib/blakestream-firstboot/firmware-recovery-required',
     );
 }
 function firmware_env_read($path) {
@@ -751,7 +766,8 @@ function firmware_job_result() {
 function firmware_job_apply_result($SCRIPTA_CONF) {
     $p = firmware_job_paths();
     $res = firmware_job_result();
-    if (!is_array($res) || file_exists($p['applied'])) return $res;
+    $applied = @file_get_contents($p['applied']);
+    if (!is_array($res) || (is_string($applied) && trim($applied) !== '')) return $res;
     $op = isset($res['op']) ? $res['op'] : '';
     if (empty($res['ok'])) {
         if ($op !== 'revert' && $op !== 'flash-custom') return $res;
@@ -762,7 +778,7 @@ function firmware_job_apply_result($SCRIPTA_CONF) {
         firmware_audit('firmware-' . $op . ' failed; adjustable clocks OFF; experimental reset ' . ($cleared ? 'OK' : 'failed'));
         if ($disabled && $cleared) {
             @file_put_contents($p['applied'], date('c') . ' ' . $op . " failed\n");
-            @chmod($p['applied'], 0664);
+            @chmod($p['applied'], 0660);
         }
         return $res;
     }
@@ -794,7 +810,7 @@ function firmware_job_apply_result($SCRIPTA_CONF) {
         firmware_audit('adjustable-clocks auto-OFF after stock revert');
     }
     @file_put_contents($p['applied'], date('c') . ' ' . $op . "\n");
-    @chmod($p['applied'], 0664);
+    @chmod($p['applied'], 0660);
     return firmware_job_result();
 }
 function firmware_job_state($SCRIPTA_CONF) {
@@ -821,6 +837,7 @@ function firmware_job_state($SCRIPTA_CONF) {
         'runtime' => firmware_flash_runtime($op),
         'cancelable' => $cancelable,
         'abort_requested' => $abort_requested,
+        'recovery_required' => file_exists($p['recovery']),
         'result' => $result,
         'progress' => firmware_progress_text(),
     );
@@ -901,7 +918,7 @@ function board_health_rows() {
     $devs = sgminer_api_call('devs');
     $rows = array();
     if (!is_array($devs) || !isset($devs['DEVS']) || !is_array($devs['DEVS'])) return $rows;
-    $fanState = @json_decode(@file_get_contents('/run/blakestream/fan-control-state.json'), true);
+    $fanState = @json_decode(@file_get_contents('/run/blakestream-control/fan-control-state.json'), true);
     $fan = (is_array($fanState) && isset($fanState['fan'])) ? (int) $fanState['fan'] : null;
     $now = time();
     foreach ($devs['DEVS'] as $d) {
@@ -1178,9 +1195,8 @@ function journalctl_command_since($args, $lines, $since) {
 
 function request_value($key, $default = '') {
     static $body = null;
-    if (isset($_REQUEST[$key])) return $_REQUEST[$key];
     if ($body === null) {
-        $raw = @file_get_contents('php://input');
+        $raw = @file_get_contents('php://input', false, null, 0, 4097);
         $body = @json_decode($raw, true);
         if (!is_array($body)) $body = array();
     }
@@ -1353,9 +1369,9 @@ header('Content-Type: application/json');
 switch ($action) {
 
 case 'log_tail':
-    $source = isset($_REQUEST['source']) ? $_REQUEST['source'] : 'sgminer';
-    $offset = isset($_REQUEST['offset']) ? max(0, (int)$_REQUEST['offset']) : 0;
-    $target = isset($_REQUEST['target']) ? $_REQUEST['target'] : '';
+    $source = isset($_GET['source']) ? $_GET['source'] : 'sgminer';
+    $offset = isset($_GET['offset']) ? max(0, (int)$_GET['offset']) : 0;
+    $target = isset($_GET['target']) ? $_GET['target'] : '';
 
     // Journal-backed sources: shell out to journalctl (BK-B has no /var/log/syslog
     // file — systemd-journald is the system log sink). www-data must be in the
@@ -1433,8 +1449,8 @@ case 'log_tail':
     break;
 
 case 'log_download':
-    $source = isset($_REQUEST['source']) ? $_REQUEST['source'] : 'sgminer';
-    $target = isset($_REQUEST['target']) ? $_REQUEST['target'] : '';
+    $source = isset($_GET['source']) ? $_GET['source'] : 'sgminer';
+    $target = isset($_GET['target']) ? $_GET['target'] : '';
 
     $jspec = source_journal_spec($source);
     if ($jspec) {
@@ -1543,7 +1559,7 @@ case 'network_pools':
 case 'network_probe':
     $pools = pool_list_for_probe($ETC);
     // A stable endpoint key cannot change meaning if saved profiles are reordered.
-    $selector = isset($_REQUEST['endpoint']) ? $_REQUEST['endpoint'] : (isset($_REQUEST['pool']) ? $_REQUEST['pool'] : '');
+    $selector = isset($_GET['endpoint']) ? $_GET['endpoint'] : (isset($_GET['pool']) ? $_GET['pool'] : '');
     if ($selector !== '') {
         $pool = bs_probe_select($pools, $selector);
         if ($pool === null) { echo json_encode(array('ok' => false, 'error' => 'endpoint no longer available')); exit; }
@@ -1557,27 +1573,15 @@ case 'network_probe':
 
 case 'sgminer_api':
     $body = json_decode(file_get_contents('php://input'), true);
-    if (!is_array($body)) $body = array();
-    $command = isset($body['command']) ? trim((string)$body['command']) : (isset($_REQUEST['command']) ? trim((string)$_REQUEST['command']) : '');
-    $parameter = isset($body['parameter']) ? trim((string)$body['parameter']) : (isset($_REQUEST['parameter']) ? trim((string)$_REQUEST['parameter']) : '');
-    if (!$command || !preg_match('/^[a-zA-Z]+$/', $command)) {
-        echo json_encode(array('ok' => false, 'error' => 'invalid command'));
+    $request = bs_dev_sgminer_api_request($body);
+    if (!$request['ok']) {
+        http_response_code(400);
+        echo json_encode($request);
         exit;
     }
-    if ($parameter !== '' && !preg_match('/^[a-zA-Z0-9_,\-\.\/\:; ]+$/', $parameter)) {
-        echo json_encode(array('ok' => false, 'error' => 'invalid parameter'));
-        exit;
-    }
-    error_log('DevTools sgminer_api: command=' . $command . ' parameter=' . $parameter . ' remote=' . (isset($_SERVER['REMOTE_ADDR']) ? $_SERVER['REMOTE_ADDR'] : 'unknown'));
-    // Disruptive RPC verbs also get a durable trail in the SD security.log (the
-    // error_log above lives in RAM and is user-clearable). The UI confirms these
-    // before sending; this records them even if issued directly.
-    $api_disruptive = array('restart', 'quit', 'disablepool', 'removepool', 'ascdisable', 'pgadisable', 'switchpool', 'poolpriority');
-    if (in_array(strtolower($command), $api_disruptive, true)) {
-        firmware_audit('sgminer-api ' . $command . ($parameter !== '' ? '|' . $parameter : ''));
-    }
+    $command = $request['command'];
+    error_log('DevTools sgminer_api read: command=' . $command . ' remote=' . (isset($_SERVER['REMOTE_ADDR']) ? $_SERVER['REMOTE_ADDR'] : 'unknown'));
     $payload = array('command' => $command);
-    if ($parameter !== '') $payload['parameter'] = $parameter;
     $errno = 0; $errstr = '';
     $sock = @fsockopen('127.0.0.1', 4028, $errno, $errstr, 3);
     if (!$sock) {
@@ -1770,9 +1774,9 @@ case 'diagnostics_zip':
     // zip is shared for support) — host/port/name are kept for triage.
     $sp = redact_json_string($ETC . '/saved-pools.json');
     if ($sp !== null) $zip->addFromString('config/saved-pools.json', $sp);
-    $rm = redact_json_string('/tmp/scripta-runtime-miner.conf');
+    $rm = redact_json_string('/run/blakestream-miner/scripta-runtime-miner.conf');
     if ($rm !== null) $zip->addFromString('config/runtime-miner.conf', $rm);
-    $pm = redact_json_string('/tmp/scripta-runtime-poolmap.json');
+    $pm = redact_json_string('/run/blakestream-miner/scripta-runtime-poolmap.json');
     if ($pm !== null) $zip->addFromString('config/runtime-poolmap.json', $pm);
     $add_file($zip, $ETC . '/board-assignments.json', 'config/board-assignments.json');
     $add_file($zip, $ETC . '/failover-config.json', 'config/failover-config.json');
@@ -1826,6 +1830,7 @@ case 'diagnostics_zip':
         exit;
     }
     $add_file($zip, '/opt/scripta/var/security.log', 'logs/security.log');
+    $add_file($zip, '/var/log/blakestream-security/ssh.log', 'logs/ssh-auth.log');
     $zip->addFromString('logs/kernel-ring.txt', (string) @shell_exec(journalctl_command('-k', 1500)));
     $zip->addFromString('logs/journal-tail.txt', (string) @shell_exec(journalctl_command('', 2000)));
     $zip->addFromString('system/firmware-identity.json', json_encode(firmware_last_identity(), JSON_PRETTY_PRINT));
@@ -1989,7 +1994,7 @@ case 'storage_set_target':
 case 'file_download':
 case 'file_view':
     // Only files already listed in the storage view are readable here.
-    $path = isset($_REQUEST['path']) ? $_REQUEST['path'] : '';
+    $path = isset($_GET['path']) ? $_GET['path'] : '';
     $rep = storage_report();
     $allowed = array();
     foreach (array_merge($rep['ram'], $rep['sd']) as $r) { $allowed[$r['path']] = true; }
@@ -2009,7 +2014,7 @@ case 'file_view':
         exit;
     }
     $clock_log = in_array(basename($path), array('clock-history.json', 'clock-history-sd-buffer.json'), true);
-    $format = isset($_REQUEST['format']) ? $_REQUEST['format'] : ($clock_log ? 'readable' : 'raw');
+    $format = isset($_GET['format']) ? $_GET['format'] : ($clock_log ? 'readable' : 'raw');
     if ($clock_log && $format !== 'raw') {
         $view = bs_clock_log_view($path);
         $view['path'] = $path;
@@ -2055,6 +2060,7 @@ case 'firmware_status':
     $stock_expected = 'd5f844be2952fd713717a71a67e2be61';
     $stock_present = file_exists($stock);
     $stock_md5 = $stock_present ? md5_file($stock) : '';
+    $recovery_required = file_exists('/var/lib/blakestream-firstboot/firmware-recovery-required');
     $mining = firmware_miner_running();
     $flash_runtime = firmware_flash_runtime();
     $checks = array(
@@ -2063,6 +2069,8 @@ case 'firmware_status':
               'detail' => $stock_present ? ($stock_md5 === $stock_expected ? 'OK' : 'md5 mismatch (' . $stock_md5 . ')') : 'missing'),
         array('name' => 'Flasher present', 'ok' => file_exists($dfu), 'detail' => file_exists($dfu) ? 'dfu_flash.py' : 'missing'),
         array('name' => 'Wrapper present', 'ok' => file_exists($wrapper), 'detail' => file_exists($wrapper) ? 'bkb-firmware.sh' : 'missing'),
+        array('name' => 'Bridge verified for normal boot', 'ok' => !$recovery_required,
+              'detail' => $recovery_required ? 'RECOVERY REQUIRED — bridge held in DFU' : 'OK'),
         array('name' => 'Miner reachable (API)', 'ok' => $mining,
               'detail' => $mining ? 'sgminer API up (a flash pauses mining ' . $flash_runtime['label'] . ')' : 'not reachable'),
     );
@@ -2084,6 +2092,7 @@ case 'firmware_status':
         'last_identity' => $li,
         'checks' => $checks,
         'ready' => $ready,
+        'recovery_required' => $recovery_required,
         'custom_present' => $custom_present,
         'encoder_ready' => $encoder_ready,
         'custom_active' => $custom_active,
@@ -2223,7 +2232,8 @@ case 'storage_clear_all':
     }
     $measured_clear = bs_measured_command('clear-side', $side);
     if (empty($measured_clear['ok'])) { echo json_encode($measured_clear); break; }
-    $prefixes = ($side === 'SD') ? array('/opt/scripta/var/', '/var/log/') : array('/run/blakestream/');
+    $prefixes = ($side === 'SD') ? array('/opt/scripta/var/', '/var/log/')
+        : array('/run/blakestream/', '/run/blakestream-miner/', '/run/blakestream-web/');
     $cleared = 0; $errors = array();
     foreach (storage_clearable_paths() as $path) {
         $on_side = false;
@@ -2285,7 +2295,7 @@ case 'log_prune':
     break;
 
 case 'activity':
-    // Read-only. dev_activity_read_command() is stats; this case must not call ascset or ascidentify.
+    // Read-only. dev_activity_read_command() is stats; this case must not call a mutation verb.
     $method = isset($_SERVER['REQUEST_METHOD']) ? $_SERVER['REQUEST_METHOD'] : 'GET';
     header('Cache-Control: no-store');
     if ($method !== 'GET' && $method !== 'HEAD') {
@@ -2357,7 +2367,7 @@ case 'activity_trace':
     if (is_string($resp)) {
         $decoded = dev_activity_decode_json($resp, 512);
     }
-    if (!dev_activity_ascset_ok($decoded)) {
+    if (!dev_activity_mutation_ok($decoded)) {
         http_response_code(502);
         echo json_encode(array(
             'ok' => false,

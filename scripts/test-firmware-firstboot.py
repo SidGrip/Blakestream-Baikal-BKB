@@ -25,7 +25,9 @@ class FirstBootTests(unittest.TestCase):
         for name in ('etc', 'run', 'firmware', 'var'):
             (self.root / name).mkdir()
         values = {'ETC': str(self.root / 'etc'), 'RUN': str(self.root / 'run'),
+                  'STATE': str(self.root / 'etc'),
                   'FW': str(self.root / 'firmware'), 'PENDING': str(self.root / 'etc/pending'),
+                  'RECOVERY_REQUIRED': str(self.root / 'etc/recovery-required'),
                   'RESULT': str(self.root / 'etc/result.json'), 'LOG': str(self.root / 'var/firstboot.log'),
                   'ACTIVE': str(self.root / 'run/active'),
                   'LAUNCH_LOCK': str(self.root / 'launcher.lock')}
@@ -65,9 +67,9 @@ class FirstBootTests(unittest.TestCase):
         self.assertEqual(saved['userTz'], 'UTC')
         self.assertFalse(Path(boot.PENDING).exists())
         self.assertTrue(json.loads(Path(boot.RESULT).read_text())['ok'])
-        for directory in ('etc', 'run'):
-            identity = json.loads((self.root / directory / 'bkb-firmware-identity.json').read_text())
-            self.assertEqual(identity['chip_md5'], digest)
+        identity = json.loads((self.root / 'etc/bkb-firmware-identity.json').read_text())
+        self.assertEqual(identity['chip_md5'], digest)
+        self.assertFalse((self.root / 'run/bkb-firmware-identity.json').exists())
         options = {entry['key']: entry['value'] for entry in json.loads(self.options.read_text())}
         self.assertEqual(options, {'api-port': '4028', 'baikal-options': '400:40:55'})
         self.assertEqual((self.root / 'firmware/BRIDGE_GLOBAL_V1_READY').exists(), expected)
@@ -111,11 +113,26 @@ class FirstBootTests(unittest.TestCase):
         verifier.assert_not_called()
         self.assertEqual(self.settings.read_bytes(), before)
 
+    def test_recovery_marker_keeps_pending_and_never_restores_or_reads(self):
+        Path(boot.RECOVERY_REQUIRED).write_text('recovery required')
+        Path(boot.RECOVERY_REQUIRED).chmod(0o600)
+        verifier = mock.Mock(side_effect=AssertionError('must not read bridge'))
+        with mock.patch.object(boot, 'restore_bridge', side_effect=AssertionError('must not restore GPIO')):
+            self.assertEqual(boot.reconcile(verifier), 1)
+            self.assertTrue(Path(boot.PENDING).exists())
+            self.assertFalse(Path(boot.RESULT).exists())
+            verifier.assert_not_called()
+            Path(boot.ACTIVE).write_text('{}')
+            self.assertEqual(boot.reconcile(verifier), 1)
+            self.assertEqual(boot.recover(), 1)
+            self.assertTrue(Path(boot.ACTIVE).exists())
+            self.assertTrue(Path(boot.PENDING).exists())
+
     def test_unknown_and_legacy_custom_are_not_authorized(self):
         self.assertEqual(boot.reconcile(lambda log: 'f' * 32), 1)
         self.assertFalse(json.loads(self.settings.read_text())['userAdjustableClocks'])
-        for directory in ('etc', 'run'):
-            self.assertFalse((self.root / directory / 'bkb-firmware-identity.json').exists())
+        self.assertFalse((self.root / 'etc/bkb-firmware-identity.json').exists())
+        self.assertFalse((self.root / 'run/bkb-firmware-identity.json').exists())
         self.assertEqual(json.loads(Path(boot.RESULT).read_text())['identity'], 'UNKNOWN')
         self.assertFalse(Path(boot.PENDING).exists())
 
@@ -131,8 +148,8 @@ class FirstBootTests(unittest.TestCase):
         (self.root / 'firmware/ENCODER_READY').unlink()
         self.assertEqual(boot.reconcile(lambda log: boot.CUSTOM_MD5), 1)
         self.assertFalse(json.loads(self.settings.read_text())['userAdjustableClocks'])
-        for directory in ('etc', 'run'):
-            self.assertFalse((self.root / directory / 'bkb-firmware-identity.json').exists())
+        self.assertFalse((self.root / 'etc/bkb-firmware-identity.json').exists())
+        self.assertFalse((self.root / 'run/bkb-firmware-identity.json').exists())
 
     def test_invalid_options_dont_touch_hardware(self):
         self.options.write_text('{}')
@@ -188,8 +205,10 @@ class FirstBootTests(unittest.TestCase):
             self.assertIn(digest, wrapper)
         service = (ROOT / 'overlay/etc/systemd/system/blakestream-firmware-firstboot.service').read_text()
         self.assertIn('Before=cron.service lighttpd.service', service)
-        self.assertIn('After=local-fs.target blakestream-system-perms.service rc-local.service', service)
-        self.assertIn('ConditionPathExists=/opt/scripta/etc/bkb-firmware-firstboot.pending', service)
+        self.assertIn('Requires=blakestream-system-perms.service blakestream-firmware-recovery.service', service)
+        self.assertIn('Wants=rc-local.service', service)
+        self.assertIn('After=local-fs.target blakestream-system-perms.service blakestream-firmware-recovery.service rc-local.service', service)
+        self.assertNotIn('ConditionPathExists=', service)
         self.assertIn('TimeoutStartSec=140', service)
         self.assertIn('firmware-firstboot.py --recover', service)
 
@@ -214,10 +233,12 @@ class FirstBootTests(unittest.TestCase):
             self.assertTrue(Path(boot.ACTIVE).exists())
             self.assertEqual(boot.recover(), 1)
             self.assertTrue(Path(boot.ACTIVE).exists())
+            self.assertTrue(Path(boot.PENDING).exists())
             self.assertTrue(json.loads(Path(boot.RESULT).read_text())['recovery_required'])
             self.bridge_running.return_value = True
-            self.assertEqual(boot.recover(), 0)
+            self.assertEqual(boot.reconcile(mock.Mock(side_effect=AssertionError('no reread'))), 0)
             self.assertFalse(Path(boot.ACTIVE).exists())
+            self.assertFalse(Path(boot.PENDING).exists())
         self.assertFalse(json.loads(self.settings.read_text())['userAdjustableClocks'])
 
 

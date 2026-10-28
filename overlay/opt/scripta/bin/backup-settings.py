@@ -11,6 +11,7 @@ import hashlib
 import io
 import json
 import os
+import signal
 import shutil
 import sqlite3
 import stat
@@ -41,7 +42,7 @@ try:
 except NameError:
     _TEXT = (str,)
 
-VERBS = ('snapshot', 'restore', 'list', 'export', 'import', 'finish', 'rename', 'delete')
+VERBS = ('snapshot', 'restore', 'list', 'export', 'import', 'finish', 'rename', 'delete', 'recover')
 VERB_FIELDS = {
     'snapshot': ('name', 'items'),
     'restore': ('name',),
@@ -51,6 +52,7 @@ VERB_FIELDS = {
     'finish': (),
     'rename': ('name', 'to'),
     'delete': ('name',),
+    'recover': (),
 }
 NETWORK_STATUS_ARGV = ('/opt/scripta/bin/network-settings.py', 'backup')
 KIND = 'blakestream-application-config'
@@ -117,6 +119,8 @@ MAX_UPLOAD = 16 * 1024 * 1024
 MAX_STATUS_BYTES = 262144
 
 _fault_hook = None
+_termination_requested = False
+_termination_shield_depth = 0
 
 
 class BackupError(Exception):
@@ -130,20 +134,58 @@ class _LeaveJournal(BaseException):
     """Test-only interrupt that keeps the on-disk rollback journal."""
 
 
+class _TerminationRequested(Exception):
+    """Controlled SIGTERM cancellation raised outside rollback recovery."""
+
+
+class _TerminationShield(object):
+    """Defer SIGTERM exceptions until a durable rollback has completed."""
+    def __enter__(self):
+        global _termination_shield_depth
+        _termination_shield_depth += 1
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        global _termination_shield_depth
+        _termination_shield_depth -= 1
+        return False
+
+
+def _handle_sigterm(_signum, _frame):
+    global _termination_requested
+    _termination_requested = True
+    if _termination_shield_depth == 0:
+        raise _TerminationRequested()
+
+
+def _check_termination():
+    if _termination_requested and _termination_shield_depth == 0:
+        raise _TerminationRequested()
+
+
 class Layout(object):
     def __init__(self, root):
         self.root = root
         self.etc = os.path.join(root, 'opt', 'scripta', 'etc')
         self.var = os.path.join(root, 'opt', 'scripta', 'var')
         self.ram = os.path.join(root, 'run', 'blakestream')
-        self.backup_root = os.path.join(self.etc, 'backup')
+        self.private_ram = os.path.join(root, 'run', 'blakestream-backup')
+        self.backup_root = os.path.join(root, 'var', 'lib', 'blakestream-backups')
         self.baselines = os.path.join(root, 'var', 'lib', 'blakestream-clock-baselines')
         self.network_restore = os.path.join(self.etc, 'network-restore.json')
         self.upload = os.path.join(self.ram, 'backup-upload.bin')
-        self.export_zip = os.path.join(self.ram, 'backup-export.zip')
+        self.export_zip = os.path.join(self.private_ram, 'backup-export.zip')
         self.incoming = os.path.join(self.backup_root, '.incoming')
         self.rollback_dir = os.path.join(self.backup_root, '.rollback')
-        self.lock_path = os.path.join(self.ram, 'backup-settings.lock')
+        # Once a completed transaction has atomically moved its journal here,
+        # recovery must not replay it. Deleting a tree is not atomic, so a
+        # separate tombstone keeps power loss during cleanup harmless.
+        self.rollback_done = os.path.join(self.backup_root, '.rollback-complete')
+        # A published delete is first renamed here and fsynced.  Recursive
+        # cleanup can then be retried without making the deleted backup visible
+        # again after a power loss.
+        self.delete_done = os.path.join(self.backup_root, '.delete-complete')
+        self.lock_path = os.path.join(self.private_ram, 'backup-settings.lock')
 
 
 def _service_root(layout):
@@ -185,6 +227,40 @@ def _reject_symlink(path):
         current = os.path.dirname(current)
 
 
+def _same_inode(left, right):
+    return left.st_dev == right.st_dev and left.st_ino == right.st_ino
+
+
+def _open_verified_directory(path):
+    """Open an existing directory without following its final component."""
+    _reject_symlink(path)
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    except OSError:
+        raise BackupError('io')
+    try:
+        opened = os.fstat(fd)
+        named = os.lstat(path)
+        if (not stat.S_ISDIR(opened.st_mode) or not stat.S_ISDIR(named.st_mode)
+                or not _same_inode(opened, named)):
+            raise BackupError('io')
+        return fd, opened
+    except Exception:
+        os.close(fd)
+        raise
+
+
+def _fsync_directory(path):
+    """Durably order a directory entry change without following symlinks."""
+    fd, _info = _open_verified_directory(path)
+    try:
+        os.fsync(fd)
+    except (IOError, OSError):
+        raise BackupError('io')
+    finally:
+        os.close(fd)
+
+
 def _mkdir(path, mode):
     _reject_symlink(path)
     if os.path.isdir(path) and not os.path.islink(path):
@@ -197,87 +273,143 @@ def _mkdir(path, mode):
     _reject_symlink(parent)
     os.mkdir(path, mode)
     os.chmod(path, mode)
+    # A file fsync inside a newly created directory does not make the new
+    # directory entry durable in its own parent. Persist both levels before a
+    # transaction can retire its rollback journal.
+    _fsync_directory(path)
+    if parent and parent != path:
+        _fsync_directory(parent)
+
+
+def _read_nofollow_info(path, limit):
+    _reject_symlink(path)
+    parent_fd, _parent_info = _open_verified_directory(os.path.dirname(path))
+    try:
+        try:
+            fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        except OSError:
+            raise BackupError('io')
+        try:
+            info = os.fstat(fd)
+            named = os.lstat(path)
+            if (not stat.S_ISREG(info.st_mode) or not stat.S_ISREG(named.st_mode)
+                    or not _same_inode(info, named)
+                    or info.st_nlink != 1 or named.st_nlink != 1):
+                raise BackupError('io')
+            if info.st_size > limit:
+                raise BackupError('limit')
+            chunks = []
+            got = 0
+            while got < info.st_size:
+                block = os.read(fd, min(65536, info.st_size - got))
+                if not block:
+                    break
+                got += len(block)
+                if got > limit:
+                    raise BackupError('limit')
+                chunks.append(block)
+            if got != info.st_size:
+                raise BackupError('io')
+            return b''.join(chunks), info
+        finally:
+            os.close(fd)
+    finally:
+        os.close(parent_fd)
 
 
 def _read_nofollow(path, limit):
-    _reject_symlink(path)
-    flags = os.O_RDONLY | os.O_NOFOLLOW
-    try:
-        fd = os.open(path, flags)
-    except OSError:
-        raise BackupError('io')
-    try:
-        info = os.fstat(fd)
-        if not stat.S_ISREG(info.st_mode):
-            raise BackupError('io')
-        if info.st_size > limit:
-            raise BackupError('limit')
-        chunks = []
-        got = 0
-        while got < info.st_size:
-            block = os.read(fd, min(65536, info.st_size - got))
-            if not block:
-                break
-            got += len(block)
-            if got > limit:
-                raise BackupError('limit')
-            chunks.append(block)
-        if got != info.st_size:
-            raise BackupError('io')
-        return b''.join(chunks)
-    finally:
-        os.close(fd)
+    return _read_nofollow_info(path, limit)[0]
 
 
-def _write_replace(path, blob, mode):
+def _write_replace(path, blob, mode, owner=None):
     parent = os.path.dirname(path)
     _mkdir(parent, 0o755)
     _reject_symlink(parent)
     _reject_symlink(path)
-    owner = os.stat(path if os.path.exists(path) else parent)
-    tmp = path + '.bktmp'
-    _reject_symlink(tmp)
-    if os.path.exists(tmp):
-        _unlink_file(tmp)
-    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
-    fd = os.open(tmp, flags, 0o600)
+    parent_fd, parent_info = _open_verified_directory(parent)
+    existing = None
+    if os.path.lexists(path):
+        existing = os.lstat(path)
+        if not stat.S_ISREG(existing.st_mode):
+            os.close(parent_fd)
+            raise BackupError('io')
+    wanted_owner = owner if owner is not None else (
+        (existing.st_uid, existing.st_gid) if existing is not None
+        else (parent_info.st_uid, parent_info.st_gid)
+    )
+    tmp_fd = None
+    tmp = None
+    tmp_info = None
+    renamed = False
     try:
+        tmp_fd, tmp = tempfile.mkstemp(prefix='.' + os.path.basename(path) + '.bktmp.',
+                                       dir=parent)
+        tmp_info = os.fstat(tmp_fd)
+        if not stat.S_ISREG(tmp_info.st_mode):
+            raise BackupError('io')
         offset = 0
         while offset < len(blob):
-            written = os.write(fd, blob[offset:])
+            written = os.write(tmp_fd, blob[offset:])
             if written <= 0:
                 raise OSError('short backup write')
             offset += written
+        # Finalize metadata and contents while the random temporary name is
+        # still unpublished. The descriptor remains authoritative even if a
+        # web writer unlinks or replaces that name before the inode check.
         if os.geteuid() == 0:
-            os.fchown(fd, owner.st_uid, owner.st_gid)
-        os.fsync(fd)
-    except OSError:
-        os.close(fd)
+            os.fchown(tmp_fd, wanted_owner[0], wanted_owner[1])
+        os.fchmod(tmp_fd, mode & 0o666)
+        os.fsync(tmp_fd)
+        named_tmp = os.lstat(tmp)
+        named_parent = os.lstat(parent)
+        if (not stat.S_ISREG(named_tmp.st_mode) or not _same_inode(tmp_info, named_tmp)
+                or not _same_inode(parent_info, named_parent)):
+            raise BackupError('io')
+        os.rename(tmp, path)
+        renamed = True
+        named_target = os.lstat(path)
+        if not stat.S_ISREG(named_target.st_mode) or not _same_inode(tmp_info, named_target):
+            raise BackupError('io')
+        os.fsync(parent_fd)
+    except BackupError:
+        raise
+    except (IOError, OSError):
+        raise BackupError('io')
+    finally:
+        if tmp_fd is not None:
+            os.close(tmp_fd)
+        if not renamed and tmp is not None and tmp_info is not None:
+            try:
+                named_tmp = os.lstat(tmp)
+                if stat.S_ISREG(named_tmp.st_mode) and _same_inode(tmp_info, named_tmp):
+                    os.unlink(tmp)
+            except OSError:
+                pass
         try:
-            os.unlink(tmp)
+            os.close(parent_fd)
         except OSError:
             pass
-        raise BackupError('io')
-    os.close(fd)
-    os.chmod(tmp, mode & 0o666)
-    os.rename(tmp, path)
-    try:
-        dirfd = os.open(parent, os.O_RDONLY | os.O_NOFOLLOW)
-        try:
-            os.fsync(dirfd)
-        finally:
-            os.close(dirfd)
-    except OSError:
-        pass
 
 
 def _unlink_file(path):
     _reject_symlink(path)
     if not os.path.exists(path):
         return
-    if not os.path.isfile(path):
+    parent_fd, parent_info = _open_verified_directory(os.path.dirname(path))
+    try:
+        named_parent = os.lstat(os.path.dirname(path))
+        named = os.lstat(path)
+        if (not _same_inode(parent_info, named_parent) or
+                not stat.S_ISREG(named.st_mode) or stat.S_ISLNK(named.st_mode)):
+            raise BackupError('io')
+        os.unlink(path)
+        os.fsync(parent_fd)
+    except BackupError:
+        raise
+    except (IOError, OSError):
         raise BackupError('io')
-    os.unlink(path)
+    finally:
+        os.close(parent_fd)
 
 
 def archive_path_ok(path):
@@ -396,11 +528,13 @@ class _Journal(object):
         if os.path.exists(path):
             if not os.path.isfile(path):
                 raise BackupError('io')
-            blob = _read_nofollow(path, MAX_FILE_BYTES)
+            blob, info = _read_nofollow_info(path, MAX_FILE_BYTES)
             name = '%04d' % index
             _write_replace(os.path.join(self.directory, name), blob, 0o600)
             entry['existed'] = True
-            entry['mode'] = os.stat(path).st_mode & 0o666
+            entry['mode'] = info.st_mode & 0o666
+            entry['uid'] = info.st_uid
+            entry['gid'] = info.st_gid
             entry['file'] = name
         self.entries.append(entry)
 
@@ -416,13 +550,51 @@ def _discard_tree(path, parent):
         return
     if os.path.islink(path) or not _within(parent, path):
         raise BackupError('symlink')
-    if os.path.isdir(path):
-        shutil.rmtree(path)
-    else:
-        os.unlink(path)
+    try:
+        info = os.lstat(path)
+        if stat.S_ISDIR(info.st_mode):
+            for name in os.listdir(path):
+                _discard_tree(os.path.join(path, name), path)
+            # Persist all child removals before removing this directory, then
+            # persist the removal in its parent.  This makes recursive cleanup
+            # durable at every namespace level rather than only at the root.
+            _fsync_directory(path)
+            os.rmdir(path)
+            _fsync_directory(os.path.dirname(path))
+        elif stat.S_ISREG(info.st_mode):
+            _unlink_file(path)
+        else:
+            raise BackupError('io')
+    except BackupError:
+        raise
+    except (IOError, OSError):
+        raise BackupError('io')
 
 
-def recover_rollback(layout):
+def _commit_rollback_removal(layout):
+    """Atomically retire a journal before recursively deleting its files.
+
+    A crash while removing `.rollback` in place can leave journal.json but
+    remove one of the captured files, making boot recovery impossible. Rename
+    the complete journal to a non-recovery tombstone and fsync the parent first;
+    cleanup of that tombstone is then safely retryable.
+    """
+    if os.path.lexists(layout.rollback_done):
+        _discard_tree(layout.rollback_done, layout.backup_root)
+        _fsync_directory(layout.backup_root)
+    if not os.path.lexists(layout.rollback_dir):
+        return
+    if os.path.islink(layout.rollback_dir):
+        raise BackupError('symlink')
+    os.rename(layout.rollback_dir, layout.rollback_done)
+    _fsync_directory(layout.backup_root)
+    _hook('restore-journal-retired')
+    if os.path.lexists(layout.rollback_done):
+        _discard_tree(layout.rollback_done, layout.backup_root)
+        _fsync_directory(layout.backup_root)
+
+
+def _recover_rollback_impl(layout):
     directory = layout.rollback_dir
     if not os.path.lexists(directory):
         return
@@ -430,7 +602,7 @@ def recover_rollback(layout):
         raise BackupError('symlink')
     journal_path = os.path.join(directory, 'journal.json')
     if not os.path.exists(journal_path):
-        _discard_tree(directory, layout.backup_root)
+        _commit_rollback_removal(layout)
         return
     if os.path.islink(journal_path):
         raise BackupError('rollback-failed')
@@ -454,54 +626,101 @@ def recover_rollback(layout):
             mode = entry.get('mode')
             if isinstance(mode, bool) or not isinstance(mode, int):
                 mode = 0o664
-            _write_replace(path, blob, mode & 0o666)
+            uid = entry.get('uid')
+            gid = entry.get('gid')
+            if (isinstance(uid, bool) or not isinstance(uid, int) or uid < 0
+                    or isinstance(gid, bool) or not isinstance(gid, int) or gid < 0):
+                owner = _canonical_restore_owner(layout, path)
+            else:
+                owner = (uid, gid)
+            _write_replace(path, blob, mode & 0o666, owner=owner)
         elif entry.get('existed') is False:
             if os.path.islink(path):
                 raise BackupError('rollback-failed')
             if os.path.isfile(path):
-                os.unlink(path)
+                _unlink_file(path)
         else:
             raise BackupError('rollback-failed')
-    _discard_tree(directory, layout.backup_root)
+    _commit_rollback_removal(layout)
+
+
+def recover_rollback(layout):
+    # Never let a second TERM interrupt restoration of the pre-operation
+    # journal. SIGKILL or power loss can still stop it; the boot recovery verb
+    # will replay the same durable journal again.
+    with _TerminationShield():
+        result = _recover_rollback_impl(layout)
+    _check_termination()
+    return result
 
 
 def _recover_pending(layout):
-    if not os.path.lexists(layout.rollback_dir):
+    if not (os.path.lexists(layout.rollback_dir) or
+            os.path.lexists(layout.rollback_done) or
+            os.path.lexists(layout.delete_done)):
         return
     service = Service(_service_root(layout))
     with service.locked(wait=True):
         with _exclusive(service.ram, service.sd):
-            recover_rollback(layout)
+            # A tombstone means the live-state decision was already committed;
+            # it is never a rollback source and can only be discarded.
+            if os.path.lexists(layout.rollback_done):
+                with _TerminationShield():
+                    _discard_tree(layout.rollback_done, layout.backup_root)
+                    _fsync_directory(layout.backup_root)
+                _check_termination()
+            if os.path.lexists(layout.delete_done):
+                with _TerminationShield():
+                    _discard_tree(layout.delete_done, layout.backup_root)
+                    _fsync_directory(layout.backup_root)
+                _check_termination()
+            if os.path.lexists(layout.rollback_dir):
+                recover_rollback(layout)
 
 
 def _apply_plan(layout, changes):
+    _check_termination()
     if len(changes) > MAX_ARCHIVE_FILES + 32:
         raise BackupError('limit')
     _mkdir(layout.rollback_dir, 0o700)
+    # The journal directory itself must reach stable storage before any live
+    # destination can be changed.
+    _fsync_directory(layout.backup_root)
     journal = _Journal(layout)
     try:
         for change in changes:
+            _check_termination()
             journal.capture(change)
         journal.commit()
+        _check_termination()
+    except _TerminationRequested:
+        with _TerminationShield():
+            _commit_rollback_removal(layout)
+        raise
     except BackupError:
-        _discard_tree(layout.rollback_dir, layout.backup_root)
+        with _TerminationShield():
+            _commit_rollback_removal(layout)
         raise
     except (IOError, OSError):
-        _discard_tree(layout.rollback_dir, layout.backup_root)
+        with _TerminationShield():
+            _commit_rollback_removal(layout)
         raise BackupError('io')
     try:
         for change in changes:
+            _check_termination()
             _hook('restore-write')
             if change.blob is None:
                 _unlink_file(change.path)
                 if change.path.startswith(os.path.abspath(layout.baselines) + os.sep):
                     _prune_empty(os.path.dirname(change.path), layout.baselines)
             else:
-                _write_replace(change.path, change.blob, change.mode)
+                _write_replace(change.path, change.blob, change.mode,
+                               owner=_canonical_restore_owner(layout, change.path))
             _hook('restore-wrote')
+            _check_termination()
     except _LeaveJournal:
         raise
-    except Exception:
+    except Exception as failure:
         try:
             recover_rollback(layout)
         except BackupError as exc:
@@ -510,18 +729,29 @@ def _apply_plan(layout, changes):
             raise BackupError('rollback-failed')
         except (IOError, OSError):
             raise BackupError('rollback-failed')
+        if isinstance(failure, _TerminationRequested):
+            raise BackupError('busy')
         raise BackupError('rollback')
-    _discard_tree(layout.rollback_dir, layout.backup_root)
+    # Retire the rollback name atomically while TERM is deferred. If TERM was
+    # received during this commit cleanup, report it only after `.rollback` is
+    # durably gone so boot cannot mistake a partial deletion for a journal.
+    with _TerminationShield():
+        _commit_rollback_removal(layout)
+    _check_termination()
 
 
 def _prune_empty(path, stop):
     stop = os.path.abspath(stop)
     while os.path.abspath(path).startswith(stop + os.sep):
+        parent = os.path.dirname(path)
         try:
             os.rmdir(path)
         except OSError:
             return
-        path = os.path.dirname(path)
+        # The removed baseline directory is part of the same transaction as
+        # the file deletion. Persist its parent entry before retiring rollback.
+        _fsync_directory(parent)
+        path = parent
 
 
 class _Lock(object):
@@ -531,8 +761,10 @@ class _Lock(object):
 
     def __enter__(self):
         parent = os.path.dirname(self.path)
-        _mkdir(parent, 0o775)
-        self.handle = open(self.path, 'a')
+        _mkdir(parent, 0o750)
+        flags = os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW
+        fd = os.open(self.path, flags, 0o600)
+        self.handle = os.fdopen(fd, 'a')
         try:
             import fcntl
             fcntl.flock(self.handle.fileno(), fcntl.LOCK_EX)
@@ -553,17 +785,31 @@ class _Lock(object):
 
 
 def _prepare(layout):
-    for path in (layout.etc, layout.var, layout.ram, layout.baselines, layout.backup_root):
+    for path in (layout.etc, layout.var, layout.ram, layout.private_ram,
+                 layout.baselines, layout.backup_root):
         if os.path.islink(path):
             raise BackupError('symlink')
     if not os.path.isdir(layout.etc):
         raise BackupError('io')
     _mkdir(layout.var, 0o775)
     _mkdir(layout.ram, 0o775)
+    _mkdir(layout.private_ram, 0o750)
     _mkdir(layout.backup_root, 0o700)
     if os.geteuid() == 0:
+        os.chown(layout.private_ram, 0, 33)
         os.chown(layout.backup_root, 0, 0)
+    os.chmod(layout.private_ram, 0o750)
     os.chmod(layout.backup_root, 0o700)
+
+
+def _canonical_restore_owner(layout, path):
+    """Return the owner for flat dashboard-managed restore destinations."""
+    absolute = os.path.abspath(path)
+    for directory in (layout.etc, layout.var, layout.ram):
+        root = os.path.abspath(directory)
+        if os.path.dirname(absolute) == root:
+            return (33, 33)
+    return None
 
 
 def _name_ok(name):
@@ -1346,7 +1592,7 @@ def _write_tree_raw(directory, files):
 
 def _store_new(layout, name, files, fmt):
     final = _backup_dir(layout, name)
-    if os.path.exists(final):
+    if os.path.lexists(final):
         raise BackupError('exists')
     _discard_tree(layout.incoming, layout.backup_root) if os.path.lexists(layout.incoming) else None
     try:
@@ -1357,6 +1603,12 @@ def _store_new(layout, name, files, fmt):
         _hook('snapshot-before-rename')
         os.rename(layout.incoming, final)
         os.chmod(final, 0o700)
+        # The files and staging directories are synced as they are written.
+        # Sync final metadata and the namespace publication before reporting a
+        # successful snapshot/import.
+        _fsync_directory(final)
+        _fsync_directory(layout.backup_root)
+        _hook('snapshot-published')
     except Exception:
         if os.path.lexists(layout.incoming):
             _discard_tree(layout.incoming, layout.backup_root)
@@ -1517,18 +1769,27 @@ def import_upload(layout, name):
 
 def finish(layout):
     _prepare(layout)
-    for path in (layout.export_zip, layout.upload):
-        if not os.path.lexists(path):
-            continue
-        if os.path.islink(path):
-            os.unlink(path)
-            continue
-        if os.path.isfile(path) and os.path.abspath(path) in (
-            os.path.abspath(layout.export_zip),
-            os.path.abspath(layout.upload),
-        ):
-            os.unlink(path)
+    with _Lock(layout.lock_path):
+        for path in (layout.export_zip, layout.upload):
+            if not os.path.lexists(path):
+                continue
+            if os.path.islink(path):
+                os.unlink(path)
+                continue
+            if os.path.isfile(path) and os.path.abspath(path) in (
+                os.path.abspath(layout.export_zip),
+                os.path.abspath(layout.upload),
+            ):
+                os.unlink(path)
     return {'ok': True}
+
+
+def recover(layout):
+    _prepare(layout)
+    pending = os.path.lexists(layout.rollback_dir)
+    with _Lock(layout.lock_path):
+        _recover_pending(layout)
+    return {'ok': True, 'recovered': pending}
 
 
 def manage_backup(layout, verb, name, new_name=None):
@@ -1536,15 +1797,25 @@ def manage_backup(layout, verb, name, new_name=None):
     with _Lock(layout.lock_path):
         _recover_pending(layout)
         source = _backup_dir(layout, name)
-        if not os.path.isdir(source):
+        if not os.path.isdir(source) or os.path.islink(source):
             raise BackupError('not-found')
         if verb == 'rename':
             target = _backup_dir(layout, new_name)
             if os.path.lexists(target):
                 raise BackupError('exists')
             os.rename(source, target)
+            _fsync_directory(layout.backup_root)
         elif verb == 'delete':
-            _discard_tree(source, layout.backup_root)
+            if os.path.lexists(layout.delete_done):
+                raise BackupError('io')
+            os.rename(source, layout.delete_done)
+            # Once this parent fsync completes the backup's public name is
+            # durably gone.  A crash during recursive cleanup leaves only the
+            # hidden tombstone, which _recover_pending safely removes.
+            _fsync_directory(layout.backup_root)
+            _hook('backup-delete-retired')
+            _discard_tree(layout.delete_done, layout.backup_root)
+            _fsync_directory(layout.backup_root)
         else:
             raise BackupError('invalid-request')
     return {'ok': True}
@@ -1586,7 +1857,7 @@ def _emit(stdout, payload, code):
     return code
 
 
-def main(argv, stdin, stdout, layout=None, network_status=None):
+def _main_impl(argv, stdin, stdout, layout=None, network_status=None):
     if layout is None:
         layout = Layout(os.sep)
     if not isinstance(argv, (list, tuple)) or len(argv) != 2 or argv[1] not in VERBS:
@@ -1608,6 +1879,8 @@ def main(argv, stdin, stdout, layout=None, network_status=None):
             result = import_upload(layout, payload.get('name'))
         elif verb in ('rename', 'delete'):
             result = manage_backup(layout, verb, payload.get('name'), payload.get('to'))
+        elif verb == 'recover':
+            result = recover(layout)
         else:
             result = finish(layout)
     except BackupError as exc:
@@ -1615,6 +1888,30 @@ def main(argv, stdin, stdout, layout=None, network_status=None):
     except (IOError, OSError, StoreError, ValueError):
         return _emit(stdout, {'ok': False, 'error': 'io'}, 1)
     return _emit(stdout, result, 0)
+
+
+def main(argv, stdin, stdout, layout=None, network_status=None):
+    global _termination_requested, _termination_shield_depth
+    _termination_requested = False
+    _termination_shield_depth = 0
+    previous = None
+    installed = False
+    try:
+        previous = signal.getsignal(signal.SIGTERM)
+        signal.signal(signal.SIGTERM, _handle_sigterm)
+        installed = True
+    except (AttributeError, ValueError):
+        # Unit callers outside the main thread cannot install signal handlers;
+        # the real CLI always runs in the main thread.
+        pass
+    try:
+        try:
+            return _main_impl(argv, stdin, stdout, layout, network_status)
+        except _TerminationRequested:
+            return _emit(stdout, {'ok': False, 'error': 'busy'}, 1)
+    finally:
+        if installed:
+            signal.signal(signal.SIGTERM, previous)
 
 
 if __name__ == '__main__':

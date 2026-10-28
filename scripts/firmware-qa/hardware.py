@@ -73,7 +73,12 @@ def main():
         save('state.json', state)
         if fault == 'read-failure':
             return 1
-        with open(target, 'wb') as handle:
+        try:
+            fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        except OSError:
+            event('upload-output-exists', target=target)
+            return 74
+        with os.fdopen(fd, 'wb') as handle:
             handle.write(data)
         return 0
     if '-D' in args:

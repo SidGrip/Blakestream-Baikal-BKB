@@ -19,6 +19,29 @@ try {
     $read = bs_clock_baseline_read($path);
     check_baseline(is_array($read) && $read['rows'][0]['ghs'] === 60, 'valid baseline');
     check_baseline(!isset($read['private_path']), 'private fields removed');
+    $metered = $data;
+    $metered['power_measured'] = true;
+    $metered['power_scope'] = 'whole-miner-wall-power';
+    $metered['rows'][0]['contexts'] = array(array(30, 30, 30));
+    $metered['rows'][0]['average_watts'] = 100;
+    file_put_contents($path, json_encode($metered));
+    $power_read = bs_clock_baseline_read($path);
+    check_baseline(is_array($power_read) && $power_read['power_measured'], 'metered baseline accepted');
+    check_baseline($power_read['rows'][0]['average_watts'] === 100, 'whole-miner watts retained');
+    foreach (array(-1, 0, null, '100', true) as $bad) {
+        $copy = $metered; $copy['rows'][0]['average_watts'] = $bad;
+        file_put_contents($path, json_encode($copy));
+        check_baseline(bs_clock_baseline_read($path) === null, 'invalid average watts');
+    }
+    $copy = $metered; $copy['power_scope'] = 'per-board';
+    file_put_contents($path, json_encode($copy));
+    check_baseline(bs_clock_baseline_read($path) === null, 'per-board power not measured');
+    $copy = $metered; $copy['power_measured'] = false;
+    file_put_contents($path, json_encode($copy));
+    check_baseline(bs_clock_baseline_read($path) === null, 'power claim must match rows');
+    $copy = $metered; $copy['rows'][0]['contexts'] = array(array(30, 31, 32));
+    file_put_contents($path, json_encode($copy));
+    check_baseline(bs_clock_baseline_read($path) === null, 'mixed indices have no per-index whole-miner power');
     $stat = array('DiagHostSha256' => str_repeat('a', 64), 'ChipCount' => 64, 'Algo' => 'Blakecoin');
     $identity = array('identity' => 'CUSTOM V1', 'chip_md5' => $data['bridge_chip_md5']);
     check_baseline(bs_clock_baseline_matches($read, $stat, $identity), 'driver alias matches');
@@ -84,6 +107,8 @@ try {
     check_baseline(bs_clock_baseline_read($path) === null, 'duplicate Index excluded');
     file_put_contents($path, str_repeat(' ', 65537));
     check_baseline(bs_clock_baseline_read($path) === null, 'oversized file excluded');
+    $bundled = bs_clock_baseline_read(__DIR__ . '/../overlay/opt/scripta/etc/clock-baseline.json');
+    check_baseline(is_array($bundled) && count($bundled['rows']) === 25, 'bundled baseline remains readable');
     echo "PASS bounded lab baseline, provenance, algorithm, host and firmware compatibility\n";
 } finally {
     unlink($path);

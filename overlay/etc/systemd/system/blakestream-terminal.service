@@ -1,0 +1,20 @@
+[Unit]
+Description=Blakestream browser terminal behind HTTPS
+Requires=ssh.service blakestream-system-perms.service
+After=network.target ssh.service blakestream-system-perms.service
+
+[Service]
+Type=simple
+User=shellinabox
+Group=shellinabox
+ExecStart=/usr/bin/shellinaboxd --localhost-only --disable-ssl --disable-ssl-menu --no-beep --port=4200 --service=/terminal:SSH:127.0.0.1 --css=/etc/shellinabox/blakestream-terminal.css
+Restart=on-failure
+RestartSec=5s
+# Linux 3.4 does not implement PR_SET_NO_NEW_PRIVS. Use the dedicated account
+# and read-only filesystem restrictions supported by the shipped systemd.
+ProtectSystem=full
+ProtectHome=yes
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

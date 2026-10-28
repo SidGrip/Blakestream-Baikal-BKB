@@ -18,6 +18,7 @@ import json
 import os
 import socket
 import sys
+import tempfile
 import time
 
 try:
@@ -26,14 +27,14 @@ except NameError:
     string_types = (str,)
 
 ETC = '/opt/scripta/etc'
-RUNTIME_DIR = '/run/blakestream'
+RUNTIME_DIR = '/run/blakestream-control'
 SCRIPTA_CONF = os.path.join(ETC, 'scripta.conf')
 MINER_OPTIONS = os.path.join(ETC, 'miner.options.json')
 STATE = os.path.join(RUNTIME_DIR, 'fan-control-state.json')
 LOCK = os.path.join(RUNTIME_DIR, 'fan-controller.lock')
 DEFAULT_API_PORT = 4028
-LIVE_FAN_ASCSET_ENABLED = True
-LIVE_FAN_ASCSET_DISABLED_REASON = (
+LIVE_FAN_API_ENABLED = True
+LIVE_FAN_API_DISABLED_REASON = (
     'live fan PWM disabled; saved fan value applies on miner restart'
 )
 
@@ -60,19 +61,23 @@ def load_json(path, default):
 
 def write_json_atomic(path, data):
     parent = os.path.dirname(path)
-    if parent and not os.path.isdir(parent):
-        os.makedirs(parent)
-    tmp = '%s.%s.tmp' % (path, os.getpid())
+    if not parent or os.path.islink(parent) or not os.path.isdir(parent):
+        raise IOError(errno.EPERM, 'unsafe control runtime directory')
+    fd, tmp = tempfile.mkstemp(prefix='.fan-state.', dir=parent)
     try:
-        with open(tmp, 'w') as f:
+        with os.fdopen(fd, 'w') as f:
+            fd = -1
             json.dump(data, f, indent=2, sort_keys=True)
-        try:
-            os.chmod(tmp, 0o664)
-        except OSError:
-            pass
+            f.flush()
+            os.fsync(f.fileno())
+            os.fchown(f.fileno(), 0, 33)
+            os.fchmod(f.fileno(), 0o640)
         os.rename(tmp, path)
+        tmp = None
     finally:
-        if os.path.exists(tmp):
+        if fd >= 0:
+            os.close(fd)
+        if tmp is not None:
             try:
                 os.unlink(tmp)
             except OSError:
@@ -98,10 +103,11 @@ def clamp(value, low, high):
 
 
 def acquire_lock():
-    if not os.path.isdir(RUNTIME_DIR):
-        os.makedirs(RUNTIME_DIR)
+    if os.path.islink(RUNTIME_DIR) or not os.path.isdir(RUNTIME_DIR):
+        raise IOError(errno.EPERM, 'unsafe control runtime directory')
     try:
-        fd = os.open(LOCK, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+        fd = os.open(LOCK, os.O_CREAT | os.O_EXCL | os.O_WRONLY |
+                     getattr(os, 'O_NOFOLLOW', 0), 0o600)
         os.write(fd, str(os.getpid()).encode('ascii'))
         os.close(fd)
         return True
@@ -350,14 +356,14 @@ def compute_fan(cfg, max_temp, current_fan):
 
 
 def set_fan_for_boards(board_ids, fan):
-    if not LIVE_FAN_ASCSET_ENABLED:
-        return False, LIVE_FAN_ASCSET_DISABLED_REASON
+    if not LIVE_FAN_API_ENABLED:
+        return False, LIVE_FAN_API_DISABLED_REASON
     if not board_ids:
         return False, 'no boards available for fan request'
     # BK-B has one shared fan rail behind one bridge. Queue one global request;
     # sgminer applies it from the Baikal polling path to avoid API-thread USB IO.
     bid = min(board_ids)
-    resp, err = call_api('ascset', '%s,fan,%d' % (bid, fan))
+    resp, err = call_api('bkbfan', '%s,%d' % (bid, fan))
     if err or not api_status_ok(resp):
         return False, '%s:%s' % (bid, err or resp)
     return True, 'queued'
@@ -422,10 +428,10 @@ def main():
         max_temp = max(d['temp'] for d in devs)
         target_fan, reason = compute_fan(cfg, max_temp, current_fan)
 
-        if not LIVE_FAN_ASCSET_ENABLED:
+        if not LIVE_FAN_API_ENABLED:
             write_state(True, 'unsupported', cfg, current_fan, max_temp, temps,
                         '%s; target fan %d%% (%s)' %
-                        (LIVE_FAN_ASCSET_DISABLED_REASON, target_fan, reason))
+                        (LIVE_FAN_API_DISABLED_REASON, target_fan, reason))
             return 0
 
         queued = False

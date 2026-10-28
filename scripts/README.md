@@ -8,7 +8,7 @@ with spaces; it does not require a particular username, home directory or host.
 
 Default QA runs the PHP, Node and Python contracts plus both firmware emulation
 phases. It needs Linux, Bash, Git, standard GNU utilities, PHP CLI, Node.js 18+,
-Python 3.8+, and the Python `unicorn` module. It does not contact a miner, flash
+Python 3.8+, OpenSSL, and the Python `unicorn` module. It does not contact a miner, flash
 firmware, install dependencies, or require root. Use `BKB_PHP`, `BKB_NODE` and
 `BKB_PYTHON` to select interpreters; use absolute paths for relocated runs.
 See [QA.md](../QA.md) for dependency setup and coverage limits.
@@ -42,6 +42,8 @@ Follow [BUILD.md](../BUILD.md) for the build order and prerequisites.
 | Script | Purpose |
 | --- | --- |
 | [qa](qa) | Run automated checks; use `--help` to list phases. |
+| [test-web-tls.py](test-web-tls.py) | Generate and validate X.509 v3 HTTPS identities; reject malformed certificates, mismatched keys, unsafe paths, and missing entropy. |
+| [terminal-qa](terminal-qa/README.md) | Test HTTPS browser terminal and SSH authentication using the packaged ARM software in an isolated container. |
 | [test-clock-history-memory.py](test-clock-history-memory.py) | Compare full-week recorder peak memory in isolated processes and verify lossless RAM/SD writes. |
 | [test-bkb-diagnostics-recorder.py](test-bkb-diagnostics-recorder.py) | Verify diagnostic capture, epochs, redaction, atomic retention, subprocess-free timing and full-field 18-hour peak memory against a plain baseline. |
 | [test-system-memory.php](test-system-memory.php) | Check legacy-kernel tmpfs accounting and `MemAvailable` handling. |
@@ -54,8 +56,8 @@ Follow [BUILD.md](../BUILD.md) for the build order and prerequisites.
 | `test-*` | Contract fixtures and standalone integration helpers; see QA.md for phase membership. |
 | [bkb-clock-trial.py](bkb-clock-trial.py) | Validate schedules, observe mining, run guarded clock-index trials, or restore clock settings. |
 | [clock-schedules/](clock-schedules/) | Example bounded clock-index trial schedules. |
-| [export-clock-baseline.py](export-clock-baseline.py) | Export completed observations into separate algorithm datasets. |
-| [publish-clock-baseline.py](publish-clock-baseline.py) | Produce the shared clock baseline without private source paths. |
+| [export-clock-baseline.py](export-clock-baseline.py) | Export completed observations and available measured-power evidence into separate algorithm datasets. |
+| [publish-clock-baseline.py](publish-clock-baseline.py) | Produce shared GH/s, estimated MHz, and one average whole-miner watts value per metered index, without private source paths. |
 | [render-bkb-logic-pinout.js](render-bkb-logic-pinout.js) | Generate pinout reference graphics. |
 
 Clock-trial `run --execute` and `restore --execute` change a live miner.

@@ -5,6 +5,7 @@ import http.cookiejar
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import stat
 import subprocess
@@ -19,7 +20,10 @@ HERE = REPO / 'scripts/firmware-qa'
 ETC = Path('/opt/scripta/etc')
 FW = Path('/opt/scripta/firmware')
 STATE = Path('/run/qa-hardware')
-RUN = Path('/run/blakestream')
+WEB_RUN = Path('/run/blakestream')
+RUN = Path('/run/blakestream-firmware')
+FIRSTBOOT_STATE = Path('/var/lib/blakestream-firstboot')
+FIRSTBOOT_LOG = Path('/var/log/blakestream-firstboot')
 WRAPPER = '/opt/scripta/bin/bkb-firmware.sh'
 RESTART = '/opt/scripta/startup/miner-restart.sh'
 STOCK = 'd5f844be2952fd713717a71a67e2be61'
@@ -107,14 +111,26 @@ class FirmwareContainerTests(unittest.TestCase):
         self.http = None
         self.http_log = None
         self.addCleanup(self.cleanup)
-        for directory in ('/opt/scripta', '/var/www', str(STATE), str(RUN)):
+        for directory in ('/opt/scripta', '/var/www', str(STATE), str(WEB_RUN), str(RUN),
+                          str(FIRSTBOOT_STATE), str(FIRSTBOOT_LOG),
+                          '/run/blakestream-miner', '/run/blakestream-control',
+                          '/run/blakestream-security', '/run/blakestream-backup',
+                          '/var/log/blakestream-miner', '/var/log/blakestream-security',
+                          '/var/lib/blakestream-backups'):
             if os.path.exists(directory):
                 shutil.rmtree(directory)
         shutil.copytree(str(REPO / 'overlay/opt/scripta'), '/opt/scripta')
         shutil.copytree(str(REPO / 'overlay/var/www'), '/var/www')
         command(['chown', '-R', 'root:root', '/opt/scripta'])
-        command(['chown', '-R', 'www-data:www-data', '/var/www'])
-        for directory in (ETC, Path('/opt/scripta/var'), RUN):
+        for directory in ('/opt/scripta', '/opt/scripta/bin', '/opt/scripta/startup',
+                          '/opt/scripta/firmware', '/opt/scripta/policy'):
+            Path(directory).chmod(0o755)
+        command(['chown', '-R', 'root:root', '/var/www'])
+        for root, directories, files in os.walk('/var/www'):
+            os.chmod(root, 0o755)
+            for name in files:
+                os.chmod(os.path.join(root, name), 0o644)
+        for directory in (ETC, Path('/opt/scripta/var'), WEB_RUN):
             directory.mkdir(parents=True, exist_ok=True)
             os.chown(str(directory), 0, 33)
             directory.chmod(0o775)
@@ -122,6 +138,7 @@ class FirmwareContainerTests(unittest.TestCase):
         put(STATE / 'control.json', {})
         put(STATE / 'state.json', {'reads': 0, 'writes': 0, 'app_polls': 0})
         put(STATE / 'events.jsonl', '')
+        put(STATE / 'miner-starts.jsonl', '')
         put(STATE / 'gpio.jsonl', '')
         for pin in ('PA18', 'PA10'):
             put(STATE / 'gpio' / pin / 'cfg', '0')
@@ -145,9 +162,12 @@ class FirmwareContainerTests(unittest.TestCase):
             'echo password_hash(stream_get_contents(STDIN), PASSWORD_BCRYPT, array("cost" => 10));'],
             input=self.password.encode()).decode()
         put(ETC / 'uipasswd', 'scripta:' + hashed, 33, 33, 0o600)
-        for name in ('scripta-runtime-miner.conf', 'scripta-runtime-poolmap.json',
-                     'bkb-readback.bin', 'bkb-rollback-rb.bin', 'bkb-chip-readback.bin'):
-            path = Path('/tmp') / name
+        command(['/opt/scripta/bin/prepare-runtime-dir.sh'])
+        miner_runtime = Path('/run/blakestream-miner')
+        self.assertEqual((os.stat(str(RUN)).st_uid, os.stat(str(RUN)).st_gid,
+                          stat.S_IMODE(os.stat(str(RUN)).st_mode)), (0, 33, 0o750))
+        for name in ('scripta-runtime-miner.conf', 'scripta-runtime-poolmap.json'):
+            path = miner_runtime / name
             if path.exists():
                 path.unlink()
         self.seed_firmware('stock')
@@ -211,7 +231,7 @@ class FirmwareContainerTests(unittest.TestCase):
     def test_firstboot_custom_detection_never_writes_firmware(self):
         self.seed_firmware('custom')
         (FW / 'BRIDGE_GLOBAL_V1_READY').unlink()
-        put(ETC / 'bkb-firmware-firstboot.pending', 'fresh image')
+        put(FIRSTBOOT_STATE / 'firmware-firstboot.pending', 'fresh image')
         put(ETC / 'scripta.conf', {'userAdjustableClocks': False,
                                  'userAutoFan': False, 'userDev': False}, 33, 33, 0o664)
         result = self.firstboot()
@@ -226,7 +246,7 @@ class FirmwareContainerTests(unittest.TestCase):
         self.assertEqual(state['writes'], 0)
         self.assertEqual(digest(STATE / 'flash.bin'), CUSTOM)
         self.assertFalse((RUN / 'bkb-firmware.lock').exists())
-        self.assertFalse((ETC / 'bkb-firmware-firstboot.pending').exists())
+        self.assertFalse((FIRSTBOOT_STATE / 'firmware-firstboot.pending').exists())
         self.assertNotEqual(command(['pgrep', '-f', '^/usr/bin/python /opt/scripta/bin/sgminer '], check=False).returncode, 0)
         settings['userAdjustableClocks'] = False
         settings['userAutoFan'] = True
@@ -239,23 +259,23 @@ class FirmwareContainerTests(unittest.TestCase):
         self.assertEqual(json.loads((STATE / 'state.json').read_text())['reads'], 2)
 
     def test_firstboot_stock_detection_keeps_clocks_off(self):
-        put(ETC / 'bkb-firmware-firstboot.pending', 'fresh image')
+        put(FIRSTBOOT_STATE / 'firmware-firstboot.pending', 'fresh image')
         result = self.firstboot()
         self.assertEqual(result.returncode, 0, result.stdout)
         self.assertFalse(json.loads((ETC / 'scripta.conf').read_text())['userAdjustableClocks'])
-        self.assertEqual(json.loads((ETC / 'bkb-firmware-firstboot.json').read_text())['identity'], 'STOCK')
+        self.assertEqual(json.loads((FIRSTBOOT_STATE / 'result.json').read_text())['identity'], 'STOCK')
         state = json.loads((STATE / 'state.json').read_text())
         self.assertEqual(state['reads'], 2)
         self.assertEqual(state['writes'], 0)
         self.assertEqual(digest(STATE / 'flash.bin'), STOCK)
 
     def test_firstboot_failed_double_read_is_not_retried(self):
-        put(ETC / 'bkb-firmware-firstboot.pending', 'fresh image')
+        put(FIRSTBOOT_STATE / 'firmware-firstboot.pending', 'fresh image')
         put(STATE / 'control.json', {'fault': 'backup-mismatch'})
         result = self.firstboot()
         self.assertNotEqual(result.returncode, 0, result.stdout)
         self.assertFalse(json.loads((ETC / 'scripta.conf').read_text())['userAdjustableClocks'])
-        self.assertFalse(json.loads((ETC / 'bkb-firmware-firstboot.json').read_text())['ok'])
+        self.assertFalse(json.loads((FIRSTBOOT_STATE / 'result.json').read_text())['ok'])
         self.assertFalse((RUN / 'bkb-firmware.lock').exists())
         self.assertFalse((FW / 'BRIDGE_GLOBAL_V1_READY').exists())
         self.assertEqual(self.firstboot().returncode, 0)
@@ -268,8 +288,7 @@ class FirmwareContainerTests(unittest.TestCase):
         shutil.copyfile(str(FW / (kind + '.bin')), str(STATE / 'flash.bin'))
         md5 = STOCK if kind == 'stock' else CUSTOM
         record = {'identity': 'STOCK' if kind == 'stock' else 'CUSTOM V1', 'chip_md5': md5, 'at': int(time.time())}
-        for path in (ETC / 'bkb-firmware-identity.json', RUN / 'bkb-firmware-identity.json'):
-            put(path, record, 0, 33, 0o664)
+        put(ETC / 'bkb-firmware-identity.json', record, 0, 33, 0o664)
         marker = FW / 'BRIDGE_GLOBAL_V1_READY'
         if kind == 'custom':
             put(marker, 'fixture verified V1')
@@ -277,8 +296,11 @@ class FirmwareContainerTests(unittest.TestCase):
             marker.unlink()
 
     def request(self, action, body=None, authenticated=True):
+        headers = {'Content-Type': 'application/json'}
+        if body is not None and authenticated:
+            headers['X-BKB-CSRF'] = self.web_csrf
         request = urllib.request.Request('http://127.0.0.1:8080/f_dev.php?action=' + action,
-            None if body is None else json.dumps(body).encode(), {'Content-Type': 'application/json'})
+            None if body is None else json.dumps(body).encode(), headers)
         client = self.client if authenticated else urllib.request.build_opener()
         try:
             response = client.open(request, timeout=10)
@@ -293,6 +315,11 @@ class FirmwareContainerTests(unittest.TestCase):
             urllib.parse.urlencode({'userPassword': self.password}).encode())
         with self.client.open(request, timeout=5) as response:
             self.assertEqual(response.read().strip(), b'1')
+        with self.client.open('http://127.0.0.1:8080/index.php', timeout=5) as response:
+            page = response.read().decode()
+        match = re.search(r'data-csrf="([0-9a-f]{64})"', page)
+        self.assertIsNotNone(match, 'authenticated page must publish the request token')
+        self.web_csrf = match.group(1)
 
     def test_password_free_audit_view_download_and_prune(self):
         path = Path('/opt/scripta/var/security.log')
@@ -332,7 +359,7 @@ class FirmwareContainerTests(unittest.TestCase):
         return result
 
     def finish(self):
-        deadline = time.monotonic() + 75
+        deadline = time.monotonic() + 120
         saw_progress = False
         while time.monotonic() < deadline:
             code, state = self.request('firmware_progress')
@@ -340,7 +367,9 @@ class FirmwareContainerTests(unittest.TestCase):
             saw_progress = saw_progress or bool(state.get('progress'))
             if not state.get('running') and state.get('result'):
                 self.assertTrue(saw_progress or not state['result']['ok'], state)
-                return state['result']
+                result = dict(state['result'])
+                result['_progress'] = state.get('progress', '')
+                return result
             time.sleep(0.1)
         self.fail('Job timed out: ' + (RUN / 'bkb-firmware-progress.log').read_text(encoding='utf-8'))
 
@@ -349,6 +378,9 @@ class FirmwareContainerTests(unittest.TestCase):
 
     def events(self):
         return [json.loads(line) for line in (STATE / 'events.jsonl').read_text().splitlines()]
+
+    def miner_start_attempts(self):
+        return [json.loads(line) for line in (STATE / 'miner-starts.jsonl').read_text().splitlines()]
 
     def assert_permissions(self, mining=True, cleared=True):
         command(['visudo', '-c'])
@@ -374,6 +406,10 @@ class FirmwareContainerTests(unittest.TestCase):
         for user in ('baikal', 'qa-untrusted'):
             self.assertNotEqual(command(['sudo', '-n', WRAPPER, 'start-job', 'verify'], user, check=False).returncode, 0, user)
         command(['test', '-r', str(RUN / 'bkb-firmware-progress.log')], 'www-data')
+        self.assertEqual(stat.S_IMODE(os.stat(str(RUN)).st_mode), 0o750)
+        self.assertEqual((os.stat(str(RUN)).st_uid, os.stat(str(RUN)).st_gid), (0, 33))
+        for name in ('bkb-readback.bin', 'bkb-rollback-rb.bin', 'bkb-chip-readback.bin'):
+            self.assertFalse((Path('/tmp') / name).exists(), name)
         command(['test', '-w', str(ETC / 'scripta.conf')], 'www-data')
         self.assertNotEqual(command(['test', '-w', str(ETC / 'scripta.conf')], 'qa-untrusted', check=False).returncode, 0)
         self.assertEqual((ETC / 'saved-pools.json').read_bytes(), self.pool_bytes)
@@ -415,7 +451,7 @@ class FirmwareContainerTests(unittest.TestCase):
         self.seed_firmware('custom')
         self.start()
         result = self.finish()
-        self.assertTrue(result['ok'])
+        self.assertTrue(result['ok'], result)
         self.assert_learned('revert', result)
         self.assertEqual(digest(STATE / 'flash.bin'), STOCK)
         self.assertEqual(digest('/opt/scripta/backups/bkb-preflash-backup.bin'), CUSTOM)
@@ -427,7 +463,7 @@ class FirmwareContainerTests(unittest.TestCase):
     def test_custom_flash_and_permissions(self):
         self.start('custom')
         result = self.finish()
-        self.assertTrue(result['ok'])
+        self.assertTrue(result['ok'], result)
         self.assert_learned('flash-custom', result)
         self.assertEqual(digest(STATE / 'flash.bin'), CUSTOM)
         self.assertEqual(digest('/opt/scripta/backups/bkb-preflash-backup.bin'), STOCK)
@@ -435,10 +471,29 @@ class FirmwareContainerTests(unittest.TestCase):
         self.assertTrue(json.loads((ETC / 'scripta.conf').read_text())['userAdjustableClocks'])
         self.assert_permissions()
 
+    def test_first_flash_durably_creates_backup_parent_before_write_fault(self):
+        backup_dir = Path('/opt/scripta/backups')
+        backup = backup_dir / 'bkb-preflash-backup.bin'
+        self.assertFalse(backup_dir.exists())
+        self.fault('write-failure')
+        self.start('custom')
+        result = self.finish()
+        self.assertEqual(int(result['exit_code']), 5, result)
+        self.assertEqual((backup_dir.stat().st_uid, backup_dir.stat().st_gid,
+                          stat.S_IMODE(backup_dir.stat().st_mode)), (0, 0, 0o700))
+        self.assertEqual((backup.stat().st_uid, backup.stat().st_gid,
+                          stat.S_IMODE(backup.stat().st_mode)), (0, 0, 0o600))
+        self.assertEqual(digest(backup), STOCK)
+        self.assertEqual(digest(STATE / 'flash.bin'), STOCK)
+        kinds = [event['kind'] for event in self.events()]
+        self.assertEqual(kinds[:3], ['read', 'read', 'write'])
+        self.assertFalse((FIRSTBOOT_STATE / 'firmware-recovery-required').exists())
+        self.assert_permissions()
+
     def test_read_only_verification(self):
         self.assertTrue(self.request('firmware_verify', {})[1]['started'])
         result = self.finish()
-        self.assertTrue(result['ok'])
+        self.assertTrue(result['ok'], result)
         self.assertEqual(result['chip_md5'], STOCK)
         self.assert_learned('verify', result)
         self.assertEqual([e['kind'] for e in self.events()], ['read', 'read'])
@@ -480,6 +535,7 @@ class FirmwareContainerTests(unittest.TestCase):
             with self.subTest(fault=fault):
                 self.seed_firmware('stock')
                 put(STATE / 'state.json', {'reads': 0, 'writes': 0, 'app_polls': 0})
+                put(STATE / 'miner-starts.jsonl', '')
                 self.fault(fault)
                 self.start('custom')
                 result = self.finish()
@@ -493,6 +549,33 @@ class FirmwareContainerTests(unittest.TestCase):
                 self.assertFalse((ETC / 'bkb-firmware-runtime.json').exists())
                 if mining:
                     self.assertEqual(digest(STATE / 'flash.bin'), STOCK)
+                    self.assertGreaterEqual(len(self.miner_start_attempts()), 1)
+                else:
+                    recovery = FIRSTBOOT_STATE / 'firmware-recovery-required'
+                    self.assertTrue(recovery.is_file())
+                    self.assertEqual(stat.S_IMODE(recovery.stat().st_mode), 0o600)
+                    self.assertEqual(self.miner_start_attempts(), [])
+                    self.assertIn('0483:df11', command(['lsusb']).stdout)
+                    # Model a controller power cycle: GPIO history/defaults let
+                    # the bridge attempt application boot until the early boot
+                    # recovery service reasserts BOOT0 and reset. It must do so
+                    # before either miner launcher gets a chance to run.
+                    put(STATE / 'gpio.jsonl', '')
+                    self.assertIn('0483:5740', command(['lsusb']).stdout)
+                    command(['/opt/scripta/bin/enforce-firmware-recovery-hold.sh'])
+                    self.assertEqual(self.miner_start_attempts(), [])
+                    self.assertIn('0483:df11', command(['lsusb']).stdout)
+                    put(FIRSTBOOT_STATE / 'firmware-firstboot.pending', 'fresh image')
+                    firstboot = self.firstboot()
+                    self.assertNotEqual(firstboot.returncode, 0, firstboot.stdout)
+                    self.assertTrue((FIRSTBOOT_STATE / 'firmware-firstboot.pending').exists())
+                    self.assertIn('0483:df11', command(['lsusb']).stdout)
+                    self.assertEqual(self.miner_start_attempts(), [])
+                    for launcher in ('/opt/scripta/startup/miner-start.sh', RESTART):
+                        denied = command([launcher], check=False)
+                        self.assertNotEqual(denied.returncode, 0, (launcher, denied.stdout))
+                    self.assertEqual(self.miner_start_attempts(), [])
+                    self.assertIn('0483:df11', command(['lsusb']).stdout)
                 self.assert_permissions(mining=mining)
                 self.stop_miner()
 
@@ -505,6 +588,54 @@ class FirmwareContainerTests(unittest.TestCase):
         self.assertEqual(digest(STATE / 'flash.bin'), CUSTOM)
         self.assertFalse((ETC / 'bkb-firmware-runtime.json').exists())
         self.assert_permissions(mining=False)
+
+    def test_failed_safety_backup_preserves_prior_durable_backup(self):
+        backup = Path('/opt/scripta/backups/bkb-preflash-backup.bin')
+        backup.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(str(FW / 'custom.bin'), str(backup))
+        backup.chmod(0o600)
+        before = backup.read_bytes()
+        self.fault('backup-mismatch')
+        self.start('custom')
+        result = self.finish()
+        self.assertEqual(int(result['exit_code']), 3, result)
+        self.assertEqual(backup.read_bytes(), before)
+        state = json.loads((STATE / 'state.json').read_text())
+        self.assertEqual((state['reads'], state['writes']), (2, 0))
+        self.assertFalse((FIRSTBOOT_STATE / 'firmware-recovery-required').exists())
+        self.assert_permissions()
+
+    def test_unverified_rollback_requires_explicit_verified_recovery(self):
+        put(STATE / 'miner-starts.jsonl', '')
+        self.fault('rollback-failure')
+        self.start('custom')
+        failed = self.finish()
+        self.assertEqual(int(failed['exit_code']), 9, failed)
+        recovery = FIRSTBOOT_STATE / 'firmware-recovery-required'
+        self.assertTrue(recovery.is_file())
+        self.assertEqual(self.miner_start_attempts(), [])
+        self.assertIn('0483:df11', command(['lsusb']).stdout)
+        backup_before = digest('/opt/scripta/backups/bkb-preflash-backup.bin')
+        reads_before = json.loads((STATE / 'state.json').read_text())['reads']
+
+        # A newly confirmed flash is the only normal way out of the hold.  It
+        # validates the retained rollback image without overwriting it from the
+        # unverified chip, writes the pinned stock target, and clears the gate
+        # only after target readback succeeds.
+        self.fault('')
+        self.start('revert')
+        recovered = self.finish()
+        self.assertTrue(recovered['ok'], recovered)
+        self.assertFalse(recovery.exists())
+        self.assertEqual(digest(STATE / 'flash.bin'), STOCK)
+        self.assertEqual(digest('/opt/scripta/backups/bkb-preflash-backup.bin'), backup_before)
+        # Recovery validates the retained backup in place; it must not replace
+        # it by double-reading the known-unverified chip. The one new read is
+        # target verification after the recovery write.
+        self.assertEqual(json.loads((STATE / 'state.json').read_text())['reads'], reads_before + 1)
+        self.assertIn('0483:5740', command(['lsusb']).stdout)
+        self.assertGreaterEqual(len(self.miner_start_attempts()), 1)
+        self.assert_permissions()
 
     def test_slow_usb_snapshot_allows_guarded_restart(self):
         self.fault('slow-usb')
@@ -538,6 +669,8 @@ class FirmwareContainerTests(unittest.TestCase):
         self.assert_permissions()
 
     def test_permission_repair_and_stale_lock(self):
+        with open('/etc/sudoers.d/blakestream-www', 'a') as policy:
+            policy.write('\nwww-data ALL=(root) NOPASSWD: /bin/sh\n')
         for path in (WRAPPER, str(FW / 'stock.bin'), '/etc/sudoers.d/blakestream-www'):
             os.chown(path, 33, 33)
             os.chmod(path, 0o777)
@@ -546,6 +679,9 @@ class FirmwareContainerTests(unittest.TestCase):
         put(RUN / 'bkb-firmware.pid', '99999999')
         os.utime(str(RUN / 'bkb-firmware.lock'), (time.time() - 1300,) * 2)
         command([RESTART, '--preflight'])
+        self.assertEqual(Path('/etc/sudoers.d/blakestream-www').read_text(),
+                         (REPO / 'overlay/etc/sudoers.d/blakestream-www').read_text())
+        command(['sudo', '-n', RESTART, '--preflight'], 'www-data')
         self.assertFalse((RUN / 'bkb-firmware.lock').exists())
         put(RUN / 'bkb-firmware.lock', '')
         put(RUN / 'bkb-firmware.pid', str(os.getpid()))
@@ -557,6 +693,77 @@ class FirmwareContainerTests(unittest.TestCase):
         self.start()
         self.assertTrue(self.finish()['ok'])
         self.assert_permissions()
+
+    def test_privileged_hardlinks_fail_webroot_closed_and_are_not_reused_for_progress(self):
+        protected = Path('/run/bkb-qa-hardlink-target')
+        web_link = Path('/var/www/bkb-qa-hardlink.php')
+        progress = RUN / 'bkb-firmware-progress.log'
+        for path in (web_link, progress, protected):
+            if path.exists() or path.is_symlink():
+                path.unlink()
+        self.addCleanup(lambda: protected.exists() and protected.unlink())
+        put(protected, 'hardlink target must remain unchanged', 0, 0, 0o600)
+        before = (protected.read_bytes(), protected.stat().st_uid,
+                  protected.stat().st_gid, stat.S_IMODE(protected.stat().st_mode))
+        os.link(str(protected), str(web_link))
+        os.link(str(protected), str(progress))
+
+        repair = command(['/opt/scripta/bin/repair-system-perms.sh'], check=False)
+        self.assertNotEqual(repair.returncode, 0)
+        self.assertTrue(web_link.exists())
+        self.assertFalse(progress.exists())
+        self.assertEqual((protected.read_bytes(), protected.stat().st_uid,
+                          protected.stat().st_gid, stat.S_IMODE(protected.stat().st_mode)), before)
+        self.assertEqual(protected.stat().st_nlink, 2)
+
+        web_link.unlink()
+        command(['/opt/scripta/bin/repair-system-perms.sh'])
+        self.assertEqual(protected.stat().st_nlink, 1)
+
+        started = json.loads(command([WRAPPER, 'start-job', 'verify'], timeout=60).stdout)
+        self.assertTrue(started.get('started'), started)
+        self.assertTrue(progress.is_file())
+        self.assertEqual(progress.stat().st_nlink, 1)
+        self.assertNotEqual(progress.stat().st_ino, protected.stat().st_ino)
+        self.assertEqual((protected.read_bytes(), protected.stat().st_uid,
+                          protected.stat().st_gid, stat.S_IMODE(protected.stat().st_mode)), before)
+        result = self.finish()
+        self.assertTrue(result['ok'], result)
+        self.assertEqual((protected.read_bytes(), protected.stat().st_uid,
+                          protected.stat().st_gid, stat.S_IMODE(protected.stat().st_mode)), before)
+
+    def test_recovery_marker_tampering_is_never_repaired_as_absence(self):
+        marker = FIRSTBOOT_STATE / 'firmware-recovery-required'
+        protected = Path('/run/bkb-qa-recovery-marker-target')
+        for path in (marker, protected):
+            if path.exists() or path.is_symlink():
+                path.unlink()
+        self.addCleanup(lambda: marker.unlink() if marker.exists() or marker.is_symlink() else None)
+        self.addCleanup(lambda: protected.exists() and protected.unlink())
+        put(protected, 'preserve critical inode', 0, 0, 0o600)
+        before = (protected.read_bytes(), protected.stat().st_uid,
+                  protected.stat().st_gid, stat.S_IMODE(protected.stat().st_mode))
+
+        os.link(str(protected), str(marker))
+        rejected = command(['/opt/scripta/bin/prepare-runtime-dir.sh'], check=False)
+        self.assertNotEqual(rejected.returncode, 0)
+        self.assertTrue(marker.exists())
+        self.assertEqual(marker.stat().st_ino, protected.stat().st_ino)
+        self.assertEqual((protected.read_bytes(), protected.stat().st_uid,
+                          protected.stat().st_gid, stat.S_IMODE(protected.stat().st_mode)), before)
+        marker.unlink()
+
+        marker.symlink_to(protected)
+        rejected = command(['/opt/scripta/bin/prepare-runtime-dir.sh'], check=False)
+        self.assertNotEqual(rejected.returncode, 0)
+        self.assertTrue(marker.is_symlink())
+        marker.unlink()
+
+        put(marker, 'valid recovery hold', 0, 33, 0o640)
+        command(['/opt/scripta/bin/prepare-runtime-dir.sh'])
+        self.assertEqual((marker.stat().st_uid, marker.stat().st_gid,
+                          stat.S_IMODE(marker.stat().st_mode), marker.stat().st_nlink),
+                         (0, 0, 0o600, 1))
 
     def test_screen_permissions_before_mining_and_live_session_preservation(self):
         repair = '/opt/scripta/bin/repair-system-perms.sh'

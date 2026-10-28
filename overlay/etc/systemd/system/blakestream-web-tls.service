@@ -1,0 +1,13 @@
+[Unit]
+Description=Prepare Blakestream device-unique web TLS identity
+Requires=blakestream-device-identity.service
+After=local-fs.target blakestream-system-perms.service blakestream-device-identity.service
+Before=lighttpd.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/scripta/bin/ensure-web-tls.sh
+RemainAfterExit=yes
+
+[Install]
+RequiredBy=lighttpd.service

@@ -9,8 +9,8 @@ triggers a miner-restart so build-miner-runtime.py rebuilds the runtime config
 without that board. Once the board cools below recover_at (with hysteresis),
 marks it active again and triggers another restart.
 
-Called by /etc/cron.d/blakestream-temp-watchdog every minute. The Scripta
-dashboard reads /run/blakestream/temp-state.json via f_blakestream.php to
+Called by /etc/cron.d/blakestream-temp-watchdog every 30 seconds. The Scripta
+    dashboard reads /run/blakestream-control/temp-state.json via f_blakestream.php to
 grey out disabled rows in the Devices table.
 
 Compatible with Python 2.7 and Python 3.
@@ -25,14 +25,18 @@ import re
 import socket
 import subprocess
 import sys
+import tempfile
 import time
 
 ETC = '/opt/scripta/etc'
-RUNTIME_DIR = '/run/blakestream'
+RUNTIME_DIR = '/run/blakestream-control'
 CONFIG = ETC + '/temp-config.json'
 STATE = RUNTIME_DIR + '/temp-state.json'
+API_STATE = RUNTIME_DIR + '/temp-api-state.json'
+API_WARNING_AFTER = 120
+API_WARNING_INTERVAL = 300
 RESTART = '/opt/scripta/startup/miner-restart.sh'
-RUNTIME_CONF = '/tmp/scripta-runtime-miner.conf'
+RUNTIME_CONF = '/run/blakestream-miner/scripta-runtime-miner.conf'
 DEFAULT_API_PORT = 4028
 
 DEFAULT_CONFIG = {
@@ -81,38 +85,29 @@ def load_state(path):
 
 def write_json_atomic(path, data):
     parent = os.path.dirname(path)
-    if parent and not os.path.isdir(parent):
-        os.makedirs(parent)
+    if not parent or os.path.islink(parent) or not os.path.isdir(parent):
+        raise IOError(errno.EPERM, 'unsafe control runtime directory')
     owner = None
     try:
         owner = (0, grp.getgrnam('www-data').gr_gid)
     except (KeyError, OSError):
         pass
-    tmp = '%s.%s.tmp' % (path, os.getpid())
+    fd, tmp = tempfile.mkstemp(prefix='.temp-state.', dir=parent)
     try:
-        with open(tmp, 'w') as f:
+        with os.fdopen(fd, 'w') as f:
+            fd = -1
             json.dump(data, f, indent=2)
-        if owner:
-            try:
-                os.chown(tmp, owner[0], owner[1])
-            except OSError:
-                pass
-        try:
-            os.chmod(tmp, 0o664)
-        except OSError:
-            pass
+            f.flush()
+            os.fsync(f.fileno())
+            if owner:
+                os.fchown(f.fileno(), owner[0], owner[1])
+            os.fchmod(f.fileno(), 0o640)
         os.rename(tmp, path)
-        if owner:
-            try:
-                os.chown(path, owner[0], owner[1])
-            except OSError:
-                pass
-        try:
-            os.chmod(path, 0o664)
-        except OSError:
-            pass
+        tmp = None
     finally:
-        if os.path.exists(tmp):
+        if fd >= 0:
+            os.close(fd)
+        if tmp is not None:
             try:
                 os.unlink(tmp)
             except OSError:
@@ -129,6 +124,45 @@ def get_api_port():
     except (IOError, ValueError, TypeError):
         pass
     return DEFAULT_API_PORT
+
+
+def report_api_status(api_port, error=None):
+    """Record outages separately from board cutoff state and report transitions."""
+    now = int(time.time())
+    try:
+        previous = load_state(API_STATE)
+        if not isinstance(previous, dict):
+            previous = {}
+        since = previous.get('unavailable_since')
+        if (previous.get('port') != api_port or
+                not isinstance(since, (int, float)) or since > now):
+            since = None
+        if error is None:
+            if since is not None:
+                sys.stderr.write('temp-watchdog: temperature monitoring resumed '
+                                 'on port %d after %ds\n' % (api_port, now - since))
+                write_json_atomic(API_STATE, {})
+            return
+        if since is None:
+            sys.stderr.write('temp-watchdog: waiting for sgminer API on port %d; '
+                             'temperatures unavailable (miner may be starting, paused, or stopped)\n'
+                             % api_port)
+            write_json_atomic(API_STATE, {'port': api_port, 'unavailable_since': now,
+                                          'last_reported': now})
+        elif (now - since >= API_WARNING_AFTER and
+              (previous.get('last_reported') == since or
+               now - previous.get('last_reported', since) >= API_WARNING_INTERVAL)):
+            sys.stderr.write('temp-watchdog: WARNING temperature monitoring unavailable '
+                             'on port %d for %ds; check miner status if this is unexpected: %s\n'
+                             % (api_port, now - since, error))
+            previous['last_reported'] = now
+            write_json_atomic(API_STATE, previous)
+    except (IOError, OSError, TypeError, ValueError) as status_error:
+        # Logging trouble must not prevent temperature cutoff processing.
+        sys.stderr.write('temp-watchdog: cannot record API availability: %s\n' % status_error)
+        if error is not None:
+            sys.stderr.write('temp-watchdog: cannot query sgminer API on port %d: %s\n'
+                             % (api_port, error))
 
 
 def query_sgminer_devs(api_port):
@@ -150,8 +184,7 @@ def query_sgminer_devs(api_port):
                 break
             data += chunk
     except Exception as e:
-        sys.stderr.write('temp-watchdog: cannot query sgminer API on port %d: %s\n'
-                         % (api_port, e))
+        report_api_status(api_port, e)
         return {}
     finally:
         if s is not None:
@@ -167,6 +200,7 @@ def query_sgminer_devs(api_port):
         board_id = m.group(1)
         temp = float(m.group(2))
         out[board_id] = temp
+    report_api_status(api_port, None if out else 'no board temperatures returned')
     return out
 
 

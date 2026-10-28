@@ -9,7 +9,7 @@ The tracked reference binary is both of these files, and they match:
 ```text
 sgminer-build/sgminer.patched
 overlay/opt/scripta/bin/sgminer
-sha256 c90c9fab655c1b1e52bacc0c0dd6f05743104b9e5e45912364d5a612d4320c52
+sha256 a42166a885922776533ac8a9051104e8758489dbecd791a8cb297840b7c97a4a
 ```
 
 A rebuild writes a new binary only where you point `--out` or `make`. Copying
@@ -24,7 +24,7 @@ it over either reference file is a separate, intentional release step.
 ```
 
 That is the full hash of the `3cde8de` commit (`Update README.md`, 2018-08-15).
-Later local commits are not the baseline. The 34 numbered patches in
+Later local commits are not the baseline. The 36 numbered patches in
 `patches/` are the whole series from that commit. `patches/rejected/0003-*.patch`
 is historical and must not be applied. There is no `0003` in the active series.
 
@@ -53,7 +53,7 @@ already patched exits 0. Neither script is invoked by default QA.
 
 An external source is used only if explicitly selected with `--url` or
 `BKB_SGMINER_URL`. That override still requires the same pinned commit.
-`scripts/qa source-baseline` tests offline restoration, all 34 patches,
+`scripts/qa source-baseline` tests offline restoration, all 36 patches,
 idempotence, and missing/corrupt-bundle failures in temporary directories.
 Compiler packages, container images, and the factory SD image are separate
 prerequisites; having the source bundle does not cache those dependencies.

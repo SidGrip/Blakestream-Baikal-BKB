@@ -20,7 +20,16 @@ if [[ ! -d "${OVERLAY}" ]]; then
 fi
 
 echo "[04-apply-overlay] Applying ${OVERLAY}/ -> ${ROOTFS}/"
-rsync -aHAX --numeric-ids --info=progress2 --human-readable "${OVERLAY}/" "${ROOTFS}/"
+rsync -aHAX --numeric-ids --info=progress2 --human-readable \
+    --exclude='__pycache__/' --exclude='*.pyc' --exclude='*.pyo' \
+    "${OVERLAY}/" "${ROOTFS}/"
+# Source checkout directory modes are developer-host metadata. Privileged
+# helper parents in the appliance must never inherit a group-writable checkout.
+for path in opt opt/scripta opt/scripta/bin opt/scripta/startup opt/scripta/firmware opt/scripta/policy; do
+    if [[ -d "${ROOTFS}/${path}" && ! -L "${ROOTFS}/${path}" ]]; then
+        chmod 0755 "${ROOTFS}/${path}"
+    fi
+done
 chmod 0644 "${ROOTFS}/etc/sysctl.d/90-blakestream-dual-network.conf"
 mkdir -p "${ROOTFS}/etc/systemd/system/multi-user.target.wants"
 ln -sfn ../blakestream-measured-rates.service "${ROOTFS}/etc/systemd/system/multi-user.target.wants/blakestream-measured-rates.service"
@@ -34,4 +43,4 @@ echo "[04-apply-overlay] Cleanup: removing legacy paths from rootfs"
 bash "${HERE}/scripts/prune-rootfs.sh" "${ROOTFS}"
 
 echo "[04-apply-overlay] Done. Files in this overlay:"
-( cd "${OVERLAY}" && find . -type f -o -type l ) | sort
+( cd "${OVERLAY}" && find . -type d -name __pycache__ -prune -o \( -type f -o -type l \) -print ) | sort

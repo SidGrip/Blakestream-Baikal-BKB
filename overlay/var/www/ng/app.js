@@ -1,10 +1,13 @@
 'use strict';
 
-if (window.location.protocol != "http:")
-    window.location.href = "http:" + window.location.href.substring(window.location.protocol.length);
-
 // Declare app level module which depends on filters, and services
 angular.module('Scripta', ['Scripta.filters', 'Scripta.services', 'Scripta.directives', 'Scripta.controllers'])
+.config(['$httpProvider', function($httpProvider) {
+  var token = window.BKB_CSRF_TOKEN;
+  if (typeof token === 'string' && /^[0-9a-f]{64}$/.test(token)) {
+    $httpProvider.defaults.headers.common['X-BKB-CSRF'] = token;
+  }
+}])
 .config(['$routeProvider', function($routeProvider) {
   var v = '?v=20260930-ui-backup';
   $routeProvider.when('/status',       {templateUrl: 'partials/status.html?v=fan-header-1', controller: 'CtrlStatus'});
@@ -14,7 +17,7 @@ angular.module('Scripta', ['Scripta.filters', 'Scripta.services', 'Scripta.direc
   $routeProvider.when('/pool-history',     {templateUrl: 'partials/pool-history.html' + v,     controller: 'CtrlPoolHistory'});
   $routeProvider.when('/failover-history', {templateUrl: 'partials/failover-history.html' + v, controller: 'CtrlFailoverHistory'});
   $routeProvider.when('/clock-history',    {templateUrl: 'partials/clock-history.html?v=clock-index-1',    controller: 'CtrlClockHistory'});
-  $routeProvider.when('/terminal',         {templateUrl: 'partials/terminal.html' + v,         controller: 'CtrlTerminal'});
-  $routeProvider.when('/dev-tools',        {templateUrl: 'partials/dev-tools.html?v=collector-wait-2', controller: 'CtrlDevTools'});
+  $routeProvider.when('/terminal',         {templateUrl: 'partials/terminal.html?v=https-terminal-1'});
+  $routeProvider.when('/dev-tools',        {templateUrl: 'partials/dev-tools.html?v=sgminer-api-readonly-1', controller: 'CtrlDevTools'});
   $routeProvider.otherwise({redirectTo: '/status'});
 }]);

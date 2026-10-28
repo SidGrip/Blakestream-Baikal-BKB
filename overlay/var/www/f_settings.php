@@ -2,6 +2,72 @@
 require_once __DIR__ . '/inc/firmware-identity.php';
 require_once __DIR__ . '/inc/experimental-clock.php';
 require_once __DIR__ . '/inc/web-auth.php';
+require_once __DIR__ . '/inc/web-security.php';
+
+function bs_miner_option_policy_path() {
+  return defined('BKB_MINER_OPTION_POLICY')
+    ? BKB_MINER_OPTION_POLICY : '/opt/scripta/policy/miner-options.json';
+}
+
+function bs_miner_option_policy() {
+  $raw = @file_get_contents(bs_miner_option_policy_path());
+  $policy = is_string($raw) ? json_decode($raw, true) : null;
+  if (!is_array($policy) || !isset($policy['version']) || $policy['version'] !== 1 ||
+      !isset($policy['allowed_keys']) || !is_array($policy['allowed_keys']) ||
+      !isset($policy['fixed_values']) || !is_array($policy['fixed_values'])) return null;
+  $allowed = array();
+  foreach ($policy['allowed_keys'] as $key) {
+    if (!is_string($key) || $key === '' || isset($allowed[$key])) return null;
+    $allowed[$key] = true;
+  }
+  foreach ($policy['fixed_values'] as $key => $value) {
+    if (!isset($allowed[$key]) || !is_string($value)) return null;
+  }
+  return array('allowed' => $allowed, 'fixed' => $policy['fixed_values']);
+}
+
+function bs_miner_option_security_error($options) {
+  $policy = bs_miner_option_policy();
+  if ($policy === null) return 'Miner option security policy is unavailable';
+  if (!is_array($options)) return 'Miner options must be a list';
+  if ($options !== array_values($options)) return 'Miner options must be a sequential list';
+  if (count($options) > 32) return 'Too many miner options';
+  $seen = array();
+  foreach ($options as $option) {
+    if (!is_array($option) || !array_key_exists('key', $option) || !array_key_exists('value', $option) ||
+        !is_string($option['key'])) return 'Each miner option must contain a string key and value';
+    $key = $option['key'];
+    if (!isset($policy['allowed'][$key])) return 'Unsupported miner option: ' . $key;
+    if (isset($seen[$key])) return 'Duplicate miner option: ' . $key;
+    $seen[$key] = true;
+    $value = $option['value'];
+    if (isset($policy['fixed'][$key]) && (!is_string($value) || $value !== $policy['fixed'][$key]))
+      return $key . ' is fixed by security policy';
+    if ($key === 'baikal-options' && (!is_string($value) ||
+        preg_match('/^[0-9]{1,4}(?::[0-9]{1,3}){0,2}$/D', $value) !== 1))
+      return 'baikal-options must contain one to three colon-separated integers';
+    if ($key === 'baikal-clock-mode' && $value !== 'global' && $value !== 'individual')
+      return 'baikal-clock-mode must be global or individual';
+    if ($key === 'baikal-board-clocks' && (!is_string($value) ||
+        preg_match('/^[0-9]{1,4}:[0-9]{1,4}:[0-9]{1,4}$/D', $value) !== 1))
+      return 'baikal-board-clocks must contain three colon-separated integers';
+    if ($key === 'baikal-experimental-clock-index' &&
+        !($value === true || $value === false || $value === 'true' || $value === 'false'))
+      return 'baikal-experimental-clock-index must be true or false';
+    if ($key === 'baikal-board-clock-index' && (!is_string($value) ||
+        preg_match('/^(?:[8-9]|[1-2][0-9]|3[0-2])(?::(?:[8-9]|[1-2][0-9]|3[0-2])){2}$/D', $value) !== 1))
+      return 'baikal-board-clock-index must contain three integers from 8 to 32';
+    if ($key === 'blakestream-clock-scope' && $value !== 'global' && $value !== 'individual')
+      return 'blakestream-clock-scope must be global or individual';
+    if ($key === 'scan-time' && (!is_string($value) || preg_match('/^(?:0|[1-9][0-9]{0,2})$/D', $value) !== 1))
+      return 'scan-time must be an integer from 0 to 999';
+    if ($key === 'no-submit-stale' && !($value === true || $value === false || $value === 'true' || $value === 'false'))
+      return 'no-submit-stale must be true or false';
+    if ($key === 'baikal-fan' && (!is_string($value) || preg_match('/^(?:4[0-9]|[5-9][0-9]|100)$/D', $value) !== 1))
+      return 'baikal-fan must be an integer from 40 to 100';
+  }
+  return null;
+}
 
 function bs_normalize_fan_settings($settings) {
   $fields = array('userAutoFanMin' => 40, 'userAutoFanTarget' => 36,
@@ -45,9 +111,9 @@ function bs_fan_request_settings($old, $new, $now = null) {
 }
 
 if (!defined('BKB_SETTINGS_LIB_ONLY')) {
-session_start();
+bs_secure_session_start();
 
-if ( !isset($_SESSION['_logged_']) || $_SESSION['_logged_'] === false ) {
+if ( !isset($_SESSION['_logged_']) || $_SESSION['_logged_'] !== true ) {
 	echo json_encode(false);
 	die();
 }
@@ -58,7 +124,6 @@ returns settings and ['date']
 */
 header('Content-type: application/json');
 include('inc/cgminer.inc.php');
-include('inc/host.inc.php');
 $configFolder='/opt/scripta/etc/';
 $configScripta=$configFolder.'scripta.conf';
 $configUipwd=$configFolder.'uipasswd';
@@ -67,6 +132,35 @@ $configPools=$configFolder.'miner.pools.json';
 $configMiner=$configFolder.'miner.conf';
 $minerRestart='/opt/scripta/startup/miner-restart.sh';
 $r=array('data'=>array(), 'info'=>array());
+
+$settingsMethod = isset($_SERVER['REQUEST_METHOD']) ? strtoupper($_SERVER['REQUEST_METHOD']) : '';
+$settingsSource = $settingsMethod === 'POST' ? $_POST : ($settingsMethod === 'GET' ? $_GET : array());
+$settingsActions = array('pass', 'settings', 'pools', 'options', 'timezone');
+$settingsFound = array();
+foreach ($settingsActions as $candidate) {
+  if (array_key_exists($candidate, $settingsSource)) $settingsFound[] = $candidate;
+}
+if (count($settingsFound) !== 1 || !is_string($settingsSource[$settingsFound[0]])) {
+  http_response_code(400);
+  echo json_encode(array('ok' => false, 'error' => 'exactly one settings action is required'));
+  exit;
+}
+$settingsAction = $settingsFound[0];
+$settingsPayload = $settingsSource[$settingsAction];
+$settingsMode = $settingsMethod === 'GET' && in_array($settingsAction, array('settings', 'pools', 'options'), true)
+  ? 'read' : 'mutation';
+$settingsIntegrity = bs_request_integrity_check($settingsMethod, $settingsMode,
+  isset($_SESSION['web_csrf']) ? $_SESSION['web_csrf'] : '', $_SERVER);
+if (!$settingsIntegrity['ok']) {
+  http_response_code($settingsIntegrity['status']);
+  echo json_encode(array('ok' => false, 'error' => $settingsIntegrity['error']));
+  exit;
+}
+if ($settingsMode === 'read' && json_decode($settingsPayload, true) !== 'load') {
+  http_response_code(400);
+  echo json_encode(array('ok' => false, 'error' => 'GET is load-only'));
+  exit;
+}
 
 function write_config_file($path, $contents, $mode = 0664) {
   $dir = dirname($path);
@@ -107,28 +201,21 @@ function add_miner_restart_info(&$r, $started) {
 }
 
 
-// Set new password
-if (array_key_exists('pass', $_POST) || array_key_exists('pass', $_GET) || array_key_exists('pass', $_COOKIE)) {
-  $pass = isset($_POST['pass']) && is_string($_POST['pass']) ? json_decode($_POST['pass']) : null;
-  if (!isset($_SERVER['REQUEST_METHOD']) || $_SERVER['REQUEST_METHOD'] !== 'POST' || !array_key_exists('pass', $_POST)) {
-    $r['info'][]=array('type' => 'error', 'text' => 'Web password changes require POST form data');
-  } elseif (!bs_web_auth_password_valid($pass)) {
+// Set new web-dashboard password. Linux credentials are managed separately over SSH.
+if ($settingsAction === 'pass') {
+  $pass = json_decode($settingsPayload);
+  if (!bs_web_auth_password_valid($pass)) {
     $r['info'][]=array('type' => 'error', 'text' => 'Web password must contain 1 to 72 bytes and no NUL bytes');
   } elseif (!bs_web_auth_save($configUipwd, $pass)) {
     $r['info'][]=array('type' => 'error', 'text' => 'Web password save failed');
   } else {
-    // also change linux password
-    $host = hostHardCtl(2,$_POST['pass']);
-    if (is_array($host) && isset($host['info']) && is_array($host['info'])) {
-      $r['info'] = array_merge($r['info'], $host['info']);
-    }
     $r['info'][]=array('type' => 'success', 'text' => 'Web password saved');
   }
 }
 
 // Manage settings
-elseif (!empty($_REQUEST['settings'])) {
-  $newdata   = json_decode($_REQUEST['settings'], true);
+elseif ($settingsAction === 'settings') {
+  $newdata   = json_decode($settingsPayload, true);
   $r['data'] = json_decode(@file_get_contents($configScripta), true);
   if (!is_array($r['data'])) $r['data'] = array();
 
@@ -185,8 +272,8 @@ elseif (!empty($_REQUEST['settings'])) {
 }
 
 // Manage pools
-elseif (!empty($_REQUEST['pools'])) {
-  $newdata   = json_decode($_REQUEST['pools'], true);
+elseif ($settingsAction === 'pools') {
+  $newdata   = json_decode($settingsPayload, true);
 
   $r['data'] = json_decode(@file_get_contents($configPools), true);
   if (is_array($r['data'])) {
@@ -255,17 +342,20 @@ elseif (!empty($_REQUEST['pools'])) {
 }
 
 // Manage miner.conf
-elseif (isset($_REQUEST['options'])) {
-  $newdata   = json_decode($_REQUEST['options'], true);
+elseif ($settingsAction === 'options') {
+  $newdata   = json_decode($settingsPayload, true);
   $r['data'] = ensureBaikalOptions(json_decode(@file_get_contents($configOptns), true));
 
   // Overwrite current with new config
   if(!empty($newdata)&&is_array($newdata)){
-    $boardClockError = validateBaikalBoardClocks($newdata);
+    $optionSecurityError = bs_miner_option_security_error($newdata);
+    $boardClockError = ($optionSecurityError === null) ? validateBaikalBoardClocks($newdata) : null;
     $experimentalError = ($boardClockError === null) ? baikalExperimentalClockError($newdata) : null;
     $experimentalPolicyError = ($boardClockError === null && $experimentalError === null)
       ? baikalExperimentalPolicyError($newdata) : null;
-    if ($boardClockError !== null) {
+    if ($optionSecurityError !== null) {
+      $r['info'][]=array('type' => 'error', 'text' => $optionSecurityError);
+    } elseif ($boardClockError !== null) {
       $r['info'][]=array('type' => 'error', 'text' => $boardClockError);
     } elseif ($experimentalError !== null) {
       $r['info'][]=array('type' => 'error', 'text' => $experimentalError);
@@ -274,10 +364,10 @@ elseif (isset($_REQUEST['options'])) {
     } else {
       $newdata = baikalNormalizeExperimentalOptions(ensureBaikalOptions($newdata));
     }
-    if ($boardClockError === null && $experimentalError === null && $experimentalPolicyError === null &&
+    if ($optionSecurityError === null && $boardClockError === null && $experimentalError === null && $experimentalPolicyError === null &&
         !write_config_file($configOptns, json_encode($newdata, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES))) {
       $r['info'][]=array('type' => 'error', 'text' => 'Miner options save failed: ' . $configOptns);
-    } elseif ($boardClockError === null && $experimentalError === null && $experimentalPolicyError === null) {
+    } elseif ($optionSecurityError === null && $boardClockError === null && $experimentalError === null && $experimentalPolicyError === null) {
       if (!minerConfigGenerate()) {
         $r['info'][]=array('type' => 'error', 'text' => 'Miner configuration was not rewritten');
       } else {
@@ -295,7 +385,7 @@ elseif (isset($_REQUEST['options'])) {
   }
   // Load new settings
   else{
-    $r['data']=ensureBaikalOptions(array(array('key'=>'algo','value'=>'c')));
+    $r['data']=ensureBaikalOptions(array());
     $r['info'][]=array('type' => 'error', 'text' => 'Miner options not found');
   }
 }
@@ -303,8 +393,8 @@ elseif (isset($_REQUEST['options'])) {
 // Persist user-selected timezone (display-only — system clock stays UTC).
 // The dashboard renders timestamps in this zone via PHP
 // date_default_timezone_set and Intl.DateTimeFormat on the JS side.
-elseif (!empty($_REQUEST['timezone'])) {
-  $timezone = json_decode($_REQUEST['timezone']);
+elseif ($settingsAction === 'timezone') {
+  $timezone = json_decode($settingsPayload);
   ini_set( 'date.timezone', $timezone );
   putenv('TZ=' . $timezone);
   date_default_timezone_set($timezone);
@@ -520,6 +610,7 @@ function baikalAppendExperimentalMinerKeys(&$miner, $rawOptions) {
 }
 
 function baikalBuildMinerConfig($rawOptions) {
+  if (bs_miner_option_security_error($rawOptions) !== null) return false;
   if (baikalExperimentalClockError($rawOptions) !== null) return false;
   $options = ensureBaikalOptions(is_array($rawOptions) ? $rawOptions : array());
   $miner = array();
@@ -546,6 +637,9 @@ function baikalBuildMinerConfig($rawOptions) {
   }
   if (!baikalAppendExperimentalMinerKeys($miner, is_array($rawOptions) ? $rawOptions : array()))
     return false;
+  $miner['api-port'] = '4028';
+  $miner['api-groups'] = 'B:*:restart:ascidentify:ascenable:ascdisable:bkbtrace:bkbfan:ascpool:ascfailover';
+  $miner['api-allow'] = 'B:127.0.0.1';
   return $miner;
 }
 
@@ -706,10 +800,7 @@ function validateBaikalBoardClocks($options) {
 function firmware_identity_paths() {
     if (isset($GLOBALS['BKB_FIRMWARE_IDENTITY_PATHS']) && is_array($GLOBALS['BKB_FIRMWARE_IDENTITY_PATHS']))
         return $GLOBALS['BKB_FIRMWARE_IDENTITY_PATHS'];
-    return array(
-        '/run/blakestream/bkb-firmware-identity.json',
-        '/opt/scripta/etc/bkb-firmware-identity.json',
-    );
+    return array('/opt/scripta/etc/bkb-firmware-identity.json');
 }
 
 function firmware_custom_active() {

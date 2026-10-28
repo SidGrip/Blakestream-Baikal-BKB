@@ -437,7 +437,7 @@ class TrialTests(unittest.TestCase):
             {'key': 'baikal-clock-mode', 'value': 'individual'},
             {'key': 'blakestream-clock-scope', 'value': 'global',
              'description': 'Clock control scope (presentation only)'},
-            {'key': 'fixture-unrelated', 'value': 'preserved'},
+            {'key': 'no-submit-stale', 'value': 'false'},
         ]
         self.assertTrue(T.backup_is_baseline(items))
         updated = T.apply_experimental(items, [22, 30, 30])
@@ -445,7 +445,7 @@ class TrialTests(unittest.TestCase):
         self.assertEqual(mapped['blakestream-clock-scope'], 'individual')
         self.assertEqual(mapped['baikal-board-clock-index'], '22:30:30')
         self.assertEqual(mapped['baikal-clock-mode'], 'individual')
-        self.assertEqual(mapped['fixture-unrelated'], 'preserved')
+        self.assertEqual(mapped['no-submit-stale'], 'false')
         for item in updated:
             if item.get('key') == 'blakestream-clock-scope':
                 self.assertEqual(item.get('description'), 'Clock control scope (presentation only)')
@@ -481,7 +481,7 @@ class TrialTests(unittest.TestCase):
         self.assertNotIn('baikal-experimental-clock-index', restored)
         self.assertNotIn('baikal-board-clock-index', restored)
         self.assertEqual(restored['user-added'], 'keep')
-        self.assertEqual(restored['fixture-unrelated'], 'preserved')
+        self.assertEqual(restored['no-submit-stale'], 'false')
         self.assertEqual(restored['baikal-options'], '400:40:55')
 
         absent = [

@@ -1,0 +1,95 @@
+From: Blakestream-GaintB V2.2
+Subject: [PATCH] api: add constrained trace and fan verbs
+
+The generic ascset command accepts several device options and cannot safely be
+granted to every process on the loopback API. Add two narrow wrappers for the
+operations the controller actually needs. bkbtrace accepts only four literal
+diagnostic operations. bkbfan accepts exactly a single board digit from 0 to 2,
+a comma, and a canonical integer fan percentage from 20 to 100. Both construct
+the ascset payload internally, so callers cannot select another option or add
+trailing data.
+
+The runtime API group grants these wrappers but not ascset itself.
+
+---
+--- a/api.c
++++ b/api.c
+@@ -3582,6 +3582,68 @@
+     }
+ }
+-
++
++/* Narrow Blakestream wrappers for the only ascset operations exposed through
++ * the restricted loopback API group. The generic ascset command is deliberately
++ * not in that group. */
++static void bkbtrace(struct io_data *io_data, SOCKETTYPE c, char *param, bool isjson, char group)
++{
++    char request[32];
++
++    if (param == NULL ||
++        (strcmp(param, "on") != 0 && strcmp(param, "off") != 0 &&
++         strcmp(param, "clear") != 0 && strcmp(param, "export") != 0)) {
++        message(io_data, MSG_ASCSETERR, 0,
++                "bkbtrace requires on, off, clear, or export", isjson);
++        return;
++    }
++
++    snprintf(request, sizeof(request), "0,diag-trace,%s", param);
++    ascset(io_data, c, request, isjson, group);
++}
++
++static void bkbfan(struct io_data *io_data, SOCKETTYPE c, char *param, bool isjson, char group)
++{
++    char request[32];
++    char *comma;
++    char *fan_text;
++    char *scan;
++    long fan;
++    int id = 0;
++
++    if (param == NULL || (comma = strchr(param, ',')) == NULL ||
++        strchr(comma + 1, ',') != NULL || comma != param + 1 ||
++        param[0] < '0' || param[0] > '2') {
++        message(io_data, MSG_ASCSETERR, 0,
++                "bkbfan requires board 0-2 and fan 20-100", isjson);
++        return;
++    }
++
++    id = param[0] - '0';
++    fan_text = comma + 1;
++    if (*fan_text == '\0') {
++        message(io_data, MSG_ASCSETERR, id,
++                "bkbfan requires board 0-2 and fan 20-100", isjson);
++        return;
++    }
++    for (scan = fan_text; *scan != '\0'; scan++) {
++        if (!isdigit((unsigned char)*scan)) {
++            message(io_data, MSG_ASCSETERR, id,
++                    "bkbfan requires board 0-2 and fan 20-100", isjson);
++            return;
++        }
++    }
++    fan = strtol(fan_text, NULL, 10);
++    if (!((strlen(fan_text) == 2 && fan >= 20 && fan <= 99) ||
++          (strcmp(fan_text, "100") == 0))) {
++        message(io_data, MSG_ASCSETERR, id,
++                "bkbfan requires board 0-2 and fan 20-100", isjson);
++        return;
++    }
++
++    snprintf(request, sizeof(request), "%d,fan,%ld", id, fan);
++    ascset(io_data, c, request, isjson, group);
++}
++
+ static void ascpool(struct io_data *io_data, __maybe_unused SOCKETTYPE c, char *param, bool isjson, __maybe_unused char group)
+ {
+     struct cgpu_info *cgpu;
+@@ -3745,6 +3807,8 @@
+     {"ascpool",		ascpool,	true,	false},
+     {"ascfailover",	ascfailover,	true,	false},
+     {"ascset",		ascset,		true,	false},
++    {"bkbtrace",		bkbtrace,	true,	false},
++    {"bkbfan",		bkbfan,		true,	false},
+     {"hotplug",		dohotplug,	true,	false},
+     {"asccount",		asccount,	false,	true},
+ #endif

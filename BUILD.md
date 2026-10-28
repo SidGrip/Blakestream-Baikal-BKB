@@ -31,8 +31,8 @@ instead of being skipped. See [QA.md](QA.md).
 | Path | Role |
 | --- | --- |
 | `overlay/` | Files copied over the factory rootfs. The image build uses this tree as it is. |
-| `sgminer-build/sgminer.patched` and `overlay/opt/scripta/bin/sgminer` | Reference ARMv7 host binary, sha256 `c90c9fab655c1b1e52bacc0c0dd6f05743104b9e5e45912364d5a612d4320c52`. Do not replace it with a local rebuild unless you are publishing a new binary. |
-| `sgminer-build/patches/` | 34 numbered patches, `0001`–`0002` and `0004`–`0035`, on upstream `3cde8deca53f83ac65bc685b988166bd17930753`. `patches/rejected/0003` is not applied. |
+| `sgminer-build/sgminer.patched` and `overlay/opt/scripta/bin/sgminer` | Reference ARMv7 host binary, sha256 `a42166a885922776533ac8a9051104e8758489dbecd791a8cb297840b7c97a4a`. This build includes the restricted B-group API verbs from patches 0036–0037. Do not replace it with a local rebuild unless you are publishing a new binary. |
+| `sgminer-build/patches/` | 36 numbered patches, `0001`–`0002` and `0004`–`0037`, on upstream `3cde8deca53f83ac65bc685b988166bd17930753`. `patches/rejected/0003` is not applied. |
 | `sgminer-build/vendor/sgminer-baikal.bundle` | Complete pinned upstream source and original history, restored offline after SHA-256 verification. No upstream GitHub checkout is required. |
 | `firmware-custom/build/bkb-stm32f407-flash-clockmod-v1.bin` | Reference v1 image, sha256 `d2a1a66db73e8fb95cc482962b64011226ded70f107eb6301808aef65e076c8a`. |
 | `overlay/opt/scripta/firmware/stock.bin` | Included stock rollback image, also usable as the bridge build input. Identity is in `firmware-custom/STOCK-BRIDGE.txt`. |
@@ -167,6 +167,8 @@ are preserved.
 | 0033 | Host diagnostic counters and trace, included from `driver-baikalu.c`. |
 | 0034 | Opt-in independent clock indices, strict configuration and explicit command readback. |
 | 0035 | Consistent clock-index API and configuration names; numeric values and wire behavior unchanged. |
+| 0036 | Removes the root miner API's arbitrary-path `save` command from dispatch. |
+| 0037 | Replaces generic loopback `ascset` access with exact trace and 20–100% fan verbs. |
 
 `apply-patches.sh` is the command that applies them. Do not hand-merge the
 series into one diff.

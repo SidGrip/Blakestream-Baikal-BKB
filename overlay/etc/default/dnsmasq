@@ -1,0 +1,3 @@
+# The dashboard uses NetworkManager with connection-provided DNS. The inherited
+# standalone LAN-facing dnsmasq daemon is not part of the product surface.
+ENABLED=0

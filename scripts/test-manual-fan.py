@@ -56,7 +56,11 @@ class ManualFanTests(unittest.TestCase):
         for value, expected in ((0, 40), (-1, 40), (39, 40), (40, 40),
                                 (70, 70), (100, 100), (101, 100), ('bad', 70)):
             options = [{'key': 'baikal-fan', 'value': str(value)}]
-            self.assertEqual(runtime['load_saved_options'](options)['baikal-fan'], str(expected))
+            if str(value).isdigit() and 40 <= int(value) <= 100:
+                self.assertEqual(runtime['load_saved_options'](options)['baikal-fan'], str(expected))
+            else:
+                with self.assertRaises(runtime['ExperimentalClockError']):
+                    runtime['load_saved_options'](options)
             def load(path, default):
                 return options if path.endswith('miner.options.json') else {}
             fan['load_config'].__globals__['load_json'] = load
@@ -75,6 +79,22 @@ class ManualFanTests(unittest.TestCase):
             self.assertEqual(cfg['manual_fan'], 70)
             self.assertEqual(fan['compute_fan'](cfg, cfg['target_temp'], expected)[0], expected)
             self.assertEqual(fan['compute_fan'](cfg, cfg['full_temp'], expected)[0], 100)
+
+    def test_live_request_uses_the_constrained_fan_verb(self):
+        fan = runpy.run_path(os.path.join(BIN, 'fan-controller.py'))
+        calls = []
+
+        def call_api(command, parameter=None, timeout=4):
+            calls.append((command, parameter, timeout))
+            return {'STATUS': [{'STATUS': 'S', 'Code': 0}]}, None
+
+        env = fan['set_fan_for_boards'].__globals__
+        env['LIVE_FAN_API_ENABLED'] = True
+        env['call_api'] = call_api
+        ok, detail = fan['set_fan_for_boards']([2, 0, 1], 20)
+        self.assertTrue(ok, detail)
+        self.assertEqual(calls, [('bkbfan', '0,20', 4)])
+        self.assertNotIn('ascset', repr(calls))
 
 
 if __name__ == '__main__':

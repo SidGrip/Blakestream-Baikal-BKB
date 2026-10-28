@@ -15,17 +15,19 @@ pending.
 
 ## Current status
 
-Completed trials cover **Index 8..32**, with at least one full thirty-minute
-observation per index. The bundled `blake256r8` examples use these
+Completed trials cover **Index 8..32**, with a full one-hour observation on all
+three boards at each index and opening/closing Index 30 references.
+The bundled `blake256r8` examples use these
 observations; they are not qualified presets or physical frequency calibration.
 See [Accepted-work validation](#accepted-work-validation) for coverage,
 calculation methods, and limits. Detailed trial history remains local.
 
 Current clock controls edit Index only. GH/s and MHz are read-only estimates;
 Global extrapolates a three-board total from the shared per-board example.
-Index 30 retains the nominal 400 MHz anchor. No completed test independently
-measured ASIC frequency or power. Stock-versus-V1 equivalence, every-board
-coverage, and long-term stability remain open validation work.
+Index 30 retains the nominal 400 MHz anchor. Whole-miner wall power was measured
+with Eyedro; physical ASIC frequency and per-board power were not measured.
+Stock-versus-V1 equivalence, qualification of other boards, and long-term
+stability remain open validation work.
 
 ## How the pieces fit
 
@@ -53,7 +55,7 @@ STM32 USB bridge, so pool routing is not three separate USB devices. The
 runtime builder writes a sgminer config plus a pool-map sidecar. Patches
 `0001`, `0002`, `0004`, and `0005` keep a disabled board from stalling the other boards or
 from being refilled forever. Later patches add routing, the clock command,
-diagnostics, and the global coordinator. The series is applied as 34 separate
+diagnostics, and the global coordinator. The series is applied as 36 separate
 patches on upstream `3cde8deca53f83ac65bc685b988166bd17930753`. Patch `0003`
 was rejected and is not applied. The upstream source is included as a
 self-contained Git bundle; source preparation restores it offline instead
@@ -259,8 +261,31 @@ Successful and failed login events record the time and sanitized source/browser
 metadata, never the supplied password. Existing password fields can be redacted
 from the active security log without deleting the attempt records. Redaction
 does not securely erase older SD-card blocks or copies outside that log.
-These storage protections do not encrypt HTTP traffic; keep the interface on a
-trusted network or use a trusted HTTPS access path.
+The dashboard is served over HTTPS; port 80 only redirects to HTTPS. First boot
+generates a device-specific X.509 v3 server certificate after entropy is ready.
+Initial identity provisioning waits for credited kernel entropy from
+`/dev/random`; a cold headless boot can delay SSH and HTTPS until enough entropy
+is available. Valid existing identities are retained. The default certificate is
+self-signed and names the controller hostname, not its DHCP address. HTTPS encrypts traffic,
+but browsers cannot authenticate this identity by default and can continue to
+show **Not secure** after a local exception. A trusted certificate matching the
+access hostname or IP is required to remove that warning. Keep the interface on
+a trusted network.
+
+### Browser terminal
+
+The dashboard's **Terminal** tab opens `/terminal/` on the same HTTPS port 443.
+Lighttpd proxies only that path to ShellInABox at `127.0.0.1:4200`; port 4200
+does not listen on the LAN. `blakestream-terminal.service` runs the daemon as
+the unprivileged `shellinabox` user, with
+`--service=/terminal:SSH:127.0.0.1`. It opens a local SSH connection and requires
+the Linux account's credentials. The shipped SSH policy permits `root` only.
+
+The dashboard password and Linux password are separate. Direct visits to
+`/terminal/` use the SSH login prompt rather than the PHP dashboard session.
+Changing the web password does not change this login. The old SysV
+`shellinabox.service` remains masked; the dedicated terminal service is enabled
+instead, preserving the HTTPS route and loopback-only backend.
 
 ## Clock coordinator
 
@@ -353,21 +378,22 @@ accepted difficulty over device time per Index, and preserves measured board IDs
 error counts and contributing tuples. The public projection strips private
 source paths; the original per-board/full-tuple evidence remains separate.
 Index 30's shared rate uses completed all30 references, not control-board samples
-from mixed settings. Other Index rows are transferable lab examples, including
-mixed-tuple screens, not hardware-specific predictions or qualifications.
+from mixed settings. The current dataset uses all three boards at the same index
+for every measured window. These remain transferable lab examples, not
+hardware-specific predictions or qualifications.
 
-For non-stock indices, shared estimated MHz is `400 * pooled GH/s / reference
-GH/s`, using a time-weighted stock reference from each contributing physical
-board. Missing same-board references leave MHz unavailable. Global displays
-three times the shared per-board rate plus that per-board average. This total
+For non-default indices, shared estimated MHz is `400 * pooled GH/s / reference
+GH/s`, using a time-weighted nominal Index 30 reference on Custom V1 from each
+contributing physical board. Missing same-board references leave MHz unavailable.
+Global displays three times the shared per-board rate plus that per-board average. This total
 is an extrapolation, not a measured all-board result. Personal measured-rate
 history, normal-mode model estimates and accepted 15m/1h values are not overwritten.
 The PHP reader caps the file at 64 KiB and checks its schema; live compatibility
 uses the driver Algo (not a pool-label override), reported host SHA256, 64 chips
 and a verified firmware hash matching the dataset or its explicit
-`compatible_bridge_chip_md5` list. Release V1 is explicitly compatible with
-the published baseline: the clock table and active-chip command parameters
-are identical. Original measurement hashes are preserved, not rewritten.
+`compatible_bridge_chip_md5` list. The current measurements use release V1
+directly. Original measurement hashes are preserved, not rewritten to match
+another reference binary in the source tree.
 This compatibility applies only to shared estimates, not personal verified
 history or live accepted-work measurements. A 56/64 startup count remains
 56/64; the shared healthy-board estimate is not a guarantee for that board.
@@ -448,7 +474,8 @@ in the evidence; sharing an example does not qualify another board or establish
 electrical safety. No UI action automatically sweeps or tunes clocks.
 
 The human-readable [Index baseline table](CLOCK-BASELINE.md) lists the shipped
-accepted GH/s and performance-equivalent MHz estimates. It is derived from
+accepted GH/s, performance-equivalent MHz estimates, and one average whole-miner
+power value per index. It is derived from
 `clock-baseline.json`; MHz values are not independent frequency measurements.
 
 ### Devices display
@@ -624,7 +651,7 @@ or download. The measured SQLite database retains its separate 2 MiB limit.
 Exceeding a limit fails the operation rather than reporting a partial backup.
 Validated legacy configuration ZIPs remain importable. Archives contain private
 credentials; keep exported copies private. Local archives live under the root-only
-`/opt/scripta/etc/backup` directory and are served through authenticated requests.
+`/var/lib/blakestream-backups` directory and are served through authenticated requests.
 
 Saved Ethernet profile settings are captured as portable data, even when the
 cable is disconnected. The backup-only network read excludes pending changes,
@@ -742,9 +769,10 @@ Two transports exist inside global mode:
 ## Accepted-work validation
 
 The shared baseline covers **Index 8..32**, including completed Index 31 and Index 32
-observations. Every index has at least one full thirty-minute observation under
-`blake256r8`. The [Index baseline table](CLOCK-BASELINE.md) lists the published
-accepted GH/s and estimated MHz. This is limited exploratory screening, not
+observations. Every index has a full one-hour observation under `blake256r8`,
+after ten minutes of excluded warm-up, with all three boards at that index.
+The [Index baseline table](CLOCK-BASELINE.md) lists the published
+accepted GH/s, estimated MHz, and average whole-miner watts. This is limited exploratory screening, not
 every-board qualification or proof of long-term stability.
 
 The measurements used a patched host and verified bridge with all boards
@@ -752,31 +780,34 @@ reporting 64/64 chips. Exact measured host and bridge identities remain in
 `clock-baseline.json`; release compatibility never substitutes a different
 hash for that provenance.
 
-The clock-index terminology build is listed separately in
-`clock-baseline.json` under `compatible_host_sha256`. Its exact binary was
-checked against the host/ARM driver tests; the
-rename does not change numeric clock commands. This allows the existing shared
-examples to remain available without rewriting their measured host identity.
+Previously reviewed compatible hosts remain listed separately in
+`clock-baseline.json` under `compatible_host_sha256`. Shared display compatibility
+does not replace the actual measured host identity with a bundled binary's hash.
 Unlisted binaries remain incompatible. Personal history still uses exact
 running-host identity and is not merged across builds by this list.
 
-Lower-range screening used concurrent different indices; upper-range screening
-used one candidate with the other boards held at Index 30. Completed windows
+The current sweep replaces the earlier mixed-index screening examples. Completed windows
 exclude warm-up and retain actual measured duration, accepted difficulty,
 share counts, errors, temperatures, identities, and the full operating tuple.
-Fan control remained automatic. Shared cooling, variable fan speed, and work
-delivery can affect rates; power and physical ASIC frequency were not measured.
+Fan control remained automatic with one unchanged curve. Shared cooling, variable
+fan speed, and work delivery can affect rates. Eyedro measured the whole miner's
+power feed, including the power supply, controller, and fan; physical ASIC
+frequency and individual-board power were not measured.
 
 Index 30 is the normal nominal-400 reference on V1, not a stock-firmware comparison.
-Published pooled examples are about **61.22 GH/s** at Index 30, **62.79 GH/s** at
-Index 31, and **64.79 GH/s** at Index 32. A Global preview multiplies the shared
-per-board example by three; it is not an independently measured all-board result.
+Published pooled per-board examples are about **61.64 GH/s** at Index 30,
+**61.49 GH/s** at Index 31, and **63.72 GH/s** at Index 32, with average whole-miner
+power of **251.5 W**, **256.0 W**, and **259.3 W**, respectively. Index 30 pools the
+opening reference, its sweep step, and the closing reference. A Global preview
+still multiplies the shared per-board example by three; it is not a live reading.
 
 Interrupted and failed attempts remain in the local trial records and do not
 supply baseline rates. Completed error-bearing windows retain their errors and
-declared stop policy; they are not relabeled as error-free. The completed Index 32
-follow-up and closing reference retained all chips and had no recorded HW
-errors, rejects, or API timeouts during their measured windows. Restoration to
+declared stop policy; they are not relabeled as error-free. This sweep recorded
+hardware errors without a count-based stop, while retaining its temperature,
+fan, telemetry, and valid-measurement safeguards. Higher-index windows and the
+closing reference include recorded hardware errors; completed windows had no
+rejected shares. Restoration to
 normal clocks, unchanged saved configuration, and renewed accepted work were
 checked. These outcomes do not qualify another miner or establish electrical
 safety.
@@ -797,7 +828,7 @@ algorithm namespaces under the chosen root:
 `<root>/blake256r8/baseline.json`
 
 It retains accepted GH/s, duration, board/index tuples, identities, HW counts,
-exploratory flags, and raw-source references. Writes are atomic and skipped
+exploratory flags, raw-source references, and available measured-power evidence. Writes are atomic and skipped
 when data has not changed. Empty datasets contain no invented rates; failed
 windows retain separate failure records, not usable measurements. Personal
 measured-rate history is not overwritten.
@@ -832,6 +863,14 @@ stays `unverified`.
 
 The public publisher pools compatible completed work per Index, removes private
 source paths, and retains contributing measurement identities and errors.
+For complete same-index three-board windows it also publishes one
+`average_watts` value per index, with `power_scope: whole-miner-wall-power`.
+The average is total observed energy divided by total observed time; a meter
+window is counted once, not once per board. Missing meter intervals are not
+filled, and publication requires at least 99% coverage with no gap over 30 seconds.
+Mixed-index or unmetered observations cannot supply a whole-miner power value
+for one index. Detailed energy and coverage records remain in the private export,
+not extra columns in the public table.
 Its shared MHz estimate uses time-weighted references from the contributing
 boards. Counting noise, temperature, errors, and work delivery affect these
 estimates; they must not be inverted into a calibrated MHz control or presented
@@ -939,11 +978,14 @@ Dev Tools displays elapsed time and an estimated total throughout a firmware
 operation. Stock and V1 flashes start with the lab's measured **164-second**
 baseline (about 170 seconds); a read-only verify defaults to 45 seconds. The
 baseline remains visible before any local history exists or if history cannot
-be read. A successful operation replaces only that operation's estimate with
-the miner's own duration. Flash time includes pausing mining, entering DFU, two
-matching safety-backup reads, writing the 1 MiB image, full readback verification,
-returning to normal USB mode, and the guarded miner restart. Do not remove power
-when the estimate is exceeded: it is a duration hint, not a timeout.
+be read. When Dev Tools processes a successful result, it replaces only that
+operation's estimate with the miner's own duration. A normal flash includes
+pausing mining, entering DFU, two matching safety-backup reads, writing the 1 MiB
+image, full readback verification, returning to normal USB mode, and the guarded
+miner restart. Recovery mode instead reuses a retained validated safety backup;
+if none is usable, the validated target can still be written but must verify
+before mining resumes. Do not remove power when the estimate is exceeded: it is
+a duration hint, not a timeout.
 
 `/opt/scripta/etc/bkb-firmware-runtime.json` retains the last successful duration
 separately for `stock`, `custom-v1`, and `verify`. Legacy single-operation records
@@ -951,14 +993,16 @@ are migrated on the next successful result; failed operations do not train the
 estimate. Image pruning removes this per-miner record. Progress uses server
 elapsed time, so browser/controller clock differences do not inflate the timer.
 
-A flash is reported successful only after verified readback and successful
+A flash worker reports success only after verified readback and successful
 guarded miner restart. The flasher logs its USB-return check, but one early USB
 enumeration snapshot does not skip the guarded restart attempt. A verified
-write followed by a restart failure is reported as a failed operation; failed
-flash jobs disable adjustable clocks and clear raw Index overrides without
-learning their duration. V1 identity is published only after its capability
-marker is installed. Continued accepted work and board health still require
-observation after the job completes.
+write followed by a restart failure is reported as a failed operation. When Dev
+Tools processes a failed flash result, it disables adjustable clocks and clears
+raw Index overrides without learning the failed duration. For a successful V1
+flash, it publishes identity after the capability marker is installed. The SSH flashing client
+reads the worker result directly and does not perform this dashboard settings,
+identity, or timing reconciliation. Continued accepted work and board health
+still require observation after the job completes.
 
 ### First boot after an SD reflash
 
@@ -977,13 +1021,18 @@ the `BRIDGE_GLOBAL_V1_READY` capability marker, containing its verified digest.
 Unknown firmware, a failed read or a
 missing clock encoder leaves clocks disabled and records the failure.
 
-The result is stored in `/opt/scripta/etc/bkb-firmware-firstboot.json`, with
-details in `/opt/scripta/var/firmware-firstboot.log`. The pending marker is
-consumed even on failure; later boots preserve saved preferences instead of
-repeating verification. A busy launcher or active firmware job is left alone
-and recorded as a skipped check. Recovery only restores GPIO/application mode,
-not flash contents. This identity check is separate from sgminer's subsequent
-clock-command acknowledgement and readback confirmation.
+The result is stored in `/var/lib/blakestream-firstboot/result.json`, with
+details in `/var/log/blakestream-firstboot/firmware-firstboot.log`. Completed,
+ordinary failed, and deliberately skipped checks consume the pending marker;
+later boots then preserve saved preferences instead of repeating verification.
+A first-boot GPIO/application recovery failure retains or recreates the pending
+marker and keeps boot-local cleanup state; this alone does not gate dependent
+boot services. A separate persistent firmware-write recovery marker blocks miner
+startup and requires successful DFU enforcement before cron starts. A busy
+launcher or active firmware job is left alone and recorded as a skipped check.
+First-boot cleanup only restores GPIO/application mode, not flash contents. This
+identity check is separate from sgminer's subsequent clock-command acknowledgement
+and readback confirmation.
 
 ## Custom V1 Clock Commands
 
@@ -1153,14 +1202,13 @@ RAM/SD destinations. Fresh images default to RAM except for the existing SD
 security audit log.
 
 Sgminer always starts with text log capture. Its default RAM log at
-`/run/blakestream/sgminer.log` caps at 4 MiB and keeps the newest 2 MiB when
-trimming. An explicit SD selection writes `/var/log/sgminer.log` with the same
+`/run/blakestream-miner/sgminer.log` caps at 4 MiB and keeps the newest 2 MiB when
+trimming. An explicit SD selection writes `/var/log/blakestream-miner/sgminer.log` with the same
 4 MiB cap and 2 MiB retained tail. Both paths use the same bounded writer;
 there are no additional daily sgminer archives. Changing
 sgminer's destination takes effect on its next restart, not on a Dev Tools
-visibility change. The launcher transfers the newest 2 MiB from the previous
-destination before retiring that file. Invalid settings or failed transfers
-leave the previous log intact.
+visibility change. Logs in the other sealed destination are retained; legacy
+logs from shared writable paths are never imported.
 
 Dev Tools > Logs provides independent RAM/SD destinations for Network / Wi-Fi
 (`network-events.log`), System events (`system-events.log`), Fan / temperature

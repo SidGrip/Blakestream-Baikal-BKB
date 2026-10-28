@@ -5,7 +5,7 @@ apply-board-assignments.py - Blakestream-GaintB
 
 Applies per-board enable/disable AND per-board pool pinning to a freshly-
 started sgminer based on board-assignments.json (user choice) and
-/run/blakestream/temp-state.json (temp watchdog).
+/run/blakestream-control/temp-state.json (temp watchdog).
 
 Called by /opt/scripta/startup/miner-start.sh once sgminer's API is up.
 sgminer always boots with all detected ASCs enabled and unpinned. After
@@ -23,7 +23,7 @@ Otherwise the board gets ascenable to ensure it's hashing.
 
 v2: per-ASC pool routing via the new ascpool|<asc>,<pool_no> command.
 After enable/disable, we resolve each enabled board's saved-pool-id to the
-runtime sgminer pool_no via /tmp/scripta-runtime-poolmap.json (the sidecar
+runtime sgminer pool_no via /run/blakestream-miner/scripta-runtime-poolmap.json (the sidecar
 written by build-miner-runtime.py) and call ascpool to pin the board to
 that pool. Disabled boards get ascpool|<asc>,-1 to clear any stale pin
 left over from a previous configuration.
@@ -54,10 +54,10 @@ import sys
 import time
 
 ETC = '/opt/scripta/etc'
-RUNTIME = '/run/blakestream'
+RUNTIME = '/run/blakestream-control'
 ASSIGNMENTS = os.path.join(ETC, 'board-assignments.json')
 TEMP_STATE = os.path.join(RUNTIME, 'temp-state.json')
-RUNTIME_POOLMAP = '/tmp/scripta-runtime-poolmap.json'
+RUNTIME_POOLMAP = '/run/blakestream-miner/scripta-runtime-poolmap.json'
 BOARD_IDS = ['0', '1', '2']
 DEFAULT_ASSIGNMENTS = {"0": None, "1": None, "2": None}
 DEFAULT_API_PORT = 4028
@@ -96,7 +96,7 @@ def load_temp_state(path):
 
 
 def load_poolmap(path):
-    """v2: read /tmp/scripta-runtime-poolmap.json sidecar.
+    """v2: read the root-owned runtime poolmap sidecar.
 
     Returns a dict shaped like:
         {"saved_to_runtime": {pool_id: int, ...},

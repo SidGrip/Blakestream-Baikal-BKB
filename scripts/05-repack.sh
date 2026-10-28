@@ -120,19 +120,38 @@ boot_mounted=0
 fsck.fat -n "${LOOP}p1"
 depmod -b "${ROOTFS_SRC}" 3.4.39
 
-echo "[05-repack] Fixing ownership: chown -R 0:0 on modified rootfs (dev box uid != Pi uid) ..."
-# The overlay files are created as the dev-box user (uid 1000 = sid). On the Pi
-# uid 1000 = baikal. rsync --numeric-ids would copy that wrong uid into the image,
+# Validate before any privileged recursive metadata change. A hardlink under
+# the webroot would otherwise make chown/chmod mutate its other inode name.
+bash "${HERE}/scripts/validate-webroot-tree.sh" "${ROOTFS_SRC}/var/www"
+# Seal directories first so an unprivileged checkout owner cannot add a new
+# entry between validation and the file-mode pass below.
+find -P "${ROOTFS_SRC}/var/www" -xdev -type d -exec chown root:root {} + -exec chmod 0755 {} +
+bash "${HERE}/scripts/validate-webroot-tree.sh" "${ROOTFS_SRC}/var/www"
+
+echo "[05-repack] Fixing ownership: chown -R 0:0 on modified rootfs ..."
+# Overlay files inherit the host account's numeric uid. On the controller,
+# uid 1000 belongs to baikal. rsync --numeric-ids can copy host ownership into the image,
 # breaking /usr/bin/sudo (needs root + setuid), /etc/sudoers, lighttpd log dir, etc.
 # Fix: chown the entire rootfs to root:root first, then fix the known non-root paths.
 chown -hR 0:0 "${ROOTFS_SRC}/"
+for path in opt opt/scripta opt/scripta/bin opt/scripta/startup opt/scripta/firmware opt/scripta/policy; do
+    if [[ -d "${ROOTFS_SRC}/${path}" && ! -L "${ROOTFS_SRC}/${path}" ]]; then
+        chmod 0755 "${ROOTFS_SRC}/${path}"
+    fi
+done
 # /home/baikal should be uid 1000 (baikal on the Pi)
 if [[ -d "${ROOTFS_SRC}/home/baikal" ]]; then
     chown -hR 1000:1000 "${ROOTFS_SRC}/home/baikal"
 fi
-# /var/www should be uid 33 (www-data) for lighttpd
+# Dashboard code and static assets are read-only to the lighttpd/PHP account.
+# Writable application state belongs under /opt/scripta/{etc,var} or /run,
+# never beside executable PHP. This prevents a compromised www-data process
+# from replacing the authentication and request-integrity boundary.
 if [[ -d "${ROOTFS_SRC}/var/www" ]]; then
-    chown -hR 33:33 "${ROOTFS_SRC}/var/www"
+    # Directories were sealed before the global chown. Revalidate immediately
+    # before touching files and require the same single-link invariant in find.
+    bash "${HERE}/scripts/validate-webroot-tree.sh" "${ROOTFS_SRC}/var/www"
+    find -P "${ROOTFS_SRC}/var/www" -xdev -type f -links 1 -exec chmod 0644 {} +
 fi
 # /var/log/lighttpd should be www-data
 if [[ -d "${ROOTFS_SRC}/var/log/lighttpd" ]]; then
@@ -162,10 +181,6 @@ if [[ -d "${ROOTFS_SRC}/opt/scripta/etc" ]]; then
     done
     if [[ -f "${ROOTFS_SRC}/opt/scripta/etc/uipasswd" ]]; then
         chmod 600 "${ROOTFS_SRC}/opt/scripta/etc/uipasswd"
-    fi
-    if [[ -d "${ROOTFS_SRC}/opt/scripta/etc/backup" ]]; then
-        chown -R 0:0 "${ROOTFS_SRC}/opt/scripta/etc/backup"
-        chmod 700 "${ROOTFS_SRC}/opt/scripta/etc/backup"
     fi
 fi
 # /opt/scripta/var (pool history, rrd graphs) is also written by www-data
@@ -232,7 +247,8 @@ echo "[05-repack] Generating SHA-256 ..."
 (cd "${OUT_DIR}" && sha256sum "$(basename "${OUT_IMG}")") > "${OUT_IMG}.sha256"
 cat "${OUT_IMG}.sha256"
 
-INVOKING_USER="${SUDO_USER:-${USER:-sid}}"
-chown "${INVOKING_USER}:${INVOKING_USER}" "${OUT_IMG}" "${OUT_IMG}.sha256" 2>/dev/null || true
+INVOKING_USER="${SUDO_USER:-$(id -un)}"
+INVOKING_GROUP="$(id -gn "${INVOKING_USER}")"
+chown "${INVOKING_USER}:${INVOKING_GROUP}" "${OUT_IMG}" "${OUT_IMG}.sha256" 2>/dev/null || true
 
 echo "[05-repack] Done. Output: ${OUT_IMG}"

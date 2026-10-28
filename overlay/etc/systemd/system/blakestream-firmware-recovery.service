@@ -1,0 +1,14 @@
+[Unit]
+Description=Reassert Blakestream bridge DFU recovery hold
+Requires=blakestream-system-perms.service
+After=local-fs.target blakestream-system-perms.service
+Before=cron.service blakestream-firmware-firstboot.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/scripta/bin/enforce-firmware-recovery-hold.sh
+RemainAfterExit=yes
+TimeoutStartSec=45
+
+[Install]
+WantedBy=multi-user.target

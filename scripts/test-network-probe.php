@@ -44,9 +44,9 @@ function pool_list_for_probe($etc) { return bs_probe_endpoints_from_saved(read_j
 function probe_one_pool($p) { $GLOBALS['probed'][] = $p['key']; $p['probe_count'] = count($GLOBALS['probed']); return $p; }
 $ETC = '';
 $GLOBALS['probed'] = array();
-$_REQUEST = array();
-if (isset($argv[1]) && $argv[1] === '--single') $_REQUEST['endpoint'] = $argv[2];
-if (isset($argv[1]) && $argv[1] === '--numeric') $_REQUEST['pool'] = $argv[2];
+$_GET = array();
+if (isset($argv[1]) && $argv[1] === '--single') $_GET['endpoint'] = $argv[2];
+if (isset($argv[1]) && $argv[1] === '--numeric') $_GET['pool'] = $argv[2];
 ob_start();
 eval("switch ('network_probe') {" . substr($source, $start, $end - $start) . '}');
 $response = json_decode(ob_get_clean(), true);

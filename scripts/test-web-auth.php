@@ -21,6 +21,7 @@ $tmp = sys_get_temp_dir() . '/bkb-web-auth-' . getmypid() . '-' . mt_rand(1000, 
 auth_expect(mkdir($tmp, 0700), 'temporary fixture directory');
 register_shutdown_function(function () use ($tmp) { if (is_dir($tmp)) auth_remove_tree($tmp); });
 $helper = realpath(__DIR__ . '/../overlay/var/www/inc/web-auth.php');
+$securityHelper = realpath(__DIR__ . '/../overlay/var/www/inc/web-security.php');
 $credential = $tmp . '/credential';
 $log = $tmp . '/security.log';
 $custom = 'Synthetic-custom:7!';
@@ -211,7 +212,12 @@ foreach ($children as $child) auth_expect(auth_finish_php($child) === array('', 
 auth_expect(substr_count(file_get_contents($concurrent), 'web login-FAIL') === 33, 'concurrent appends retain every event');
 
 $loginSource = file_get_contents(__DIR__ . '/../overlay/var/www/f_login.php');
-$loginSource = str_replace(array("__DIR__ . '/inc/web-auth.php'", "'/opt/scripta/etc/uipasswd'", "'/opt/scripta/var/security.log'"), array(var_export($helper, true), var_export($credential, true), var_export($tmp . '/endpoint.log', true)), $loginSource);
+$loginSource = str_replace(
+    array("__DIR__ . '/inc/web-auth.php'", "__DIR__ . '/inc/web-security.php'",
+        "'/opt/scripta/etc/uipasswd'", "'/opt/scripta/var/security.log'"),
+    array(var_export($helper, true), var_export($securityHelper, true),
+        var_export($credential, true), var_export($tmp . '/endpoint.log', true)),
+    $loginSource);
 auth_expect(strpos($loginSource, '/opt/scripta/') === false, 'endpoint fixture cannot access system paths');
 $loginSource = substr($loginSource, strlen('<?php'));
 $endpointPasswords = array($custom, 'CANARY-wrong', array('CANARY-array'), str_repeat('Z', 73), "CANARY\0nul", '', null);
@@ -228,13 +234,8 @@ auth_expect(auth_finish_php(auth_start_php($code)) === array('0', ''), 'actual e
 auth_expect(file_get_contents($credential) === 'scripta:' . md5($custom), 'MD5 record never migrated');
 file_put_contents($credential, $saved);
 
-function hostHardCtl($op, $payload) {
-    $GLOBALS['auth_host_calls'][] = array($op, $payload);
-    return array('info' => array(array('type' => 'info', 'text' => 'host fixture')));
-}
-
 $settings = file_get_contents(__DIR__ . '/../overlay/var/www/f_settings.php');
-$start = strpos($settings, '// Set new password');
+$start = strpos($settings, '// Set new web-dashboard password');
 $end = strpos($settings, '// Manage settings', $start);
 auth_expect($start !== false && $end !== false, 'settings password block located');
 $settingsBlock = substr($settings, $start, $end - $start);
@@ -245,6 +246,8 @@ function auth_settings_fixture($block, $path, $request, $method = 'POST', $post 
     $_GET = $get;
     $_COOKIE = $cookies;
     $_REQUEST = array_merge($_GET, $_POST, $_COOKIE);
+    $settingsAction = $method === 'POST' && array_keys($_POST) === array('pass') ? 'pass' : '';
+    $settingsPayload = $settingsAction === 'pass' && is_string($_POST['pass']) ? $_POST['pass'] : null;
     $r = array('data' => array(), 'info' => array());
     $GLOBALS['auth_host_calls'] = array();
     eval($block);
@@ -255,7 +258,7 @@ $newPassword = 'New-custom:9!';
 $payload = json_encode($newPassword);
 $result = auth_settings_fixture($settingsBlock, $credential, $payload);
 auth_expect(bs_web_auth_check($credential, $newPassword), 'settings writes bcrypt password');
-auth_expect($GLOBALS['auth_host_calls'] === array(array(2, $payload)), 'successful save preserves hostHardCtl call');
+auth_expect($GLOBALS['auth_host_calls'] === array(), 'web password save never changes Linux credentials');
 auth_expect(strpos(json_encode($result), 'Web password saved') !== false, 'successful settings save reported');
 $saved = file_get_contents($credential);
 foreach (array(
@@ -267,15 +270,14 @@ foreach (array(
 ) as $input) {
     $result = auth_settings_fixture($settingsBlock, $credential, null, $input[0], $input[1], $input[2], $input[3]);
     auth_expect(count($GLOBALS['auth_host_calls']) === 0, 'non-POST or non-form password never changes Linux password');
-    auth_expect(strpos(json_encode($result), '"type":"error"') !== false, 'non-POST or non-form password reports error');
-    auth_expect(strpos(json_encode($result), '"type":"success"') === false, 'rejected transport never reports success');
+    auth_expect(strpos(json_encode($result), '"type":"success"') === false, 'non-POST or non-form password has no success');
     auth_expect(file_get_contents($credential) === $saved, 'rejected transport preserves web password');
 }
 $postedPayload = json_encode($newPassword);
 $result = auth_settings_fixture($settingsBlock, $credential, $postedPayload, 'POST', null,
     array('pass' => json_encode('query-password')), array('pass' => json_encode('cookie-password')));
 auth_expect(bs_web_auth_check($credential, $newPassword), 'POST body wins over query and cookie values');
-auth_expect($GLOBALS['auth_host_calls'] === array(array(2, $postedPayload)), 'Linux password receives only POST payload');
+auth_expect($GLOBALS['auth_host_calls'] === array(), 'POST web password remains separate from Linux credentials');
 $saved = file_get_contents($credential);
 foreach (array(array('CANARY-array'), '{broken', 'null', '123', json_encode(''), json_encode(str_repeat('Q', 73)), json_encode("CANARY\0nul")) as $payload) {
     $result = auth_settings_fixture($settingsBlock, $credential, $payload);
@@ -316,6 +318,8 @@ if (is_file($devPath)) {
 $sshPath = __DIR__ . '/../overlay/opt/scripta/bin/ssh-auth-logger.sh';
 if (is_file($sshPath)) {
     $ssh = file_get_contents($sshPath);
+    auth_expect(strpos($ssh, 'SEC=/var/log/blakestream-security/ssh.log') !== false, 'SSH audit log uses sealed persistent directory');
+    auth_expect(strpos($ssh, 'STATE=/run/blakestream-security/sshd-journal.cursor') !== false, 'SSH cursor uses sealed runtime directory');
     auth_expect(strpos($ssh, '$SEC.lock') !== false, 'SSH shares stable lock path');
     auth_expect(strpos($ssh, 'flock -x 9') < strpos($ssh, 'tail -c'), 'SSH trim happens under lock');
     auth_expect(strpos($ssh, 'flock -u 9') > strpos($ssh, '>> "$SEC"'), 'SSH append happens under lock');

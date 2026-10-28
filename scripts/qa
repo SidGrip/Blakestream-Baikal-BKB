@@ -34,7 +34,7 @@ Default phases (no arguments):
 
 Optional phases, each a failure if its tools or inputs are missing:
   network           Offline network transaction, filesystem and real D-Bus type tests
-  source-baseline    Offline source bundle restoration and all 34 patches (git, patch)
+  source-baseline    Offline source bundle restoration and all 36 patches (git, patch)
   native             ASan/UBSan diagnostic helper tests (patched sgminer tree, gcc)
   native-tsan        ThreadSanitizer concurrency test (x86_64 setarch -R)
   driver             Host harness that includes driver-baikalu.c
@@ -88,6 +88,8 @@ phase_contract_php() {
     "${PHP_BIN}" "${ROOT}/scripts/test-hashrate-history.php"
     "${PHP_BIN}" "${ROOT}/scripts/test-clock-history-endpoint.php"
     "${PHP_BIN}" "${ROOT}/scripts/test-web-auth.php"
+    "${PHP_BIN}" "${ROOT}/scripts/test-web-security.php"
+    "${PHP_BIN}" "${ROOT}/scripts/test-sgminer-api-policy.php"
     "${PHP_BIN}" "${ROOT}/scripts/test-accepted-work.php"
     "${PHP_BIN}" "${ROOT}/scripts/test-dev-activity.php"
     "${PHP_BIN}" "${ROOT}/scripts/test-status-startup-count.php"
@@ -122,6 +124,8 @@ phase_contract_node() {
     require_exec node "${NODE_BIN}"
     "${NODE_BIN}" "${ROOT}/scripts/test-duration.js"
     "${NODE_BIN}" "${ROOT}/scripts/test-web-password-ui.js"
+    "${NODE_BIN}" "${ROOT}/scripts/test-confirm-escaping.js"
+    "${NODE_BIN}" "${ROOT}/scripts/test-alertify-safe.js"
     "${NODE_BIN}" "${ROOT}/scripts/test-dev-activity.js"
     "${NODE_BIN}" "${ROOT}/scripts/test-dev-boards-tab.js"
     "${NODE_BIN}" "${ROOT}/scripts/test-clock-index-ui.js"
@@ -158,18 +162,22 @@ phase_network() {
 phase_contract_python() {
     require_exec python3 "${PY_BIN}"
     require_exec php "${PHP_BIN}"
+    require_exec openssl openssl
     export PYTHONDONTWRITEBYTECODE=1
+    "${PY_BIN}" "${ROOT}/scripts/test-web-tls.py"
     "${PY_BIN}" "${ROOT}/scripts/test-firmware-firstboot.py"
     "${PY_BIN}" "${ROOT}/scripts/test-clock-config.py"
     "${PY_BIN}" "${ROOT}/scripts/test-clock-index-names.py"
     "${PY_BIN}" "${ROOT}/scripts/test-manual-fan.py"
     "${PY_BIN}" "${ROOT}/scripts/test-firmware-job.py"
+    "${PY_BIN}" "${ROOT}/scripts/test-dfu-upload.py"
     "${PY_BIN}" "${ROOT}/scripts/test-firmware-container-runner.py"
     "${PY_BIN}" "${ROOT}/scripts/test-bkb-clock-trial.py"
     "${PY_BIN}" "${ROOT}/scripts/test-controller-memory.py"
     "${PY_BIN}" "${ROOT}/scripts/test-capped-log-writer.py"
     "${PY_BIN}" "${ROOT}/scripts/test-clock-history-memory.py"
     "${PY_BIN}" "${ROOT}/scripts/test-diagnostic-log-recorder.py"
+    "${PY_BIN}" "${ROOT}/scripts/test-temp-watchdog.py"
     "${PY_BIN}" "${ROOT}/scripts/test-clock-baseline-export.py"
     "${PY_BIN}" "${ROOT}/scripts/test-accepted-work-recorder.py"
     "${PY_BIN}" "${ROOT}/scripts/test-hashrate-accepted-history.py"

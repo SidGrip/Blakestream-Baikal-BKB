@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """Exercise the bundled source and patch path without network or compilation."""
 
+import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import tempfile
@@ -71,7 +73,58 @@ class BundledSourceTests(unittest.TestCase):
             ['git', '-C', source, 'ls-tree', '-r', 'HEAD']))
 
         apply = ['bash', ROOT / 'sgminer-build/apply-patches.sh', '--src', source]
-        self.assertIn('applied 34 patches; checksums match', self.run_command(apply))
+        self.assertIn('applied 36 patches; checksums match', self.run_command(apply))
+        api = (source / 'api.c').read_text()
+        self.assertNotIn('{"save",   dosave', api)
+        policy = json.loads((ROOT / 'overlay/opt/scripta/policy/miner-options.json').read_text())
+        self.assertEqual(policy['fixed_values']['api-allow'], 'B:127.0.0.1')
+        group = policy['fixed_values']['api-groups'].split(':')
+        self.assertEqual(group[:2], ['B', '*'])
+        granted_writes = set(group[2:])
+        required = {'restart', 'ascidentify', 'ascenable', 'ascdisable',
+                    'bkbtrace', 'bkbfan', 'ascpool', 'ascfailover'}
+        forbidden = {'save', 'addpool', 'removepool', 'quit', 'setconfig',
+                     'debug', 'lockstats', 'ascset'}
+        self.assertEqual(granted_writes, required)
+        self.assertTrue(granted_writes.isdisjoint(forbidden))
+        rows = dict(re.findall(
+            r'\{"([a-z0-9-]+)",\s*[^,\n]+,\s*(true|false),\s*(?:true|false)\}', api))
+        for command in required:
+            self.assertEqual(rows.get(command), 'true', command)
+        self.assertIn('if (cmds[i].iswritemode == false)', api)
+
+        trace_start = api.index('static void bkbtrace(')
+        trace_end = api.index('\nstatic void bkbfan(', trace_start)
+        trace = api[trace_start:trace_end]
+        self.assertIn('param == NULL', trace)
+        for operation in ('on', 'off', 'clear', 'export'):
+            self.assertIn('strcmp(param, "%s")' % operation, trace)
+        self.assertIn('snprintf(request, sizeof(request), "0,diag-trace,%s", param)', trace)
+        self.assertIn('ascset(io_data, c, request, isjson, group)', trace)
+        trace_grammar = re.compile(r'^(?:on|off|clear|export)\Z')
+        for parameter in ('on', 'off', 'clear', 'export'):
+            self.assertRegex(parameter, trace_grammar)
+        for parameter in ('', 'enable', 'on ', ' on', 'on,extra', 'on\n',
+                          '0,diag-trace,on'):
+            self.assertNotRegex(parameter, trace_grammar)
+
+        fan_start = trace_end + 1
+        fan_end = api.index('\nstatic void ascpool(', fan_start)
+        fan = api[fan_start:fan_end]
+        for guard in ("strchr(comma + 1, ',') != NULL", 'comma != param + 1',
+                      "param[0] < '0'", "param[0] > '2'", "*fan_text == '\\0'",
+                      'isdigit((unsigned char)*scan)', 'strlen(fan_text) == 2',
+                      'fan >= 20 && fan <= 99', 'strcmp(fan_text, "100") == 0'):
+            self.assertIn(guard, fan)
+        self.assertIn('snprintf(request, sizeof(request), "%d,fan,%ld", id, fan)', fan)
+        self.assertIn('ascset(io_data, c, request, isjson, group)', fan)
+        self.assertNotIn('strtok', fan)
+        fan_grammar = re.compile(r'^[0-2],(?:[2-9][0-9]|100)\Z')
+        for parameter in ('0,20', '1,99', '2,100'):
+            self.assertRegex(parameter, fan_grammar)
+        for parameter in ('0,0', '0,19', '0,-20', '0,+20', '0, 20',
+                          '0,20 ', '0,20\n', '0,020', '0,20,extra', '3,20', '00,20'):
+            self.assertNotRegex(parameter, fan_grammar)
         self.assertIn('patches already applied', self.run_command(apply))
         # Re-preparing an existing checkout must preserve its patched files.
         self.assertIn('already at', self.fetch(source))

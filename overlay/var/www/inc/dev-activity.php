@@ -981,13 +981,13 @@ function dev_activity_build($stats, $collector, $csrf, $error) {
 
 function dev_activity_trace_spec($op) {
     $map = array(
-        'enable' => '0,diag-trace,on',
-        'disable' => '0,diag-trace,off',
-        'clear' => '0,diag-trace,clear',
-        'export' => '0,diag-trace,export',
+        'enable' => 'on',
+        'disable' => 'off',
+        'clear' => 'clear',
+        'export' => 'export',
     );
     if (!is_string($op) || !isset($map[$op])) return null;
-    return array('command' => 'ascset', 'parameter' => $map[$op]);
+    return array('command' => 'bkbtrace', 'parameter' => $map[$op]);
 }
 
 function dev_activity_mutation_kind($op) {
@@ -999,13 +999,8 @@ function dev_activity_mutation_kind($op) {
 function dev_activity_sgminer_allowed($command, $parameter) {
     if (!is_string($command) || !is_string($parameter)) return false;
     if ($command === 'stats' && $parameter === '') return true;
-    if ($command !== 'ascset') return false;
-    $allowed = array(
-        '0,diag-trace,on',
-        '0,diag-trace,off',
-        '0,diag-trace,clear',
-        '0,diag-trace,export',
-    );
+    if ($command !== 'bkbtrace') return false;
+    $allowed = array('on', 'off', 'clear', 'export');
     return in_array($parameter, $allowed, true);
 }
 
@@ -1052,7 +1047,7 @@ function dev_activity_parse_mutation($method, $raw, $content_length, $session_to
     return array('ok' => true, 'status' => 200, 'error' => null, 'op' => $body['op']);
 }
 
-function dev_activity_ascset_ok($decoded) {
+function dev_activity_mutation_ok($decoded) {
     if (!is_array($decoded) || !isset($decoded['STATUS']) || !is_array($decoded['STATUS'])) return false;
     if (!count($decoded['STATUS'])) return false;
     foreach ($decoded['STATUS'] as $st) {

@@ -1,6 +1,10 @@
 <?php
 function bkb_clock_profile_error($profile) {
     if (!is_array($profile)) return 'Invalid clock profile';
+    if (array_key_exists('name', $profile) &&
+        (!is_string($profile['name']) || strlen($profile['name']) > 48 ||
+         preg_match('/[<>{}\x00-\x1f\x7f]/', $profile['name']) === 1))
+        return 'Clock profile name is invalid';
     if (array_key_exists('version', $profile) && $profile['version'] !== 2)
         return 'Unsupported clock profile version';
     if (array_key_exists('mapping', $profile) && $profile['mapping'] !== 'bkb-v1-clock-index-1')

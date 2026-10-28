@@ -1,0 +1,5 @@
+# The legacy SysV daemon stays disabled. blakestream-terminal.service runs the
+# browser terminal on loopback behind lighttpd HTTPS with local SSH login.
+SHELLINABOX_DAEMON_START=0
+SHELLINABOX_PORT=4200
+SHELLINABOX_ARGS="--no-beep --localhost-only --disable-ssl --disable-ssl-menu --service=/terminal:SSH:127.0.0.1 --css=/etc/shellinabox/blakestream-terminal.css"

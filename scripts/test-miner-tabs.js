@@ -9,7 +9,7 @@ const read = p => fs.readFileSync(path.join(root, p), 'utf8');
 const code = read('overlay/var/www/ng/controllers.js');
 const start = code.indexOf(".controller('CtrlMiner'");
 assert(start >= 0);
-const body = code.slice(code.indexOf('{', start) + 1, code.indexOf('  $scope.minerCompat', start));
+const body = code.slice(code.indexOf('{', start) + 1, code.indexOf('  $scope.cgminer', start));
 const storage = {};
 const window = {localStorage: {
   getItem: key => storage[key],
@@ -63,10 +63,57 @@ assert(!html.includes('bsSgminerOptionsOpen'));
 const sgminer = html.indexOf('<section id="miner-sgminer"');
 assert(html.indexOf('cgminerHardCtl') > sgminer);
 assert(html.indexOf('name="optionForm"') > sgminer);
+assert(html.includes('ng-click="optionRemove($index)"'), 'legacy unsupported options can be removed but not added');
 const clocks = html.indexOf('<section id="miner-clocks"');
 assert(html.indexOf('name="clockForm"') > clocks);
 assert(html.indexOf('name="clockForm"') < sgminer);
 console.log('PASS Miner default tab, unavailable storage, mounted forms and command ownership');
+const poolStart = code.indexOf('  $scope.bsLoadPools = function()', start);
+const poolEnd = code.indexOf('  $scope.bsLoadAssignments =', poolStart);
+const notifications = [];
+let poolSuccess, poolFailure;
+scope.savedPools = {categories: []};
+scope.poolDraft = {};
+vm.runInNewContext(code.slice(poolStart, poolEnd), {
+  $scope: scope,
+  angular: {isArray: Array.isArray},
+  Alertify: {log: {
+    create: (type, message) => notifications.push([type, message]),
+    error: message => notifications.push(['error', message])
+  }},
+  $http: {get: url => {
+    assert.equal(url, 'f_blakestream.php?action=load_pools');
+    return {success: callback => {
+      poolSuccess = callback;
+      return {error: callback => { poolFailure = callback; }};
+    }};
+  }}
+});
+scope.bsLoadPools();
+const catalog = {categories: [{id: 'category', pools: [{id: 'pool'}]}]};
+poolSuccess(catalog);
+assert.strictEqual(scope.savedPools, catalog);
+assert.equal(scope.poolDraft.categoryId, 'category');
+assert.deepEqual(notifications.pop(), ['info', 'Pools config loaded']);
+poolSuccess({categories: []});
+assert.deepEqual(notifications.pop(), ['info', 'Pools config loaded'], 'empty catalog is valid');
+for (const response of [null, {error: 'fixture'}, {categories: {}}]) {
+  const before = scope.savedPools;
+  poolSuccess(response);
+  assert.strictEqual(scope.savedPools, before, 'bad response preserves the displayed catalog');
+  assert.deepEqual(notifications.pop(), ['error', 'Failed to load saved pools']);
+}
+poolFailure();
+assert.deepEqual(notifications.pop(), ['error', 'Failed to load saved pools']);
+const initStart = code.indexOf('  // Auto-load on controller init', start);
+const initEnd = code.indexOf('  $scope.optionAdd', initStart);
+const loads = [];
+vm.runInNewContext(code.slice(initStart, initEnd), {$scope: {
+  sync: what => loads.push(what), bsLoadPools: () => loads.push('saved pools'),
+  bsLoadAssignments: () => {}, bsLoadClockProfiles: () => {}
+}});
+assert.deepEqual(loads, ['options', 'saved pools'], 'load the pool catalog used by the page');
+console.log('PASS pool catalog load, empty catalog, failures and legacy config independence');
 const fanStart = code.indexOf('  $scope.bsClampManualFan = function');
 const fanEnd = code.indexOf('  // Manual fan:', fanStart);
 const limits = code.match(/\$scope\.bsManualFanLimits = (\{[^;]+\});/);

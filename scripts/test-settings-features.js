@@ -14,9 +14,9 @@ const angular = {
   copy, toJson: JSON.stringify, equals: (a, b) => JSON.stringify(a) === JSON.stringify(b),
   forEach: (value, fn) => Object.keys(value).forEach(key => fn(value[key], key))
 };
-function request(url) {
+function request(method, url, data, options) {
   const success = [], error = [];
-  const req = {url, success(fn) { success.push(fn); return req; }, error(fn) { error.push(fn); return req; },
+  const req = {method, url, data, options, success(fn) { success.push(fn); return req; }, error(fn) { error.push(fn); return req; },
     resolve(data) { success.forEach(fn => fn(data)); }, reject() { error.forEach(fn => fn()); }};
   requests.push(req);
   return req;
@@ -24,7 +24,10 @@ function request(url) {
 function timeout() {}
 timeout.cancel = () => {};
 const window = {document:{body:{getAttribute:() => 'test'}}, sessionStorage:{getItem:() => null}};
-vm.runInNewContext(body, {$scope:scope, $rootScope:{}, $http:{get:request}, $window:window,
+vm.runInNewContext(body, {$scope:scope, $rootScope:{}, $http:{
+    get:(url, options) => request('GET', url, undefined, options),
+    post:(url, data, options) => request('POST', url, data, options)
+  }, $window:window,
   $timeout:timeout, angular, Alertify:{log:{create:(type, text) => messages.push({type, text})}}});
 scope.tick = () => {};
 const off = {userAdjustableClocks:false, userAutoFan:false, userDev:false, userDevLogTarget:'SD'};
@@ -50,7 +53,8 @@ assertFeatures(false, 'cancelling stays disabled');
 scope.settingsFeatures.userAutoFan = true;
 scope.saveUserSettings();
 const pending = requests[requests.length - 1];
-const submitted = JSON.parse(pending.url.split('?settings=')[1]);
+assert.strictEqual(pending.method, 'POST');
+const submitted = JSON.parse(new URLSearchParams(pending.data).get('settings'));
 assert.strictEqual(submitted.userDev, true);
 assert.strictEqual(submitted.userAutoFan, true);
 assertFeatures(false, 'pending save stays disabled');
@@ -84,7 +88,8 @@ assert(requests[requests.length - 1].url.includes('firmware_status'));
 assertFeatures(false, 'firmware check does not activate');
 requests[requests.length - 1].resolve({ok:true, custom_present:true, encoder_ready:true, custom_active:true});
 const clockSave = requests[requests.length - 1];
-assert(clockSave.url.includes('?settings='));
+assert.strictEqual(clockSave.method, 'POST');
+assert.strictEqual(clockSave.url, 'f_settings.php');
 assertFeatures(false, 'firmware readiness does not activate before save');
 clockSave.resolve({data:off, settingsSaved:false});
 assertFeatures(false, 'failed clock save stays disabled');
@@ -109,7 +114,7 @@ assertFeatures(false, 'reload uses saved state');
 
 scope.settingsFeatures.userDev = true;
 scope.sync('settings', scope.settings);
-const otherSave = JSON.parse(requests[requests.length - 1].url.split('?settings=')[1]);
+const otherSave = JSON.parse(new URLSearchParams(requests[requests.length - 1].data).get('settings'));
 assert.strictEqual(otherSave.userDev, false, 'unrelated settings save excludes feature draft');
 scope.settings.userAdjustableClocks = true;
 scope.bsSaveUserSettingsBaselineField('userAdjustableClocks');

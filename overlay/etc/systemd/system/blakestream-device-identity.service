@@ -1,0 +1,14 @@
+[Unit]
+Description=Prepare device-unique SSH and TLS identity entropy
+Requires=blakestream-system-perms.service
+After=local-fs.target systemd-random-seed.service blakestream-system-perms.service
+Before=ssh.service sshd.service blakestream-web-tls.service lighttpd.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/scripta/bin/prepare-device-identity.sh
+RemainAfterExit=yes
+TimeoutStartSec=infinity
+
+[Install]
+WantedBy=multi-user.target

@@ -5,22 +5,22 @@
 // Lives alongside the existing f_settings.php / f_status.php / f_miner.php
 // (we don't modify those — additive only, lower risk).
 //
-// Requests are GET ?action=<verb>[&data=<json>] for parity with the rest of
-// Scripta's AJAX style. POST is also accepted for save actions when the JSON
-// blob is too large for a query string.
+// Read actions use GET ?action=<verb>. Mutations use POST ?action=<verb> with
+// bounded JSON in the request body and the shared per-session request token.
 //
 // Verbs:
 //   load_pools                 - returns saved-pools.json contents
-//   save_pools (data=<json>)   - writes saved-pools.json only
+//   save_pools                 - writes saved-pools.json only
 //   load_assignments           - returns board-assignments.json
-//   save_assignments (data=)   - writes board-assignments.json then triggers restart
+//   save_assignments           - writes board-assignments.json then triggers restart
 //   load_clock_profiles        - returns saved adjustable clock profiles
 //   save_clock_profiles        - writes saved adjustable clock profiles
 //   load_runtime               - returns the active runtime config (debug)
 //   restart                    - re-runs miner-restart.sh
 //   status                     - returns a brief device summary
 
-session_start();
+require_once __DIR__ . '/inc/web-security.php';
+bs_secure_session_start();
 if (!isset($_SESSION['_logged_']) || $_SESSION['_logged_'] !== true) {
     http_response_code(401);
     echo json_encode(array('error' => 'not logged in'));
@@ -37,7 +37,7 @@ $VAR = '/opt/scripta/var';
 $RUNTIME_DIR = '/run/blakestream';
 $SAVED_POOLS = $ETC . '/saved-pools.json';
 $ASSIGNMENTS = $ETC . '/board-assignments.json';
-$TEMP_STATE = $RUNTIME_DIR . '/temp-state.json';
+$TEMP_STATE = '/run/blakestream-control/temp-state.json';
 $TEMP_CONFIG = $ETC . '/temp-config.json';
 $FAILOVER_CONFIG = $ETC . '/failover-config.json';
 $CLOCK_PROFILES = $ETC . '/clock-profiles.json';
@@ -86,7 +86,7 @@ if ($CLOCK_HISTORY_PERSIST_SD) {
     if ($newest_clock_history) $CLOCK_HISTORY_READ = $newest_clock_history;
 }
 $FAILOVER_EVENTS = _bs_runtime_dir($_persist_cfg, 'userPersistFailoverHistory') . '/failover-events.json';
-$RUNTIME = '/tmp/scripta-runtime-miner.conf';
+$RUNTIME = '/run/blakestream-miner/scripta-runtime-miner.conf';
 // Use the explicit-restart helper, NOT miner-start.sh which is the
 // cron-driven idempotent watchdog (it does nothing if sgminer is running).
 $LAUNCHER = '/opt/scripta/startup/miner-restart.sh';
@@ -357,17 +357,60 @@ function normalize_clock_profiles($payload) {
     return array('profiles' => $profiles);
 }
 
-// Determine action — query string takes precedence, then POST body
-$action = isset($_REQUEST['action']) ? $_REQUEST['action'] : '';
+// Actions are selected only by the query key; cookies and request bodies may
+// never override routing. Every action is explicitly classified below.
+$action = isset($_GET['action']) && is_string($_GET['action']) ? $_GET['action'] : '';
+$readActions = array(
+    'load_clock_profiles', 'load_pools', 'load_assignments', 'load_runtime', 'status',
+    'load_temp_state', 'load_failover_config', 'load_pool_history', 'load_hashrate_history',
+    'load_failover_history', 'load_clock_history', 'sysstats'
+);
+$mutationActions = array(
+    'save_clock_profiles', 'set_manual_fan', 'save_pools', 'save_assignments', 'restart',
+    'save_failover_config', 'clear_pool_history', 'clear_failover_history',
+    'clear_clock_history', 'clear_clock_run'
+);
+bs_enforce_action($action, $readActions, $mutationActions,
+    isset($_SESSION['web_csrf']) ? $_SESSION['web_csrf'] : '');
 
-// For save_* actions, accept the JSON payload either as ?data=... (URL-encoded)
-// or as the raw POST body (preferred for large payloads).
+// Mutation payloads are accepted only as bounded raw POST JSON.
 function get_payload() {
-    if (isset($_REQUEST['data'])) {
-        return json_decode($_REQUEST['data'], true);
+    if (isset($_SERVER['CONTENT_LENGTH']) && (int)$_SERVER['CONTENT_LENGTH'] > 1048576) return null;
+    $raw = @file_get_contents('php://input', false, null, 0, 1048577);
+    if (is_string($raw) && $raw !== '' && strlen($raw) <= 1048576) return json_decode($raw, true);
+    return null;
+}
+
+function saved_label_valid($value, $max_bytes) {
+    return is_string($value) && trim($value) !== '' && strlen($value) <= $max_bytes &&
+        preg_match('/[<>{}\x00-\x1f\x7f]/', $value) !== 1;
+}
+
+function saved_id_valid($value) {
+    return is_string($value) && preg_match('/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/D', $value) === 1;
+}
+
+function saved_pools_error($payload) {
+    if (!is_array($payload) || !isset($payload['categories']) || !is_array($payload['categories']))
+        return 'invalid payload: expected categories';
+    if (count($payload['categories']) > 64) return 'too many categories';
+    $pool_count = 0;
+    foreach ($payload['categories'] as $category) {
+        if (!is_array($category) || !isset($category['id'], $category['name']) ||
+            !saved_id_valid($category['id']) || !saved_label_valid($category['name'], 64))
+            return 'category has an invalid id or name';
+        $pools = isset($category['pools']) ? $category['pools'] : array();
+        if (!is_array($pools)) return 'category pools must be a list';
+        foreach ($pools as $pool) {
+            $pool_count++;
+            if ($pool_count > 512) return 'too many saved pools';
+            if (!is_array($pool) || !isset($pool['id'], $pool['url']) ||
+                !saved_id_valid($pool['id']) || !is_string($pool['url']) || trim($pool['url']) === '')
+                return 'pool has an invalid id or URL';
+            if (isset($pool['name']) && !saved_label_valid($pool['name'], 96))
+                return 'pool has an invalid name';
+        }
     }
-    $raw = @file_get_contents('php://input');
-    if ($raw) return json_decode($raw, true);
     return null;
 }
 
@@ -393,8 +436,8 @@ function bk_sgminer_api($command, $parameter = null, $timeout = 4) {
 }
 
 // Persist the manual fan percent into miner.options.json (baikal-fan).
-// Live ascset fan control is intentionally disabled for now: on this BK-B
-// sgminer build, ascset fan can wedge the API thread until sgminer restarts.
+// Live manual fan control is intentionally disabled here. Auto Fan uses the
+// narrowly constrained bkbfan API verb from the root-side controller.
 function bk_persist_manual_fan($path, $fan) {
     $fan = max(40, min(100, (int)$fan));
     $opts = @json_decode(@file_get_contents($path), true);
@@ -611,7 +654,6 @@ switch ($action) {
         $payload = get_payload();
         $fan = null;
         if (is_array($payload) && isset($payload['fan'])) $fan = (int)$payload['fan'];
-        elseif (isset($_REQUEST['fan'])) $fan = (int)$_REQUEST['fan'];
         if ($fan === null) {
             http_response_code(400);
             $response = array('error' => 'missing fan percent');
@@ -637,14 +679,27 @@ switch ($action) {
         break;
 
     case 'load_pools':
-        $response = read_json_file($SAVED_POOLS, array('categories' => array()));
+        $saved_pools = read_json_file($SAVED_POOLS, array('categories' => array()));
+        $saved_pools_error = saved_pools_error($saved_pools);
+        if ($saved_pools_error !== null) {
+            // Imported backups are checksummed but not trusted. Validate the
+            // restored catalog again before exposing labels to the browser.
+            http_response_code(422);
+            $response = array(
+                'error' => 'saved pool catalog rejected: ' . $saved_pools_error,
+                'categories' => array(),
+            );
+            break;
+        }
+        $response = $saved_pools;
         break;
 
     case 'save_pools':
         $payload = get_payload();
-        if (!is_array($payload) || !isset($payload['categories'])) {
+        $saved_pools_error = saved_pools_error($payload);
+        if ($saved_pools_error !== null) {
             http_response_code(400);
-            $response = array('error' => 'invalid payload: expected {categories: [...]}');
+            $response = array('error' => $saved_pools_error);
             break;
         }
         // Light validation: each category needs id+name, each pool needs id+url+algo
@@ -740,7 +795,7 @@ switch ($action) {
         }
         // ALWAYS trigger a full restart on assignment change. The runtime
         // config (which pools sgminer mines) is built from board-assignments.json,
-        // so any change requires regenerating /tmp/scripta-runtime-miner.conf
+        // so any change requires regenerating the root-owned runtime config
         // and restarting sgminer to pick it up.
         $response = restart_payload($LAUNCHER, array(
             'assignments' => (object) $clean,
@@ -811,7 +866,7 @@ switch ($action) {
     case 'load_pool_history':
         // Returns aggregated stats per pool over the configured window
         // (defaults: last 24 hours). Use ?hours=N to override.
-        $hours = isset($_REQUEST['hours']) ? max(1, (int)$_REQUEST['hours']) : 24;
+        $hours = isset($_GET['hours']) ? max(1, (int)$_GET['hours']) : 24;
         $cutoff = time() - ($hours * 3600);
         $hist = read_json_file($POOL_HISTORY, array('pools' => array(), 'updated' => 0));
         $out = array();
@@ -882,7 +937,7 @@ switch ($action) {
     case 'load_hashrate_history':
         session_write_close();
         // Per-board samples in the requested window. ?hours=N (default 1).
-        $hours = isset($_REQUEST['hours']) ? max(1, (int)$_REQUEST['hours']) : 1;
+        $hours = isset($_GET['hours']) ? max(1, (int)$_GET['hours']) : 1;
         $cutoff = time() - ($hours * 3600);
         require_once __DIR__ . '/inc/hashrate-history.php';
         $saved = read_json_file($SAVED_POOLS, array('categories' => array()));
@@ -913,7 +968,7 @@ switch ($action) {
         // Failover events filtered to ?hours=N (default 24). Returns closed
         // events sorted by start_ts desc plus the current in-progress `open`
         // map so the dashboard can show "still failing over" rows at the top.
-        $hours = isset($_REQUEST['hours']) ? max(1, (int)$_REQUEST['hours']) : 24;
+        $hours = isset($_GET['hours']) ? max(1, (int)$_GET['hours']) : 24;
         $cutoff = time() - ($hours * 3600);
         $state = read_json_file($FAILOVER_EVENTS, array(
             'version' => 1, 'updated' => 0, 'open' => array(), 'events' => array()
@@ -955,7 +1010,7 @@ switch ($action) {
 
     case 'load_clock_history':
         session_write_close();
-        $hours = isset($_REQUEST['hours']) ? max(1, (int)$_REQUEST['hours']) : 24;
+        $hours = isset($_GET['hours']) ? max(1, (int)$_GET['hours']) : 24;
         $cutoff = time() - ($hours * 3600);
         require_once __DIR__ . '/inc/clock-history-stream.php';
         bs_clock_history_emit($CLOCK_HISTORY_READ, $hours, $cutoff,
@@ -1074,96 +1129,6 @@ switch ($action) {
         );
         break;
 
-    case 'delete_backup':
-    case 'rename_backup':
-        // Both share the same path-validation + backup-folder constants.
-        $BACKUP_FOLDER = '/opt/scripta/etc/backup/';
-
-        // Validate the source name. Only [A-Za-z0-9._-] allowed; no slashes,
-        // no leading dot, no '..'. This is the directory name passed in by
-        // the dropdown which originated from filesystem listing, but we
-        // re-validate defensively.
-        $name = isset($_REQUEST['name']) ? $_REQUEST['name'] : '';
-        if ($name === '' || !preg_match('/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/', $name)) {
-            http_response_code(400);
-            $response = array('error' => 'invalid backup name: ' . $name);
-            break;
-        }
-        $src = $BACKUP_FOLDER . $name;
-        if (!is_dir($src)) {
-            http_response_code(404);
-            $response = array('error' => 'backup not found: ' . $name);
-            break;
-        }
-        // Defensive: realpath must still be inside the backup folder.
-        $real = realpath($src);
-        if ($real === false || strpos($real, realpath($BACKUP_FOLDER)) !== 0) {
-            http_response_code(400);
-            $response = array('error' => 'backup name escapes backup folder');
-            break;
-        }
-
-        if ($action === 'delete_backup') {
-            // Recursive remove. Only deletes files + dirs inside the
-            // validated backup directory.
-            $delete_recursive = function($path) use (&$delete_recursive) {
-                if (is_dir($path)) {
-                    $children = @scandir($path);
-                    if ($children !== false) {
-                        foreach ($children as $c) {
-                            if ($c === '.' || $c === '..') continue;
-                            $delete_recursive($path . '/' . $c);
-                        }
-                    }
-                    return @rmdir($path);
-                }
-                return @unlink($path);
-            };
-            if ($delete_recursive($real)) {
-                $response = array('ok' => true,
-                                  'info' => array(array('type' => 'success',
-                                                        'text' => 'Backup "' . $name . '" deleted')));
-            } else {
-                http_response_code(500);
-                $response = array('error' => 'failed to delete backup ' . $name,
-                                  'info' => array(array('type' => 'danger',
-                                                        'text' => 'Could not delete backup "' . $name . '"')));
-            }
-        } else {
-            // rename_backup: validate the destination name with the same rule
-            $newname = isset($_REQUEST['to']) ? $_REQUEST['to'] : '';
-            if ($newname === '' || !preg_match('/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/', $newname)) {
-                http_response_code(400);
-                $response = array('error' => 'invalid new backup name: ' . $newname);
-                break;
-            }
-            if ($newname === $name) {
-                $response = array('ok' => true,
-                                  'info' => array(array('type' => 'info',
-                                                        'text' => 'Name unchanged')));
-                break;
-            }
-            $dst = $BACKUP_FOLDER . $newname;
-            if (file_exists($dst)) {
-                http_response_code(409);
-                $response = array('error' => 'a backup with that name already exists',
-                                  'info' => array(array('type' => 'danger',
-                                                        'text' => 'Backup "' . $newname . '" already exists')));
-                break;
-            }
-            if (@rename($real, $dst)) {
-                $response = array('ok' => true,
-                                  'info' => array(array('type' => 'success',
-                                                        'text' => 'Renamed "' . $name . '" → "' . $newname . '"')));
-            } else {
-                http_response_code(500);
-                $response = array('error' => 'failed to rename backup',
-                                  'info' => array(array('type' => 'danger',
-                                                        'text' => 'Could not rename "' . $name . '"')));
-            }
-        }
-        break;
-
     default:
         http_response_code(400);
         $response = array('error' => 'unknown action: ' . $action,
@@ -1173,8 +1138,7 @@ switch ($action) {
                                            'set_manual_fan',
                                            'load_pool_history', 'clear_pool_history',
                                            'load_hashrate_history',
-                                           'load_failover_history', 'clear_failover_history',
-                                           'delete_backup', 'rename_backup'));
+                                           'load_failover_history', 'clear_failover_history'));
 }
 
 echo json_encode($response);

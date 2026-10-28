@@ -62,16 +62,25 @@ angular.module('Scripta.controllers', [])
   // Alerts
   Alertify.log.delay=10000;
 
+  $scope.bsLogout = function() {
+    $http.post('f_logout.php', {}).then(function() {
+      $window.location.href = 'login.php';
+    }, function() {
+      Alertify.log.error('Logout failed');
+    });
+  };
+
   // Sync settings
   // Note: not possible to remove settings!
   $scope.sync = function(action,data,alert) {
     action = action || 'settings';
     if (action !== 'pass') data = data || 'load';
-    var request = action === 'pass'
-      ? $http.post('f_settings.php', 'pass=' + encodeURIComponent(angular.toJson(data)), {
+    var loading = action !== 'pass' && data === 'load';
+    var request = loading
+      ? $http.get('f_settings.php?'+encodeURIComponent(action)+'='+encodeURIComponent(angular.toJson('load')))
+      : $http.post('f_settings.php', encodeURIComponent(action) + '=' + encodeURIComponent(angular.toJson(data)), {
           headers: {'Content-Type': 'application/x-www-form-urlencoded'}
-        })
-      : $http.get('f_settings.php?'+action+'='+angular.toJson(data));
+        });
     return request.success(function(d){
       if(d && d.info){
         angular.forEach(d.info, function(v,k) {Alertify.log.create(v.type, v.text);});
@@ -354,6 +363,7 @@ angular.module('Scripta.controllers', [])
       return {'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c];
     });
   }
+  $scope.bsHtmlEscape = bsHtmlEscape;
   function bsFirmwareTerminalScrollBottom() {
     if (bsFirmwareScrollTimer) $timeout.cancel(bsFirmwareScrollTimer);
     bsFirmwareScrollTimer = $timeout(function() {
@@ -532,6 +542,7 @@ angular.module('Scripta.controllers', [])
     }
   }
   function bsFirmwareTitleFor(op, phase) {
+    if (phase === 'recovery-required') return 'Bridge Recovery Required';
     if (phase === 'restart') return 'Restarting Miner';
     if (op === 'verify') return 'Reading Bridge Chip';
     if (op === 'flash-custom') {
@@ -1074,7 +1085,7 @@ angular.module('Scripta.controllers', [])
     var fullTemp = bsFanFloatOrZero(fanControl.full_temp);
     var emergencyTemp = bsFanFloatOrZero(fanControl.emergency_temp);
     if (status === 'emergency' || (emergencyTemp && maxTemp >= emergencyTemp)) return 'emergency';
-    if ($scope.bsAutoFanPending()) return 'ramping';
+    if ($scope.bsAutoFanPending() || status === 'starting') return 'ramping';
     if (actual >= 100 || (fullTemp && maxTemp >= fullTemp)) return 'full';
     if (actual > min) return 'ramping';
     return 'normal';
@@ -1087,7 +1098,7 @@ angular.module('Scripta.controllers', [])
   $scope.bsAutoFanLabel = function() {
     var fanControl = $scope.status.fanControl || {};
     if ($scope.bsAutoFanState() === 'emergency') return 'Emergency Fan';
-    if ($scope.bsAutoFanPending()) return 'Updating Fan';
+    if ($scope.bsAutoFanPending() || fanControl.status === 'starting') return 'Updating Fan';
     if ((fanControl.status || '').toLowerCase() === 'error') return 'Fan Error';
     return 'Auto Fan';
   };
@@ -1792,7 +1803,7 @@ angular.module('Scripta.controllers', [])
 
   // Restart all (used by the global Restart button on the Status page)
   $scope.bsRestart = function() {
-    $http.get('f_blakestream.php?action=restart').success(function(d) {
+    $http.post('f_blakestream.php?action=restart', {}).success(function(d) {
       if (d.ok && d.restarted === false) Alertify.log.log(d.message || 'Miner restart pending');
       else if (d.ok) Alertify.log.success('Miner restarting');
       else Alertify.log.error('Restart failed: ' + (d.error || 'unknown'));
@@ -1865,48 +1876,16 @@ angular.module('Scripta.controllers', [])
       });
   };
 
-  $scope.graphUpdate = function() {
-    $http.get('f_graph.php').success(function(d){
-		
-      if(d){
-        Alertify.log.success("Graphs updated");
-      } 
-      else{
-        Alertify.log.error("Update graph ended in error");
-      }
-      $scope.num++;
-    }).error(function(){
-      Alertify.log.error("Update graph ended in error?");
-    });
-  } 
-  
-  $scope.graphReset = function() {
-  	$http.get('f_miner.php?command=restart').success(function(d){
-      if(d.info){
-        angular.forEach(d.info, function(v,k) {Alertify.log.create(v.type, v.text);});
-      }
-      $scope.tick();
-    });
-  	
-    $http.get('f_graphReset.php').success(function(d){
-		
-      if(d){
-        Alertify.log.success("Graphs reset");
-      } 
-      else{
-        Alertify.log.error("Reset graph ended in error");
-      }
-      $scope.num++;
-    }).error(function(){
-      Alertify.log.error("Reset graph ended in error?");
-    });
-  } 
-  
   $scope.cgminer = function(command,parameter) {
     $scope.tick();
 
     var execute = function(){
-        $http.get('f_miner.php?command='+(command || 'summary')+'&parameter='+parameter).success(function(d){
+        var cmd = command || 'summary', param = parameter || '';
+        var reads = ['summary', 'devs', 'pools', 'stats', 'version', 'config', 'coin', 'check'];
+        var request = reads.indexOf(cmd) >= 0
+          ? $http.get('f_miner.php?command=' + encodeURIComponent(cmd))
+          : $http.post('f_miner.php', {command:cmd, parameter:param});
+        request.success(function(d){
             if(d.info){
                 angular.forEach(d.info, function(v,k) {Alertify.log.create(v.type, v.text);});
             }
@@ -1936,26 +1915,16 @@ angular.module('Scripta.controllers', [])
       (!firmware || firmware.custom_active === true));
   };
 
-  $scope.minerCompat = function(command,parameter) {
-    $http.get('f_minercompat.php').success(function(d){
-      if(d.info){
-        angular.forEach(d.info, function(v,k) {Alertify.log.create(v.type, v.text);});
-      }
-      if(d.data.pools){
-        $scope.pools=d.data.pools;
-      }
-      if(d.data.options){
-        $scope.options=d.data.options;
-        $scope.bsRefreshClockFromOptions();
-      }
-    });
-  }
-
   $scope.cgminer = function(command,parameter) {
     $scope.tick();
 
     var execute = function(){
-      $http.get('f_miner.php?command='+(command || 'summary')+'&parameter='+parameter).success(function(d){
+      var cmd = command || 'summary', param = parameter || '';
+      var reads = ['summary', 'devs', 'pools', 'stats', 'version', 'config', 'coin', 'check'];
+      var request = reads.indexOf(cmd) >= 0
+        ? $http.get('f_miner.php?command=' + encodeURIComponent(cmd))
+        : $http.post('f_miner.php', {command:cmd, parameter:param});
+      request.success(function(d){
         if(d.info){
           angular.forEach(d.info, function(v,k) {Alertify.log.create(v.type, v.text);});
         }
@@ -1969,7 +1938,7 @@ angular.module('Scripta.controllers', [])
     $scope.tick();
 
     var execute = function(){
-      $http.get('f_minerHardCtl.php?command='+(command)).success(function(d){
+      $http.post('f_blakestream.php?action=restart', {}).success(function(d){
         if(d.info){
           angular.forEach(d.info, function(v,k) {Alertify.log.create(v.type, v.text);});
         }
@@ -1979,19 +1948,6 @@ angular.module('Scripta.controllers', [])
     $timeout(execute, 1000);
   };
 
- $scope.hostHardCtl = function(command) {
-   $scope.tick();			
-   var execute = function(){
-    $http.get('f_hostHardCtl.php?command='+(command)+'&pass=p0c4t0p4').success(function(d){
-        if(d.info){
-          angular.forEach(d.info, function(v,k) {Alertify.log.create(v.type, v.text);});
-        }
-        $scope.tick();
-      });
-    }
-    $timeout(execute, 1000);
-};	
- 
   $scope.poolAdd = function(a) {
     a = a || {};
     $scope.pools.push(a);
@@ -2043,9 +1999,10 @@ angular.module('Scripta.controllers', [])
 
   $scope.bsLoadPools = function() {
     $http.get('f_blakestream.php?action=load_pools').success(function(d) {
-      if (d && d.categories) {
+      if (d && angular.isArray(d.categories)) {
         $scope.savedPools = d;
         $scope.bsPoolOrderDirty = {};
+        Alertify.log.create('info', 'Pools config loaded');
         // After categories load, if the Add Pool form is open with no
         // category yet picked, auto-select the only category if there's
         // exactly one. Doesn't override an in-progress edit.
@@ -2053,6 +2010,8 @@ angular.module('Scripta.controllers', [])
             && d.categories.length === 1 && d.categories[0].id) {
           $scope.poolDraft.categoryId = d.categories[0].id;
         }
+      } else {
+        Alertify.log.error('Failed to load saved pools');
       }
     }).error(function() {
       Alertify.log.error('Failed to load saved pools');
@@ -2115,7 +2074,7 @@ angular.module('Scripta.controllers', [])
       Alertify.log.error('Category not empty');
       return;
     }
-    $scope.bsConfirm('Delete category <b>' + cat.name + '</b>?', function() {
+    $scope.bsConfirm('Delete category <b>' + $scope.bsHtmlEscape(cat.name) + '</b>?', function() {
       $scope.savedPools.categories = $scope.savedPools.categories.filter(function(c) {
         return c.id !== cat.id;
       });
@@ -2445,14 +2404,14 @@ angular.module('Scripta.controllers', [])
 
     if (assignedBoards.length > 0) {
       $scope.bsConfirm(
-        'Pool <b>' + pname + '</b> is currently assigned to board(s) <b>' +
+        'Pool <b>' + $scope.bsHtmlEscape(pname) + '</b> is currently assigned to board(s) <b>' +
         assignedBoards.join(', ') + '</b>.<br>Delete it anyway? Those board(s) will become idle.',
         doDelete,
         {title: 'Delete pool', yesLabel: 'Delete'}
       );
     } else {
       $scope.bsConfirm(
-        'Delete pool <b>' + pname + '</b>?',
+        'Delete pool <b>' + $scope.bsHtmlEscape(pname) + '</b>?',
         doDelete,
         {title: 'Delete pool', yesLabel: 'Delete'}
       );
@@ -2460,7 +2419,7 @@ angular.module('Scripta.controllers', [])
   };
 
   $scope.bsRestart = function() {
-    $http.get('f_blakestream.php?action=restart').success(function(d) {
+    $http.post('f_blakestream.php?action=restart', {}).success(function(d) {
       if (d.ok && d.restarted === false) Alertify.log.log(d.message || 'Miner restart pending');
       else if (d.ok) Alertify.log.success('Miner restarting');
       else Alertify.log.error('Restart failed: ' + (d.error || 'unknown'));
@@ -2868,7 +2827,7 @@ angular.module('Scripta.controllers', [])
     return n;
   };
 
-  // Manual fan: persist baikal-fan. Live ascset fan control is disabled until
+  // Manual fan: persist baikal-fan. Live manual fan control is disabled until
   // the sgminer driver path is proven safe.
   $scope.bsApplyManualFan = function() {
     var fan = $scope.bsClampManualFan($scope.bsManualFan);
@@ -3355,7 +3314,7 @@ angular.module('Scripta.controllers', [])
     var profile = $scope.bsSelectedClockProfile();
     if (!profile) return;
     $scope.bsConfirm(
-      'Delete clock profile <b>' + profile.name + '</b>?',
+      'Delete clock profile <b>' + $scope.bsHtmlEscape(profile.name) + '</b>?',
       function() {
         var idx = $scope.bsFindClockProfileIndex(profile.id);
         if (idx >= 0) $scope.bsClockProfiles.splice(idx, 1);
@@ -3507,7 +3466,6 @@ angular.module('Scripta.controllers', [])
   });
 
   // Auto-load on controller init
-  $scope.sync('pools');
   $scope.sync('options');
   $scope.bsLoadPools();
   $scope.bsLoadAssignments();
@@ -3787,7 +3745,7 @@ angular.module('Scripta.controllers', [])
     var label = (run.active ? 'current' : 'previous') + ' ' +
       (run.experimental ? 'experimental Index' : (run.clock || '') + ' MHz') + ' clock run';
     if (typeof $scope.bsConfirm === 'function') {
-      $scope.bsConfirm('Clear this ' + label + '? This cannot be undone.', doClear, {
+      $scope.bsConfirm('Clear this ' + $scope.bsHtmlEscape(label) + '? This cannot be undone.', doClear, {
         yesLabel: 'Clear'
       });
     } else {
@@ -3905,20 +3863,6 @@ angular.module('Scripta.controllers', [])
   };
 
   $scope.bsLoadClockHistory(24);
-})
-
-
-.controller('CtrlTerminal', function($scope, $timeout, $window) {
-  $scope.terminalUrl = 'http://' + $window.location.hostname + ':4200';
-
-  $scope.terminalOpenWindow = function() {
-    $window.open($scope.terminalUrl);
-  };
-
-  $timeout(function() {
-    var frame = document.getElementById('shellinaboxframe');
-    if (frame) frame.src = $scope.terminalUrl;
-  }, 0);
 })
 
 
@@ -4184,7 +4128,7 @@ angular.module('Scripta.controllers', [])
     var onSd = (f.path.indexOf('/run/') !== 0);
     if (typeof $scope.bsConfirm === 'function') {
       $scope.bsConfirm(
-        '<p>Truncate <code>' + f.path + '</code> to 0 bytes?</p>' +
+        '<p>Truncate <code>' + $scope.bsHtmlEscape(f.path) + '</code> to 0 bytes?</p>' +
         (onSd ? '<p>This file is on the <b>SD card</b>.</p>' : ''),
         go, {title: 'Clear log', yesLabel: 'Clear', noLabel: 'Cancel'});
     } else if (window.confirm('Truncate ' + f.path + ' to 0 bytes?' + (onSd ? ' (on the SD card)' : ''))) {
@@ -4341,6 +4285,7 @@ angular.module('Scripta.controllers', [])
     xhr.open('POST', 'f_dev.php?action=activity_trace', true);
     xhr.responseType = 'blob';
     xhr.setRequestHeader('Content-Type', 'application/json');
+    if (typeof window.BKB_CSRF_TOKEN === 'string') xhr.setRequestHeader('X-BKB-CSRF', window.BKB_CSRF_TOKEN);
     xhr.onload = function () {
       var type = xhr.getResponseHeader('Content-Type') || '';
       $scope.$apply(function () {
@@ -4466,19 +4411,6 @@ angular.module('Scripta.controllers', [])
     }
     if (tab === 'firmware') $scope.devFirmwareStatus();
   });
-
-  // ---------- Board health actions (reads ride the activity poller) ----------
-  $scope.devBoardSet = function (b, enable) {
-    $http.post('f_dev.php?action=sgminer_api', {command: enable ? 'ascenable' : 'ascdisable', parameter: String(b.id)})
-      .success(function () { $timeout($scope.devBoardsLoad, 800); });
-  };
-  $scope.devMinerRestart = function () {
-    var go = function () { $http.post('f_dev.php?action=sgminer_api', {command: 'restart'}); };
-    if (typeof $scope.bsConfirm === 'function') {
-      $scope.bsConfirm('<p>Restart sgminer now? This briefly interrupts mining on all boards.</p>', go,
-        {title: 'Restart miner', yesLabel: 'Restart', noLabel: 'Cancel'});
-    } else if (window.confirm('Restart sgminer now?')) { go(); }
-  };
 
   // ---------- Firmware tab (bridge-chip identity + reversible revert) ----------
   $scope.devFirmware = $scope.devFirmware || {};
@@ -4727,9 +4659,10 @@ angular.module('Scripta.controllers', [])
           Alertify.log.error('Clear failed: ' + ((d && d.error) || 'request failed'));
         });
     };
-    var message = ($scope.devLogClearLabel() === 'Clear History' ? 'Clear history for ' : 'Clear logs for ') + label + '?';
+    var message = ($scope.devLogClearLabel() === 'Clear History' ? 'Clear history for ' : 'Clear logs for ') +
+      $scope.bsHtmlEscape(label) + '?';
     if ($scope.devLogJournalSources[src]) {
-      message = 'Clear selected source view for ' + label + '? Other log sources are unchanged.';
+      message = 'Clear selected source view for ' + $scope.bsHtmlEscape(label) + '? Other log sources are unchanged.';
     }
     if (typeof $scope.bsConfirm === 'function') {
       $scope.bsConfirm(message, doClear);
@@ -4926,32 +4859,23 @@ angular.module('Scripta.controllers', [])
   // ---------- API console ----------
   $scope.devApiCommonCommands = [
     'summary', 'stats', 'coin', 'pools', 'devs', 'devdetails', 'config',
-    'asccount', 'ascpool', 'ascenable', 'ascdisable', 'ascidentify',
-    'enablepool', 'disablepool', 'switchpool', 'poolpriority', 'quota',
-    'notify', 'version', 'check', 'restart', '(other)'
+    'asccount', 'notify', 'version'
   ];
   $scope.devApi = {
     command: 'summary',
-    customCommand: '',
-    parameter: '',
     response: '',
     updated: 0,
     history: []
   };
-  // Commands that can interrupt mining get a confirm before they run.
-  $scope.devApiDisruptive = {restart: 1, quit: 1, disablepool: 1, removepool: 1, ascdisable: 1, pgadisable: 1, switchpool: 1, poolpriority: 1};
   $scope.devApiRun = function () {
     var cmd = ($scope.devApi.command || '').trim();
-    if (cmd === '(other)') cmd = ($scope.devApi.customCommand || '').trim();
     if (!cmd) return;
-    var param = ($scope.devApi.parameter || '').trim();
-    var run = function () {
-      $http.post('f_dev.php?action=sgminer_api', {command: cmd, parameter: param})
+    $http.post('f_dev.php?action=sgminer_api', {command: cmd})
         .success(function (d) {
           if (d && d.ok) {
             $scope.devApi.response = (typeof d.response === 'string') ? d.response : JSON.stringify(d.response, null, 2);
             $scope.devApi.updated = Math.floor(Date.now() / 1000);
-            $scope.devApi.history.unshift({command: cmd, parameter: param});
+            $scope.devApi.history.unshift({command: cmd});
             if ($scope.devApi.history.length > 10) $scope.devApi.history.pop();
           } else {
             $scope.devApi.response = 'ERROR: ' + ((d && d.error) || 'unknown');
@@ -4960,15 +4884,6 @@ angular.module('Scripta.controllers', [])
         .error(function () {
           $scope.devApi.response = 'ERROR: request failed';
         });
-    };
-    if ($scope.devApiDisruptive[cmd.toLowerCase()]) {
-      if (typeof $scope.bsConfirm === 'function') {
-        $scope.bsConfirm('<p>Command <code>' + cmd + (param ? '|' + param : '') + '</code> can interrupt mining. Run it?</p>',
-          run, {title: 'Disruptive command', yesLabel: 'Run', noLabel: 'Cancel'});
-      } else if (window.confirm('Run disruptive command ' + cmd + '?')) { run(); }
-    } else {
-      run();
-    }
   };
   $scope.devApiCopy = function () {
     var t = $scope.devApi.response || '';
@@ -5084,6 +4999,15 @@ angular.module('Scripta.controllers', [])
     }
     return true;
   }
+  function backupMutation(fields) {
+    var parts = [];
+    angular.forEach(fields, function(value, key) {
+      parts.push(encodeURIComponent(key) + '=' + encodeURIComponent(value));
+    });
+    return $http.post('f_backup.php', parts.join('&'), {
+      headers: {'Content-Type': 'application/x-www-form-urlencoded'}
+    });
+  }
   $scope.bsBackupNow = function() {
     if (!$scope.backupName) $scope.backupName = GetDateTime();
     return $scope.backupLocal();
@@ -5096,7 +5020,7 @@ angular.module('Scripta.controllers', [])
   $scope.backupLocal = function() {
     if ($scope.backupBusy || !$scope.backupCsrf) return null;
     $scope.backupBusy = true;
-    return $http.get('f_backup.php', {params:{name:$scope.backupName, backup:'[]', csrf:$scope.backupCsrf}}).then(function(response) {
+    return backupMutation({name:$scope.backupName, backup:'[]', csrf:$scope.backupCsrf}).then(function(response) {
       var ok = backupResult(response.data);
       if (ok) $scope.reload();
       return ok;
@@ -5145,13 +5069,13 @@ angular.module('Scripta.controllers', [])
     $scope.bsConfirm('Replace application settings and history, then restart the miner? Restored network settings require a separate review and apply.', function() {
       if ($scope.backupBusy) return;
       $scope.backupBusy = true;
-      $http.get('f_backup.php', {params:{restore:selected.dir, csrf:$scope.backupCsrf}}).then(function(response) {
+      backupMutation({restore:selected.dir, csrf:$scope.backupCsrf}).then(function(response) {
         if (!backupResult(response.data)) return;
         $scope.syncDelay(300,'settings');
         $scope.syncDelay(600,'pools');
         $scope.syncDelay(900,'options');
         $timeout(function() {
-          $http.get('f_miner.php?command=restart').success(function(d) {
+          $http.post('f_miner.php', {command:'restart'}).success(function(d) {
             if (d && d.info) angular.forEach(d.info, function(v) { Alertify.log.create(v.type, v.text); });
           }).error(function() { Alertify.log.create('danger', 'Settings restored, but miner restart failed'); });
         }, 900);
@@ -5205,7 +5129,7 @@ angular.module('Scripta.controllers', [])
       function() {
         if ($scope.backupBusy) return;
         $scope.backupBusy = true;
-        $http.get('f_backup.php', {params:{delete:sel.dir, csrf:$scope.backupCsrf}}).then(function(response) {
+        backupMutation({delete:sel.dir, csrf:$scope.backupCsrf}).then(function(response) {
           if (backupResult(response.data)) { $scope.restoring = 0; $scope.reload(); }
         }, function(response) { backupResult(response.data); }).finally(function() { $scope.backupBusy = false; });
       },
@@ -5230,7 +5154,7 @@ angular.module('Scripta.controllers', [])
       return;
     }
     $scope.backupBusy = true;
-    $http.get('f_backup.php', {params:{rename:sel.dir, to:newName, csrf:$scope.backupCsrf}}).then(function(response) {
+    backupMutation({rename:sel.dir, to:newName, csrf:$scope.backupCsrf}).then(function(response) {
       if (backupResult(response.data)) $scope.reload();
     }, function(response) { backupResult(response.data); }).finally(function() { $scope.backupBusy = false; });
   };

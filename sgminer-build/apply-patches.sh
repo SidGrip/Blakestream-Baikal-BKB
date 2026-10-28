@@ -17,7 +17,7 @@ usage() {
     cat <<EOF
 Usage: sgminer-build/apply-patches.sh [--src DIR] [--list]
 
-Applies patches/0001 through patches/0035 (34 files; there is no 0003) with
+Applies patches/0001 through patches/0037 (36 files; there is no 0003) with
 patch --batch --forward -F0 -p1. The rejected 0003 patch is not applied.
 The checkout must be exactly ${UPSTREAM_COMMIT} and clean.
 After a clean apply, the script checks sgminer-build/PATCHED-SHA256SUMS.

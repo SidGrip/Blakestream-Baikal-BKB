@@ -27,8 +27,8 @@ development archive.
 - Stock cutoff, fan clamping, and ACK behavior are retained.
 
 There are no hidden per-board clock corrections or diagnostic reset passes.
-The host currently exposes only the factory-startup 400 MHz candidate at
-index 30. Physical clock calibration and stock-equivalence testing remain
+The host exposes Index 8..32, with the nominal 400 MHz default at Index 30.
+Physical clock calibration and stock-equivalence testing remain
 separate from software verification.
 
 ### Why The Range Ends At 32

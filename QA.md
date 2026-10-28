@@ -1,15 +1,15 @@
 # QA
 
 Default QA checks the tracked controller sources and the tracked v1 bridge
-image. It does not need a stock STM32 dump, a sgminer checkout, a miner, a
-RAM disk, root, or network access. Run it from any working directory:
+image. From the root of your checkout, run:
 
 ```bash
-/path/to/Blakestream-GaintB-v2.2/scripts/qa
+scripts/qa
 ```
 
-The repository root is the parent of `scripts/qa`, so the clone path may
-contain spaces. Optional phases that you do not name are printed as
+The runner locates the checkout from its own location, so the clone path may
+contain spaces. From another working directory, invoke the script by its full
+path. Optional phases that you do not name are printed as
 `Not run (optional, not a pass)`. They are not counted as successes. A phase
 you do name fails if a tool or input it requires is missing. Nothing in this
 default runner installs packages, clones git repositories, pulls container
@@ -17,13 +17,13 @@ images, flashes firmware, or opens a miner session. The optional
 `source-baseline` phase restores temporary local checkouts from the included
 bundle with network protocols disabled; it never clones from GitHub.
 
-Use a Linux host with Bash, Git, PHP CLI, Node.js 18+, Python 3.8+, and
+Use a Linux host with Bash, Git, PHP CLI, Node.js 18+, Python 3.8+, OpenSSL, and
 standard GNU utilities (`coreutils`, `findutils`, and `grep`). Python needs
 `unicorn` for firmware emulation; optional phases list their extra prerequisites
-below. No developer-specific checkout, home directory, build-server address, or
-ignored local build artifact is required by default QA. Entry-point regressions
-also copy the scripts and controller sources into a temporary path containing
-spaces and run them from an unrelated working directory.
+below. Default QA uses tracked files from your checkout and does not require
+ignored build artifacts. Entry-point regressions also copy the scripts and
+controller sources into a temporary path containing spaces and run them from
+an unrelated working directory.
 
 ## Default phases
 
@@ -31,7 +31,7 @@ spaces and run them from an unrelated working directory.
 | --- | --- | --- |
 | `contract-php` | memory accounting/API fields, bounded full-week chart/clock responses, selective history clears, accepted-work, dev-activity, startup-count, firmware identity/timing, experimental Index settings, versioned profiles, network grouping, readable clock logs and measured-rate API guards | `php` |
 | `contract-node` | uptime boundaries, activity, unified Boards tab, Index controls/profiles, Fan-only labeling, firmware progress/completion, network requests, log-format races and measured-rate storage confirmations | `node` |
-| `contract-python` | clock configuration, bounded clock trials, firmware-job recovery guards, synchronized measured rates, persistence/service/image cleanup, recorders (including full-week peak memory and lossless writes), report, wire contract and portable entry points | `python3`, `php`, `node`, and `git` (entry-point checks also run Node fixtures and create a local Git fixture) |
+| `contract-python` | HTTPS certificate generation and rejection guards, clock configuration, bounded clock trials, firmware-job recovery guards, synchronized measured rates, persistence/service/image cleanup, recorders (including full-week peak memory and lossless writes), report, wire contract and portable entry points | `python3`, `php`, `node`, `openssl`, and `git` (entry-point checks also run Node fixtures and create a local Git fixture) |
 | `emulation-v1` | `firmware-custom/smoke_assert_v1.py` on the tracked v1 image | `python3` and the `unicorn` module (2.1.4 is the version this tree was exercised with) |
 | `emulation-active-slots` | inactive-slot selection, active failures and readiness gates on the same V1 image | `python3` and `unicorn` |
 
@@ -129,8 +129,8 @@ image unless that script is given `--pull`.
 | `BKB_FIRMWARE_QA_IMAGE` | Prepared firmware integration container image. |
 | `BKB_FACTORY_IMG`, `BKB_IMAGE_OUT`, `BKB_MNT_BOOT`, `BKB_MNT_ROOT`, `BKB_MNT_RW` | Optional image-build paths. Not used by QA. |
 
-Device paths such as `/opt/scripta` and `/run/blakestream` stay as they are.
-They are paths on the controller, not on the build machine.
+Device paths such as `/opt/scripta` and `/run/blakestream` refer to the
+controller filesystem.
 Use absolute interpreter paths when launching from another working directory.
 Python contract subprocesses reuse the selected interpreter, including image
 cleanup and the fake Docker fixture. The optional firmware rebuild separately
@@ -143,6 +143,12 @@ inside their prepared images.
 image. They are not part of QA. Fetching the factory image uses the network.
 Mounting and repacking need root and a loop device. Details are in
 [BUILD.md](BUILD.md).
+
+The [browser terminal integration check](scripts/terminal-qa/README.md) runs the
+packaged ARM services in a disposable container with loopback networking only.
+It checks HTTPS routing, assets, HTTP redirects, localhost-only listening, and
+successful/denied SSH authentication. It is separate from the default phases
+and does not connect to a miner. Normal target boot remains a hardware check.
 
 ## UI and settings coverage
 
@@ -292,7 +298,9 @@ stage-specific failure details, and unchanged restoration behavior. Controller
 memory tests check bounded log retention and staggered maintenance. The
 board-diagnostics test uses a full-field, three-board 18-hour fixture, generated
 in a separate process so fixture allocation cannot inflate the measured child
-RSS. The measurement runner also starts in a fresh interpreter to exclude
+RSS. Measurement children use the system allocator consistently so Python's
+arena retention does not skew the relative RSS comparison between versions.
+The measurement runner also starts in a fresh interpreter to exclude
 allocator memory retained by earlier functional tests. Its children use fork
 rather than vfork, which can carry the parent's RSS high-water mark across
 exec on Linux. It compares plain and
@@ -426,6 +434,7 @@ discarded. Restoring over the running miner was not tested.
 | `test-firmware-runtime.php` | Missing/corrupt history, first-run estimates, separate stock/V1 timing, legacy migration, and invalid samples. |
 | `test-firmware-failure.php` | Failed-flash clock cleanup, no timing learning from failures, idempotence, and retryable incomplete cleanup. |
 | `test-firmware-job.py` | Verified stock/V1 completion, delayed USB snapshot, restart failure, missing verification marker, flash failure, and capability activation failure. |
+| `test-dfu-upload.py` | Legacy exclusive-create upload behavior, complete-read publication, private staging, failed/short transfers, and symlink/hardlink rejection. |
 | `test-firmware-progress-ui.js` | Progress, resumed jobs, elapsed-time handling, exceeded estimates, restart display, completion, and failures. |
 
 The job test executes the extracted shell job function with fake dependencies.
@@ -454,7 +463,7 @@ present live state.
 
 ### Container integration
 
-Prepare the container explicitly on a build machine, then run the optional phase:
+Prepare the container on a Linux host with Docker, then run the optional phase:
 
 ```bash
 scripts/test-firmware-container.sh --build
@@ -503,7 +512,7 @@ flash/readback/recovery check and a separate SD-image boot check. See the
 
 ## Source, packaging, and entry points
 
-`test-sgminer-source.py` checks offline bundle restoration, the 34-patch series,
+`test-sgminer-source.py` checks offline bundle restoration, the 36-patch series,
 resulting hashes, repeat invocation, relocation, spaced paths, explicit source
 overrides, and rejection of unrelated checkouts or corrupt bundles. Network
 protocols are disabled during these tests.

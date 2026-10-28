@@ -1,0 +1,24 @@
+From: Blakestream-GaintB V2.2
+Subject: [PATCH] api: remove arbitrary-path save command
+
+sgminer runs as root on the controller and its loopback API is reachable by
+local processes. The legacy save command accepts an arbitrary pathname and
+writes the current configuration there, turning any local web-process
+compromise into a root file-clobber primitive. The dashboard persists its
+configuration through dedicated validated helpers and does not need this API
+verb, so omit it from the dispatch table entirely.
+
+The implementation can remain for upstream compatibility, but no API group
+can resolve or invoke it after this change.
+
+---
+--- a/api.c
++++ b/api.c
+@@ -3725,7 +3725,6 @@ struct CMDS {
+     {"gpuengine",          gpuengine,      true, false},
+     {"gpufan",             gpufan,         true, false},
+     {"gpuvddc",            gpuvddc,        true, false},
+-    {"save",   dosave,   true, false},
+     {"quit",   doquit,   true, false},
+     {"privileged",   privileged, true, false},
+     {"notify",   notify,   false,  true},

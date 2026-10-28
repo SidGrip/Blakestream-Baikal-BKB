@@ -1,8 +1,9 @@
 <?php
-session_start();
+require_once __DIR__ . '/inc/web-security.php';
+bs_secure_session_start();
 header('Content-Type: application/json');
 header('Cache-Control: no-store');
-if (!isset($_SESSION['_logged_']) || $_SESSION['_logged_'] === false) {
+if (!isset($_SESSION['_logged_']) || $_SESSION['_logged_'] !== true) {
     http_response_code(403);
     echo json_encode(array('ok' => false, 'error' => 'forbidden'));
     exit;

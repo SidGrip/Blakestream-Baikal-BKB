@@ -10,6 +10,40 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class PruneTests(unittest.TestCase):
+    def test_temporary_state_is_emptied_without_following_links(self):
+        with tempfile.TemporaryDirectory(prefix='bkb-temp-prune-') as tmp:
+            root = Path(tmp)
+            (root / 'etc').mkdir()
+            (root / 'opt/scripta').mkdir(parents=True)
+            outside = root / 'outside'
+            outside.mkdir()
+            sentinel = outside / 'keep'
+            sentinel.write_text('do not follow')
+            for relative in ('tmp', 'var/tmp'):
+                target = root / relative
+                (target / 'systemd-private-fixture/service').mkdir(parents=True)
+                (target / 'systemd-private-fixture/service/state').write_text('factory state')
+                (target / 'outside-link').symlink_to(sentinel)
+            subprocess.check_call(['bash', str(ROOT / 'scripts/prune-rootfs.sh'), tmp])
+            self.assertEqual(sentinel.read_text(), 'do not follow')
+            for relative in ('tmp', 'var/tmp'):
+                target = root / relative
+                self.assertEqual(list(target.iterdir()), [])
+                self.assertEqual(target.stat().st_mode & 0o7777, 0o1777)
+
+    def test_login_log_cleanup_accepts_standard_var_run_symlink(self):
+        with tempfile.TemporaryDirectory(prefix='bkb-login-log-prune-') as tmp:
+            root = Path(tmp)
+            (root / 'etc').mkdir()
+            (root / 'opt/scripta').mkdir(parents=True)
+            (root / 'run').mkdir()
+            (root / 'var').mkdir()
+            (root / 'var/run').symlink_to('../run', target_is_directory=True)
+            (root / 'run/utmp').write_bytes(b'factory login state')
+            subprocess.check_call(['bash', str(ROOT / 'scripts/prune-rootfs.sh'), tmp])
+            self.assertTrue((root / 'var/run').is_symlink())
+            self.assertEqual((root / 'run/utmp').read_bytes(), b'')
+
     def test_inactive_factory_web_error_log_is_removed(self):
         with tempfile.TemporaryDirectory(prefix='bkb-factory-log-prune-') as tmp:
             root = Path(tmp)
@@ -68,6 +102,12 @@ class PruneTests(unittest.TestCase):
                                 'opt/scripta/etc/bkb-firmware-identity.json',
                                 'run/blakestream/bkb-firmware-identity.json',
                                 'opt/scripta/var/firmware-firstboot.log',
+                                'var/lib/blakestream-firstboot/result.json',
+                                'var/log/blakestream-firstboot/firmware-firstboot.log',
+                                'run/blakestream-firmware/bkb-firmware-result.env',
+                                'run/blakestream-backup/backup-export.zip',
+                                'var/lib/blakestream-backups/private/manifest.json',
+                                'opt/scripta/backups/bkb-preflash-backup.bin',
                                 'opt/scripta/firmware/BRIDGE_GLOBAL_V1_READY',
                                 'opt/scripta/firmware/BRIDGE_GLOBAL_V11_READY')
             for sub in firmware_private:
@@ -78,12 +118,14 @@ class PruneTests(unittest.TestCase):
             subprocess.check_call(['bash', str(ROOT / 'scripts/prune-rootfs.sh'), tmp])
             for sub in ('opt/scripta/etc/backup', 'var/lib/blakestream-clock-baselines',
                         'opt/scripta/etc/network-restore.json', 'run/blakestream/backup-export.zip',
-                        'opt/scripta/etc/bkb-firmware-runtime.json'):
+                        'opt/scripta/etc/bkb-firmware-runtime.json',
+                        'run/blakestream-backup', 'var/lib/blakestream-backups',
+                        'opt/scripta/backups'):
                 self.assertFalse((root / sub).exists())
             self.assertEqual((root / 'opt/scripta/etc/clock-baseline.json').read_text(), 'public lab examples')
             for sub in firmware_private:
                 self.assertFalse((root / sub).exists())
-            self.assertTrue((root / 'opt/scripta/etc/bkb-firmware-firstboot.pending').is_file())
+            self.assertTrue((root / 'var/lib/blakestream-firstboot/firmware-firstboot.pending').is_file())
 
 
 if __name__ == '__main__':

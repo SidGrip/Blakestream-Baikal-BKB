@@ -16,9 +16,11 @@ function bs_clock_baseline_read($path = '/opt/scripta/etc/clock-baseline.json') 
         !isset($bridge_images[$data['bridge_artifact_sha256']]) ||
         $data['bridge_chip_md5'] !== $bridge_images[$data['bridge_artifact_sha256']] ||
         !isset($data['qualified'], $data['frequency_status'], $data['power_measured']) ||
-        $data['qualified'] !== false || $data['frequency_status'] !== 'unverified' || $data['power_measured'] !== false ||
+        $data['qualified'] !== false || $data['frequency_status'] !== 'unverified' || !is_bool($data['power_measured']) ||
         !array_key_exists('physical_mhz', $data) || $data['physical_mhz'] !== null ||
         !is_array($data['rows']) || count($data['rows']) > 25) return null;
+    if ($data['power_measured'] && (!isset($data['power_scope']) ||
+        $data['power_scope'] !== 'whole-miner-wall-power')) return null;
     // Compatibility is explicit per reviewed binary; measured provenance stays unchanged.
     $compatible_hosts = array_key_exists('compatible_host_sha256', $data) ? $data['compatible_host_sha256'] : array();
     if (!is_array($compatible_hosts) || count($compatible_hosts) > 8 ||
@@ -34,6 +36,7 @@ function bs_clock_baseline_read($path = '/opt/scripta/etc/clock-baseline.json') 
         if ($md5 !== '18babe0c4c67d9146e230f9dc423f2f2') return null;
     }
     $rows = array();
+    $has_power = false;
     foreach ($data['rows'] as $row) {
         if (!is_array($row) || !isset($row['clock_index'], $row['ghs'], $row['board_windows'],
             $row['board_seconds'], $row['accepted_shares'], $row['hw_errors'], $row['measured_boards']) ||
@@ -50,11 +53,19 @@ function bs_clock_baseline_read($path = '/opt/scripta/etc/clock-baseline.json') 
             if (!is_int($board) || $board < 0 || $board > 2) return null;
         }
         if ($row['clock_index'] === 30 && $row['estimated_mhz'] !== 400) return null;
+        if (array_key_exists('average_watts', $row)) {
+            if (!$data['power_measured'] || !bs_clock_baseline_positive($row['average_watts']) ||
+                $row['measured_boards'] !== array(0, 1, 2) || $row['board_windows'] % 3 !== 0 ||
+                !isset($row['contexts']) || $row['contexts'] !== array(array_fill(0, 3, $row['clock_index']))) return null;
+            $has_power = true;
+        }
         $rows[$row['clock_index']] = array_intersect_key($row, array_flip(array(
-            'clock_index', 'ghs', 'estimated_mhz', 'board_windows', 'board_seconds', 'accepted_shares', 'hw_errors', 'measured_boards')));
+            'clock_index', 'ghs', 'estimated_mhz', 'board_windows', 'board_seconds', 'accepted_shares', 'hw_errors', 'measured_boards',
+            'average_watts')));
     }
+    if ($has_power !== $data['power_measured']) return null;
     $out = array_intersect_key($data, array_flip(array('schema', 'source', 'algorithm', 'host_sha256',
-        'bridge_artifact_sha256', 'bridge_chip_md5', 'qualified', 'frequency_status', 'physical_mhz', 'power_measured')));
+        'bridge_artifact_sha256', 'bridge_chip_md5', 'qualified', 'frequency_status', 'physical_mhz', 'power_measured', 'power_scope')));
     $out['rows'] = array_values($rows);
     $out['compatible_host_sha256'] = $compatible_hosts;
     $out['compatible_bridge_chip_md5'] = $compatible_bridges;
@@ -66,7 +77,7 @@ function bs_clock_baseline_positive($value) {
 }
 
 function bs_clock_baseline_identity($paths = null) {
-    if ($paths === null) $paths = array('/run/blakestream/bkb-firmware-identity.json', '/opt/scripta/etc/bkb-firmware-identity.json');
+    if ($paths === null) $paths = array('/opt/scripta/etc/bkb-firmware-identity.json');
     foreach ($paths as $path) {
         if (file_exists($path)) return json_decode((string)@file_get_contents($path, false, null, 0, 8192), true);
     }

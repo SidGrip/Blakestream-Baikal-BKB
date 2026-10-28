@@ -1,6 +1,6 @@
 # Firmware Container QA
 
-Run on a build machine:
+From the root of your checkout on a Linux host with Docker:
 
 ```bash
 scripts/test-firmware-container.sh --build

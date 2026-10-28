@@ -1,10 +1,9 @@
 [Unit]
 Description=Detect bridge firmware for a fresh Blakestream SD image
-Wants=blakestream-system-perms.service rc-local.service
-After=local-fs.target blakestream-system-perms.service rc-local.service
+Requires=blakestream-system-perms.service blakestream-firmware-recovery.service
+Wants=rc-local.service
+After=local-fs.target blakestream-system-perms.service blakestream-firmware-recovery.service rc-local.service
 Before=cron.service lighttpd.service
-ConditionPathExists=/opt/scripta/etc/bkb-firmware-firstboot.pending
-
 [Service]
 Type=oneshot
 ExecStart=/usr/bin/python3 /opt/scripta/bin/firmware-firstboot.py

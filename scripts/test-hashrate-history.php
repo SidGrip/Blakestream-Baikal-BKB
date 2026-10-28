@@ -82,8 +82,10 @@ if (isset($argv[1]) && $argv[1] === '--worker') {
     session_start();
     $_SESSION['_logged_'] = $argv[7] === 'yes';
     session_write_close();
-    $_REQUEST = array('action' => $action);
-    if ($hours !== 'default') $_REQUEST['hours'] = $hours;
+    $_SERVER['REQUEST_METHOD'] = 'GET';
+    $_GET = array('action' => $action);
+    if ($hours !== 'default') $_GET['hours'] = $hours;
+    $_REQUEST = $_GET;
     chdir($www);
     eval(substr($source, 5));
     exit;

@@ -209,8 +209,8 @@ plain_duplicate = [
     {"key": "baikal-clock-mode", "value": "individual"},
     {"key": "baikal-options", "value": "400:40:55"},
 ]
-kept = RUNTIME.load_saved_options(plain_duplicate)
-check(kept["baikal-clock-mode"], "individual", "non-experimental duplicate keeps last mode")
+fails(lambda: RUNTIME.load_saved_options(plain_duplicate),
+      "every duplicate miner option fails closed")
 check(RUNTIME.explicit_saved_clock_mode(plain_duplicate) is None, True,
       "non-experimental duplicate is still not explicit")
 
@@ -223,6 +223,37 @@ def fails_with(fn, text, label):
             raise AssertionError("%s: expected %r in %r" % (label, text, exc))
         return
     raise AssertionError(label)
+
+
+for dangerous in ("monitor", "event-runcmd", "events", "include", "includes",
+                  "Include", "INCLUDES", "api-listen", "API-ALLOW", "user-added",
+                  "monitor\x00safe"):
+    fails_with(lambda dangerous=dangerous: RUNTIME.load_saved_options([
+        {"key": dangerous, "value": "/bin/false"},
+    ]), "unsupported miner option", "dangerous/unknown option %s" % dangerous)
+legacy_api = RUNTIME.load_saved_options([
+    {"key": "api-allow", "value": "W:0/0"},
+    {"key": "api-groups", "value": "W:*"},
+    {"key": "api-port", "value": "9999"},
+])
+check(legacy_api["api-allow"], "W:0/0", "legacy API allowlist accepted as input")
+check(legacy_api["api-groups"], "W:*", "legacy API group accepted only as input")
+check(legacy_api["api-port"], "9999", "legacy API port accepted as input")
+RUNTIME.enforce_fixed_options(legacy_api)
+check(legacy_api["api-allow"], "B:127.0.0.1", "API allowlist forced to restricted loopback group")
+check(legacy_api["api-groups"],
+      "B:*:restart:ascidentify:ascenable:ascdisable:bkbtrace:bkbfan:ascpool:ascfailover",
+      "API group forced to required commands")
+check(legacy_api["api-port"], "4028", "API port forced to fixed value")
+for bad_value in (0, 1, 0.0, 1.0, None, [], {}):
+    fails_with(lambda bad_value=bad_value: RUNTIME.load_saved_options([
+        {"key": "no-submit-stale", "value": bad_value},
+    ]), "true or false", "non-boolean stale option %r" % (bad_value,))
+for bad_value in ("400:40:55 --monitor /tmp/pwn", "400:40:55\nevent-runcmd=x",
+                  "400:40:55:1", [], {}, True, None):
+    fails_with(lambda bad_value=bad_value: RUNTIME.load_saved_options([
+        {"key": "baikal-options", "value": bad_value},
+    ]), "colon-separated integers", "nested baikal option payload %r" % (bad_value,))
 
 
 def assert_no_scope(options, label):
@@ -310,10 +341,10 @@ fails_with(lambda: RUNTIME.apply_experimental_clock_index(option_dict(**{
 fails_with(lambda: RUNTIME.load_saved_options([
     {"key": "blakestream-clock-scope", "value": "global"},
     {"key": "blakestream-clock-scope", "value": "individual"},
-]), "must appear once", "duplicate scope")
+]), "duplicate miner option", "duplicate scope")
 fails_with(lambda: RUNTIME.load_saved_options([
     {"key": "blakestream-clock-scope"},
-]), "global or individual", "scope without a value")
+]), "key and value", "scope without a value")
 for bad in (True, False, 0, 1, 30, 400, 480, None, "", "Global", "GLOBAL",
             "global ", " global", "individual\n", "both", "400", "480", "30"):
     fails_with(lambda bad=bad: RUNTIME.parse_clock_scope(bad),
@@ -323,5 +354,35 @@ for bad in (True, False, 0, 1, 30, 400, 480, None, "", "Global", "GLOBAL",
         {"key": "baikal-options", "value": "400:40:55"},
     ]), "global or individual", "saved bad scope %r" % (bad,))
 
+# The privileged writer must not use its old predictable ``path + '.tmp'``
+# name and must reject a writable output parent. A pre-created symlink at the
+# legacy name must remain untouched and its victim must not be modified.
+atomic_dir = os.path.join(temp, "atomic")
+os.mkdir(atomic_dir, 0o700)
+atomic_path = os.path.join(atomic_dir, "runtime.json")
+victim_path = os.path.join(temp, "victim")
+with open(victim_path, "w") as handle:
+    handle.write("unchanged")
+os.symlink(victim_path, atomic_path + ".tmp")
+RUNTIME.write_json_atomic(atomic_path, {"api-port": "4028"})
+with open(victim_path, "r") as handle:
+    check(handle.read(), "unchanged", "predictable temp symlink victim unchanged")
+check(os.path.islink(atomic_path + ".tmp"), True, "legacy temp symlink not followed")
+check(os.path.isfile(atomic_path) and not os.path.islink(atomic_path), True,
+      "runtime output is a regular file")
+check(os.stat(atomic_path).st_mode & 0o777, 0o640, "runtime output mode")
+with open(atomic_path, "r") as handle:
+    check(json.load(handle), {"api-port": "4028"}, "atomic runtime output content")
+
+writable_dir = os.path.join(temp, "writable")
+os.mkdir(writable_dir, 0o777)
+os.chmod(writable_dir, 0o777)
+try:
+    RUNTIME.write_json_atomic(os.path.join(writable_dir, "runtime.json"), {"safe": True})
+except OSError:
+    pass
+else:
+    raise AssertionError("group/world-writable runtime parent was accepted")
+
 temp_dir.cleanup()
-print("PASS experimental Index runtime contract")
+print("PASS experimental Index runtime and secure atomic-writer contracts")

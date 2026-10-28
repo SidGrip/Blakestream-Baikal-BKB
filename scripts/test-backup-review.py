@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import signal
 import sys
 import tempfile
 import unittest
@@ -28,6 +29,9 @@ class BackupReview(unittest.TestCase):
         os.makedirs(self.layout.etc)
 
     def tearDown(self):
+        b._fault_hook = None
+        b._termination_requested = False
+        b._termination_shield_depth = 0
         shutil.rmtree(self.root)
 
     def test_partial_writes_are_completed(self):
@@ -36,6 +40,84 @@ class BackupReview(unittest.TestCase):
         with mock.patch.object(b.os, 'write', side_effect=lambda fd, value: write(fd, value[:3])):
             b._write_replace(dest, b'complete configuration', 0o664)
         self.assertEqual(Path(dest).read_bytes(), b'complete configuration')
+
+    def test_transactional_deletions_and_empty_directory_pruning_are_fsynced(self):
+        target = Path(self.layout.etc, 'delete-me.json')
+        target.write_text('temporary')
+        with mock.patch.object(b.os, 'fsync', wraps=os.fsync) as synced:
+            b._unlink_file(str(target))
+        self.assertFalse(target.exists())
+        self.assertGreaterEqual(synced.call_count, 1)
+
+        nested = Path(self.layout.baselines, 'profile', 'board')
+        nested.mkdir(parents=True)
+        with mock.patch.object(b.os, 'fsync', wraps=os.fsync) as synced:
+            b._prune_empty(str(nested), self.layout.baselines)
+        self.assertFalse(Path(self.layout.baselines, 'profile').exists())
+        self.assertGreaterEqual(synced.call_count, 2)
+
+    def test_new_restore_directory_chain_is_durably_published(self):
+        nested = Path(self.layout.baselines, 'campaign', 'algorithm')
+        with mock.patch.object(b.os, 'fsync', wraps=os.fsync) as synced:
+            b._mkdir(str(nested), 0o700)
+        self.assertTrue(nested.is_dir())
+        # Three new directories, each syncing itself and its parent.
+        self.assertGreaterEqual(synced.call_count, 6)
+
+    def test_snapshot_publish_and_manage_namespace_changes_are_fsynced(self):
+        Path(self.layout.etc, 'scripta.conf').write_text('{}')
+        with mock.patch.object(b, '_fsync_directory', wraps=b._fsync_directory) as synced:
+            b.snapshot(self.layout, 'saved', network_status=lambda: {
+                'ok': True, 'interfaces': []})
+        synced_paths = [os.path.abspath(call.args[0]) for call in synced.call_args_list]
+        self.assertIn(os.path.abspath(os.path.join(self.layout.backup_root, 'saved')),
+                      synced_paths)
+        self.assertIn(os.path.abspath(self.layout.backup_root), synced_paths)
+
+        with mock.patch.object(b, '_fsync_directory', wraps=b._fsync_directory) as synced:
+            b.manage_backup(self.layout, 'rename', 'saved', 'renamed')
+        self.assertIn(os.path.abspath(self.layout.backup_root),
+                      [os.path.abspath(call.args[0]) for call in synced.call_args_list])
+
+        with mock.patch.object(b, '_fsync_directory', wraps=b._fsync_directory) as synced:
+            b.manage_backup(self.layout, 'delete', 'renamed')
+        self.assertGreaterEqual(
+            [os.path.abspath(call.args[0]) for call in synced.call_args_list].count(
+                os.path.abspath(self.layout.backup_root)), 2)
+
+    def test_interrupted_backup_delete_tombstone_is_hidden_and_recovered(self):
+        Path(self.layout.etc, 'scripta.conf').write_text('{}')
+        b.snapshot(self.layout, 'saved', network_status=lambda: {
+            'ok': True, 'interfaces': []})
+
+        def interrupt(step):
+            if step == 'backup-delete-retired':
+                raise b._LeaveJournal()
+
+        with mock.patch.object(b, '_fault_hook', interrupt):
+            with self.assertRaises(b._LeaveJournal):
+                b.manage_backup(self.layout, 'delete', 'saved')
+        self.assertFalse(Path(self.layout.backup_root, 'saved').exists())
+        self.assertTrue(Path(self.layout.delete_done).is_dir())
+        self.assertEqual(b.list_backups(self.layout)['backups'], [])
+        self.assertFalse(Path(self.layout.delete_done).exists())
+
+    def test_rollback_of_new_file_uses_durable_unlink(self):
+        b._prepare(self.layout)
+        target = Path(self.layout.etc, 'scripta.conf')
+        target.write_text('new transaction value')
+        Path(self.layout.rollback_dir).mkdir(mode=0o700)
+        journal = {'v': 1, 'entries': [
+            {'key': 'etc/scripta.conf', 'existed': False},
+        ]}
+        b._write_replace(os.path.join(self.layout.rollback_dir, 'journal.json'),
+                         b._json_bytes(journal), 0o600)
+        with mock.patch.object(b, '_unlink_file', wraps=b._unlink_file) as unlinked:
+            b.recover_rollback(self.layout)
+        self.assertEqual(
+            [call.args[0] for call in unlinked.call_args_list].count(str(target)), 1)
+        self.assertFalse(target.exists())
+        self.assertFalse(Path(self.layout.rollback_dir).exists())
 
     def test_web_hash_roundtrip_is_private_and_unchanged(self):
         fixture = (ROOT / 'overlay/opt/scripta/etc/uipasswd').read_bytes()
@@ -145,6 +227,50 @@ class BackupReview(unittest.TestCase):
             b._write_replace(str(linked / 'nested/file'), b'no', 0o664)
         self.assertFalse((real / 'nested/file').exists())
 
+    def test_reject_linked_target_without_touching_referent(self):
+        protected = Path(self.root, 'protected')
+        protected.write_bytes(b'unchanged')
+        target = Path(self.layout.etc, 'scripta.conf')
+        target.symlink_to(protected)
+        with self.assertRaises(b.BackupError):
+            b._write_replace(str(target), b'no', 0o664, owner=(33, 33))
+        self.assertEqual(protected.read_bytes(), b'unchanged')
+        self.assertTrue(target.is_symlink())
+
+    def test_reject_hardlinked_source_without_exporting_referent(self):
+        protected = Path(self.root, 'protected-hardlink')
+        protected.write_bytes(b'private bytes')
+        target = Path(self.layout.etc, 'scripta.conf')
+        os.link(str(protected), str(target))
+        with self.assertRaises(b.BackupError) as raised:
+            b._read_nofollow(str(target), b.MAX_FILE_BYTES)
+        self.assertEqual(raised.exception.code, 'io')
+        with self.assertRaises(b.BackupError):
+            b.snapshot(self.layout, 'linked', network_status=lambda: {
+                'ok': True, 'interfaces': []})
+        self.assertEqual(protected.read_bytes(), b'private bytes')
+        self.assertFalse(Path(self.layout.backup_root, 'linked').exists())
+
+    def test_replaced_random_temp_is_not_renamed_or_followed(self):
+        protected = Path(self.root, 'protected-temp')
+        protected.write_bytes(b'unchanged')
+        real_mkstemp = tempfile.mkstemp
+        planted = []
+        def replace_temp(*args, **kwargs):
+            fd, path = real_mkstemp(*args, **kwargs)
+            os.unlink(path)
+            os.symlink(str(protected), path)
+            planted.append(path)
+            return fd, path
+        target = Path(self.layout.etc, 'scripta.conf')
+        with mock.patch.object(b.tempfile, 'mkstemp', side_effect=replace_temp):
+            with self.assertRaises(b.BackupError):
+                b._write_replace(str(target), b'no', 0o664, owner=(33, 33))
+        self.assertFalse(target.exists())
+        self.assertEqual(protected.read_bytes(), b'unchanged')
+        self.assertTrue(os.path.islink(planted[0]))
+        os.unlink(planted[0])
+
     def test_full_roundtrip_pending_without_runtime_replay(self):
         Path(self.layout.etc, 'scripta.conf').write_text('{"userChartsSaveTo":"RAM"}')
         store = Store(self.layout.ram, self.layout.var)
@@ -182,13 +308,64 @@ class BackupReview(unittest.TestCase):
         self.assertEqual(again['contexts'][0]['accepted'], 60, 'pending intervals must not replay twice')
         self.assertEqual(Path(other.etc, 'scripta.conf').read_text(), '{"userChartsSaveTo":"RAM"}')
 
-    @unittest.skipUnless(os.geteuid() == 0, 'root ownership case runs in the build-server container')
+    @unittest.skipUnless(os.geteuid() == 0, 'requires root to verify export-group ownership')
     def test_actual_root_export_group(self):
         b._prepare(self.layout)
-        os.chown(self.layout.ram, 0, 33)
-        path = Path(self.layout.ram, 'backup-export.zip')
+        os.chown(self.layout.private_ram, 0, 33)
+        path = Path(self.layout.export_zip)
         b._write_replace(str(path), b'archive', 0o640)
         self.assertEqual(path.stat().st_gid, 33)
+
+    @unittest.skipUnless(os.geteuid() == 0, 'requires root to verify atomic ownership changes')
+    def test_atomic_replace_finalizes_metadata_before_publish(self):
+        target = Path(self.layout.etc, 'scripta.conf')
+        rename = os.rename
+        observed = []
+        def inspect(source, destination):
+            info = os.stat(source)
+            observed.append((info.st_uid, info.st_gid, info.st_mode & 0o777))
+            return rename(source, destination)
+        with mock.patch.object(b.os, 'rename', side_effect=inspect):
+            b._write_replace(str(target), b'published', 0o640, owner=(33, 33))
+        self.assertEqual(observed, [(33, 33, 0o640)])
+        info = target.stat()
+        self.assertEqual((info.st_uid, info.st_gid, info.st_mode & 0o777),
+                         (33, 33, 0o640))
+
+    def test_main_never_changes_live_web_directory_metadata(self):
+        for path in (self.layout.var, self.layout.ram):
+            os.makedirs(path, exist_ok=True)
+        expected = []
+        for path in (self.layout.etc, self.layout.var, self.layout.ram):
+            os.chmod(path, 0o775)
+            info = os.stat(path)
+            expected.append((info.st_uid, info.st_gid, info.st_mode & 0o777))
+        observed = []
+        def inspect(_layout):
+            observed.extend((os.stat(path).st_uid, os.stat(path).st_gid,
+                             os.stat(path).st_mode & 0o777)
+                            for path in (self.layout.etc, self.layout.var, self.layout.ram))
+            return {'ok': True, 'backups': []}
+        output = io.StringIO()
+        with mock.patch.object(b, 'list_backups', side_effect=inspect):
+            self.assertEqual(b.main(['backup-settings.py', 'list'], io.StringIO('{}'), output,
+                                    layout=self.layout), 0)
+        self.assertEqual(observed, expected)
+        self.assertEqual([(os.stat(path).st_uid, os.stat(path).st_gid,
+                           os.stat(path).st_mode & 0o777)
+                          for path in (self.layout.etc, self.layout.var, self.layout.ram)], expected)
+
+    @unittest.skipUnless(os.geteuid() == 0, 'requires root to verify restored ownership')
+    def test_restore_absent_web_target_gets_canonical_owner(self):
+        target = Path(self.layout.etc, 'scripta.conf')
+        target.write_text('{"saved":true}')
+        os.chown(str(target), 33, 33)
+        b.snapshot(self.layout, 'owner', network_status=lambda: {'ok': True, 'interfaces': []})
+        target.unlink()
+        b.restore(self.layout, 'owner')
+        info = target.stat()
+        self.assertEqual((info.st_uid, info.st_gid, info.st_mode & 0o777),
+                         (33, 33, 0o664))
 
     def snapshot_config(self):
         Path(self.layout.etc, 'scripta.conf').write_text('{"value":"original"}')
@@ -222,6 +399,115 @@ class BackupReview(unittest.TestCase):
         self.assertIn('current', Path(self.layout.etc, 'scripta.conf').read_text())
         self.assertFalse(Path(self.layout.rollback_dir).exists())
 
+    def test_sigterm_mid_apply_immediately_rolls_back_and_shields_recovery(self):
+        self.snapshot_config()
+        target = Path(self.layout.etc, 'scripta.conf')
+        sent = {'first': False, 'second': False}
+        def terminate(step):
+            if step == 'restore-wrote' and not sent['first']:
+                sent['first'] = True
+                os.kill(os.getpid(), signal.SIGTERM)
+        write_replace = b._write_replace
+        def terminate_again(*args, **kwargs):
+            if b._termination_shield_depth and not sent['second']:
+                sent['second'] = True
+                os.kill(os.getpid(), signal.SIGTERM)
+            return write_replace(*args, **kwargs)
+        output = io.StringIO()
+        with mock.patch.object(b, '_fault_hook', terminate), \
+                mock.patch.object(b, '_write_replace', side_effect=terminate_again):
+            rc = b.main(['backup-settings.py', 'restore'],
+                        io.StringIO('{"name":"saved"}'), output, layout=self.layout)
+        self.assertEqual(rc, 1)
+        self.assertEqual(json.loads(output.getvalue())['error'], 'busy')
+        self.assertTrue(sent['first'])
+        self.assertTrue(sent['second'])
+        self.assertIn('current', target.read_text())
+        self.assertFalse(Path(self.layout.rollback_dir).exists())
+
+    def test_sigterm_during_journal_retirement_cannot_strand_partial_recovery(self):
+        self.snapshot_config()
+        target = Path(self.layout.etc, 'scripta.conf')
+        sent = {'term': False}
+
+        def terminate_after_atomic_retire(step):
+            if step == 'restore-journal-retired' and not sent['term']:
+                sent['term'] = True
+                os.kill(os.getpid(), signal.SIGTERM)
+
+        output = io.StringIO()
+        with mock.patch.object(b, '_fault_hook', terminate_after_atomic_retire):
+            rc = b.main(['backup-settings.py', 'restore'],
+                        io.StringIO('{"name":"saved"}'), output, layout=self.layout)
+        self.assertEqual(rc, 1)
+        self.assertEqual(json.loads(output.getvalue())['error'], 'busy')
+        self.assertTrue(sent['term'])
+        # The restore was already committed before TERM. Neither a replayable
+        # journal nor a partially removed tombstone may remain.
+        self.assertIn('original', target.read_text())
+        self.assertFalse(Path(self.layout.rollback_dir).exists())
+        self.assertFalse(Path(self.layout.rollback_done).exists())
+
+    def test_power_loss_during_committed_tombstone_cleanup_never_replays_old_state(self):
+        self.snapshot_config()
+        target = Path(self.layout.etc, 'scripta.conf')
+        discard = b._discard_tree
+
+        def interrupt_tombstone_cleanup(path, parent):
+            if os.path.abspath(path) == os.path.abspath(self.layout.rollback_done):
+                raise b._LeaveJournal()
+            return discard(path, parent)
+
+        with mock.patch.object(b, '_discard_tree', side_effect=interrupt_tombstone_cleanup):
+            with self.assertRaises(b._LeaveJournal):
+                b.restore(self.layout, 'saved')
+        self.assertIn('original', target.read_text())
+        self.assertFalse(Path(self.layout.rollback_dir).exists())
+        self.assertTrue(Path(self.layout.rollback_done).is_dir())
+
+        output = io.StringIO()
+        self.assertEqual(b.main(['backup-settings.py', 'recover'], io.StringIO('{}'), output,
+                                layout=self.layout), 0)
+        self.assertFalse(json.loads(output.getvalue())['recovered'])
+        self.assertIn('original', target.read_text())
+        self.assertFalse(Path(self.layout.rollback_done).exists())
+
+    def test_recover_verb_replays_journal_left_for_boot(self):
+        self.snapshot_config()
+        target = Path(self.layout.etc, 'scripta.conf')
+        def interrupt(step):
+            if step == 'restore-wrote':
+                raise b._LeaveJournal()
+        with mock.patch.object(b, '_fault_hook', interrupt):
+            with self.assertRaises(b._LeaveJournal):
+                b.restore(self.layout, 'saved')
+        self.assertTrue(Path(self.layout.rollback_dir).is_dir())
+        output = io.StringIO()
+        self.assertEqual(b.main(['backup-settings.py', 'recover'], io.StringIO('{}'), output,
+                                layout=self.layout), 0)
+        self.assertTrue(json.loads(output.getvalue())['recovered'])
+        self.assertIn('current', target.read_text())
+        self.assertFalse(Path(self.layout.rollback_dir).exists())
+        repair = (ROOT / 'overlay/opt/scripta/bin/repair-system-perms.sh').read_text()
+        self.assertIn('backup-settings.py recover', repair)
+
+    @unittest.skipUnless(os.geteuid() == 0, 'requires root to verify rollback ownership')
+    def test_failed_restore_preserves_captured_owner_and_mode(self):
+        self.snapshot_config()
+        target = Path(self.layout.etc, 'scripta.conf')
+        os.chown(str(target), 0, 0)
+        os.chmod(str(target), 0o640)
+        def fail(step):
+            if step == 'restore-wrote':
+                raise OSError('fixture write failure')
+        with mock.patch.object(b, '_fault_hook', fail):
+            with self.assertRaises(b.BackupError):
+                b.restore(self.layout, 'saved')
+        info = target.stat()
+        self.assertIn('current', target.read_text())
+        self.assertEqual((info.st_uid, info.st_gid, info.st_mode & 0o777),
+                         (0, 0, 0o640))
+
     def test_archive_boundaries_and_manage(self):
         for names in (['../escape'], ['etc/scripta.conf', 'etc/scripta.conf'], ['/etc/scripta.conf'], ['etc/../../escape']):
             buffer = io.BytesIO()
@@ -241,6 +527,8 @@ class BackupReview(unittest.TestCase):
         Path(path + '.bktmp').write_text('interrupted')
         b._write_replace(path, b'complete', 0o664)
         self.assertEqual(Path(path).read_bytes(), b'complete')
+        self.assertEqual(Path(path + '.bktmp').read_text(), 'interrupted')
+        self.assertEqual(list(Path(self.layout.etc).glob('.scripta.conf.bktmp.*')), [])
 
     def test_history_larger_than_database_limit_roundtrips(self):
         b._prepare(self.layout)

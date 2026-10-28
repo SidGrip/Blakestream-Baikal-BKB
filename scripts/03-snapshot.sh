@@ -49,8 +49,9 @@ rsync "${RSYNC_OPTS[@]}" "${MNT_ROOT}/" "${SNAP_RW}/"
 chmod -R a-w "${SNAP_RO}" 2>/dev/null || true
 
 # Hand the working copy back to the invoking user so we can edit it without sudo.
-INVOKING_USER="${SUDO_USER:-${USER:-sid}}"
-chown -R "${INVOKING_USER}:${INVOKING_USER}" "${SNAP_RW}" 2>/dev/null || true
+INVOKING_USER="${SUDO_USER:-$(id -un)}"
+INVOKING_GROUP="$(id -gn "${INVOKING_USER}")"
+chown -R "${INVOKING_USER}:${INVOKING_GROUP}" "${SNAP_RW}" 2>/dev/null || true
 
 echo "[03-snapshot] Done. Working copy at ${SNAP_RW}"
 echo "[03-snapshot] You can now safely run 02-umount.sh — the original image is no longer needed for editing."

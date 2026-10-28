@@ -1,4 +1,5 @@
 <?php
+define('BKB_MINER_OPTION_POLICY', __DIR__ . '/../overlay/opt/scripta/policy/miner-options.json');
 define('BKB_SETTINGS_LIB_ONLY', true);
 require __DIR__ . '/../overlay/var/www/f_settings.php';
 $source = file_get_contents(__DIR__ . '/../overlay/var/www/f_blakestream.php');
@@ -13,8 +14,13 @@ try {
         $saved = json_decode(file_get_contents($path), true);
         if ($saved[0]['value'] !== (string)$expected) throw new Exception('Fan endpoint minimum');
         $options = array(array('key' => 'baikal-fan', 'value' => (string)$input));
-        if (baikalBuildMinerConfig($options)['baikal-fan'] !== (string)$expected)
-            throw new Exception('Miner options minimum');
+        $runtime = baikalBuildMinerConfig($options);
+        if ($input >= 40 && $input <= 100) {
+            if (!is_array($runtime) || $runtime['baikal-fan'] !== (string)$expected)
+                throw new Exception('Miner options valid boundary');
+        } elseif ($runtime !== false) {
+            throw new Exception('Miner options reject out-of-range saved values');
+        }
     }
     if (strpos($source, 'if ($fan < 40) $fan = 40;') === false)
         throw new Exception('Fan response must report the clamped value');

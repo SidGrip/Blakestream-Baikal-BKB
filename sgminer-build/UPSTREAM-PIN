@@ -3,4 +3,4 @@ UPSTREAM_URL='https://github.com/cod3gen/sgminer-baikal'
 UPSTREAM_COMMIT='3cde8deca53f83ac65bc685b988166bd17930753'
 UPSTREAM_BUNDLE='sgminer-build/vendor/sgminer-baikal.bundle'
 UPSTREAM_BUNDLE_SHA256='2962c9c6f5fa16613a102cf107a7a0a28e99d25ee3a174f4eac52758b4ad2846'
-PATCH_COUNT=34
+PATCH_COUNT=36

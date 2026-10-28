@@ -1,6 +1,7 @@
 <?php
 require_once __DIR__ . '/inc/web-auth.php';
-session_start();
+require_once __DIR__ . '/inc/web-security.php';
+bs_secure_session_start();
 if (!isset($_SESSION['_logged_'])) $_SESSION['_logged_'] = false;
 
 $configUipwd = '/opt/scripta/etc/uipasswd';
@@ -13,7 +14,13 @@ if (!array_key_exists('userPassword', $_POST)) {
 
 $password = $_POST['userPassword'];
 $success = bs_web_auth_check($configUipwd, $password);
-if ($success) $_SESSION['_logged_'] = true;
+if ($success) {
+    $success = session_regenerate_id(true);
+    if ($success) {
+        unset($_SESSION['web_csrf']);
+        $_SESSION['_logged_'] = true;
+    }
+}
 if (!bs_web_auth_log($securityLog, $success, $_SERVER, $password)) {
     error_log('Web authentication audit update failed');
 }

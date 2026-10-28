@@ -16,9 +16,10 @@ set -u
 LOG_TAG=blakestream-miner
 SGMINER=/opt/scripta/bin/sgminer
 LOCK=/var/run/blakestream-miner-restart.lock
-FW_OPERATION_LOCK=/run/blakestream/bkb-firmware.lock
-FW_OPERATION_PID=/run/blakestream/bkb-firmware.pid
+FW_OPERATION_LOCK=/run/blakestream-firmware/bkb-firmware.lock
+FW_OPERATION_PID=/run/blakestream-firmware/bkb-firmware.pid
 FW_OPERATION_MAX_AGE=1200
+FW_RECOVERY_REQUIRED=/var/lib/blakestream-firstboot/firmware-recovery-required
 REPAIR=/opt/scripta/bin/repair-system-perms.sh
 
 log() { echo "$(date '+%Y-%m-%d %H:%M:%S') restart: $*" | logger -t "$LOG_TAG"; echo "$*"; }
@@ -39,15 +40,22 @@ firmware_operation_active() {
 }
 
 repair_system_perms() {
-    if [[ -x "$REPAIR" ]]; then
-        "$REPAIR" >/dev/null 2>&1 || true
-    fi
+    [[ -x "$REPAIR" ]] || { echo "permission repair helper is unavailable" >&2; return 1; }
+    "$REPAIR"
 }
 
-repair_system_perms
+if ! repair_system_perms; then
+    log "permission repair failed; restart refused"
+    exit 1
+fi
 
 if [[ "${1:-}" == "--preflight" ]]; then
     exit 0
+fi
+
+if [[ -f "$FW_RECOVERY_REQUIRED" ]]; then
+    log "firmware recovery required; explicit restart refused"
+    exit 1
 fi
 
 if [[ "${BS_FIRMWARE_RESTART:-}" != "1" ]] && firmware_operation_active; then

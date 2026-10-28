@@ -34,7 +34,8 @@ OUTPUT_FAILURE_LIMIT = 4
 OUTPUT_PROBE_SECONDS = 1.0
 WARNING_SECONDS = 60.0
 LOSS_MARKER_BYTES = 256
-LOG_PATHS = ('/run/blakestream/sgminer.log', '/var/log/sgminer.log')
+LOG_PATHS = ('/run/blakestream-miner/sgminer.log',
+             '/var/log/blakestream-miner/sgminer.log')
 IO_ERRORS = (IOError, OSError, MemoryError)
 # Python 2.7 does not export O_ACCMODE on all firmware/build hosts.
 ACCESS_MODE = os.O_WRONLY | os.O_RDWR
@@ -125,18 +126,15 @@ def as_int(value, default):
 
 def ensure_parent(path):
     parent = os.path.dirname(path)
-    if parent and not os.path.isdir(parent):
-        os.makedirs(parent)
-    if parent:
-        try:
-            gid = grp.getgrnam('www-data').gr_gid
-            os.chown(parent, -1, gid)
-        except Exception:
-            pass
-        try:
-            os.chmod(parent, 0o775)
-        except Exception:
-            pass
+    if not parent or os.path.islink(parent) or not os.path.isdir(parent):
+        raise IOError(errno.EPERM, 'unsafe log parent')
+    # Production runs as root and accepts only directories sealed by
+    # prepare-runtime-dir.sh. Unit tests exercise the writer unprivileged in a
+    # private temporary directory.
+    if os.geteuid() == 0:
+        info = os.stat(parent)
+        if info.st_uid != 0 or stat.S_IMODE(info.st_mode) & 0o022:
+            raise IOError(errno.EPERM, 'log parent is writable by non-root')
 
 
 def set_log_perms(path):
@@ -146,7 +144,7 @@ def set_log_perms(path):
     except Exception:
         pass
     try:
-        os.chmod(path, 0o664)
+        os.chmod(path, 0o660)
     except Exception:
         pass
 
@@ -259,7 +257,8 @@ class LogOutput(object):
         if self.lock is not None:
             return
         retry.call('create log directory', ensure_parent, self.path)
-        lock = retry.call('open log lock', os.open, self.path + '.lock', os.O_CREAT | os.O_RDWR, 0o600)
+        lock = retry.call('open log lock', os.open, self.path + '.lock',
+                          os.O_CREAT | os.O_RDWR | getattr(os, 'O_NOFOLLOW', 0), 0o600)
         try:
             if not retry.call('lock log', lock_fd, lock):
                 raise DestinationBusy()
@@ -311,7 +310,9 @@ class LogOutput(object):
             # Reserve space for BOTH marker and this chunk. A marker must not
             # consume the next chunk or cause an append beyond the cap.
             retry.call('trim', trim_log, self.path, self.maximum - len(marker) - len(chunk), self.keep)
-            out = retry.call('open log', os.open, self.path, os.O_CREAT | os.O_WRONLY | os.O_APPEND, 0o664)
+            out = retry.call('open log', os.open, self.path,
+                             os.O_CREAT | os.O_WRONLY | os.O_APPEND |
+                             getattr(os, 'O_NOFOLLOW', 0), 0o660)
             set_log_perms(self.path)
             if marker:
                 write_all(out, marker, retry)
@@ -523,6 +524,9 @@ def main():
         return 2
 
     path = args[0]
+    if path not in LOG_PATHS:
+        sys.stderr.write('refusing unknown log destination\n')
+        return 2
     max_bytes = as_int(args[1] if len(args) > 1 else None, DEFAULT_MAX_BYTES)
     keep_bytes = as_int(args[2] if len(args) > 2 else None, DEFAULT_KEEP_BYTES)
     if keep_bytes >= max_bytes:

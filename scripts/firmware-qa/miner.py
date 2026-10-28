@@ -10,6 +10,8 @@ import sys
 ROOT = '/run/qa-hardware'
 if not os.path.isfile('/etc/bkb-firmware-qa-container') or not os.path.isfile('/.dockerenv'):
     sys.exit(99)
+with open(ROOT + '/miner-starts.jsonl', 'a') as handle:
+    handle.write(json.dumps({'pid': os.getpid(), 'uid': os.geteuid()}) + '\n')
 fault = json.load(open(ROOT + '/control.json')).get('fault', '')
 digest = hashlib.md5(open(ROOT + '/flash.bin', 'rb').read()).hexdigest()
 if fault == 'restart-failure' or digest not in (

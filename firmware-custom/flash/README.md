@@ -16,7 +16,9 @@ hardware faults.
 `bkb-flash.sh` requires an explicit SSH hostname/address in `MINER` and
 root SSH access configured by the operator. It does not embed a password or
 disable SSH host-key checking. Test host authentication separately first.
-It can be invoked from any working directory.
+It uses the installed root-owned wrapper/flasher; it never uploads executable
+code to `/tmp` or writes identity state itself. It can be invoked from any
+working directory.
 
 ```sh
 export MINER=miner-hostname
@@ -28,7 +30,7 @@ export MINER=miner-hostname
 # Pauses mining; compares chip readback with the selected image.
 /path/to/checkout/firmware-custom/flash/bkb-flash.sh verify custom
 
-# CLI dry run: validation and pre-flash backup, no application flash write.
+# Validation only: compare local and staged image hashes, no DFU or write.
 /path/to/checkout/firmware-custom/flash/bkb-flash.sh flash custom
 
 # These explicitly WRITE application flash.
@@ -59,9 +61,11 @@ names, not STM32 package pins. Application USB ID is `0483:5740`; ROM DFU
 is `0483:df11`. The write target is the 1 MiB application flash starting
 at `0x08000000`, not option bytes or system ROM.
 
-For manual recovery, consult `dfu_flash.py`'s `forcedfu` and
-`restore-gpio` operations on the controller and retain a verified stock
-image. Do not guess GPIO wiring or interrupt an active write.
+For manual recovery, use the installed canonical
+`/opt/scripta/firmware/dfu_flash.py` implementation. Its `forcedfu` and
+`restore-gpio` operations are root-only last-resort tools; normal writes use
+the guarded Dev Tools/start-job workflow. Retain a verified stock image. Do
+not guess GPIO wiring or interrupt an active write.
 
 After recovery, verify all boards are alive, inspect command status, and
 start a fresh accepted-work window. Do not infer physical PLL lock from

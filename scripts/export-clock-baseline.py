@@ -19,6 +19,68 @@ MEASURED_BRIDGES = {
 }
 
 
+def valid_number(value, minimum=0):
+    return type(value) in (int, float) and math.isfinite(value) and value >= minimum
+
+
+def validated_power(value):
+    """Normalize observed energy without filling missing meter intervals."""
+    if (not isinstance(value, dict) or value.get('kind') != 'whole-miner-wall-power' or
+            'per_board_watts' not in value or value['per_board_watts'] is not None):
+        raise ValueError('whole-miner power required; per-board watts are not measured')
+    seconds, coverage, watts = (value.get(k) for k in ('seconds', 'coverage', 'average_watts'))
+    if (not valid_number(seconds, 1800) or not valid_number(coverage, 0.99) or coverage > 1 or
+            not valid_number(watts) or watts <= 0):
+        raise ValueError('invalid power duration, coverage or watts')
+    # Early full-coverage captures recorded total energy, without gap metadata.
+    full = coverage == 1
+    observed = value.get('observed_seconds', seconds if full else None)
+    missing = value.get('missing_seconds', 0 if full else None)
+    longest = value.get('longest_missing_seconds', 0 if full else None)
+    energy = value.get('observed_energy_wh', value.get('energy_wh') if full else None)
+    if (not all(valid_number(v) for v in (observed, missing, longest, energy)) or observed <= 0 or
+            abs(observed + missing - seconds) > 0.01 or
+            abs(observed / seconds - coverage) > 1e-6 or longest > min(30, missing + 0.01) or
+            (missing > 0.01 and longest <= 0) or
+            not math.isclose(energy, watts * observed / 3600, rel_tol=1e-6, abs_tol=1e-6)):
+        raise ValueError('inconsistent observed power or excessive missing interval')
+    total_energy = value.get('energy_wh')
+    if missing > 0.01:
+        if total_energy is not None:
+            raise ValueError('whole-window energy cannot fill a power gap')
+    elif (not valid_number(total_energy) or
+          not math.isclose(total_energy, energy, rel_tol=1e-6, abs_tol=1e-6)):
+        raise ValueError('inconsistent full-coverage energy')
+    return {'kind': 'whole-miner-wall-power', 'per_board_watts': None,
+            'average_basis': 'observed-intervals-only', 'average_watts': watts,
+            'seconds': seconds, 'observed_seconds': observed, 'coverage': coverage,
+            'missing_seconds': missing, 'longest_missing_seconds': longest,
+            'observed_energy_wh': energy, 'energy_wh': total_energy}
+
+
+def summarize_power(rows):
+    """Count each simultaneous three-board window once, not once per board."""
+    if not rows or any('power' not in row for row in rows):
+        return None
+    windows = {}
+    for row in rows:
+        windows.setdefault(row['source_report'], []).append(row)
+    powers = []
+    for boards in windows.values():
+        if (sorted(r['id'] for r in boards) != [0, 1, 2] or
+                any(r['indices'] != [r['index']] * 3 for r in boards)):
+            return None
+        power = validated_power(boards[0]['power'])
+        if any(validated_power(r['power']) != power for r in boards[1:]):
+            raise ValueError('inconsistent power within a measured window')
+        if any(abs(r['device_elapsed_seconds'] - power['seconds']) > 1 for r in boards):
+            raise ValueError('power and accepted-work windows do not match')
+        powers.append(power)
+    observed = sum(p['observed_seconds'] for p in powers)
+    energy = sum(p['observed_energy_wh'] for p in powers)
+    return energy * 3600 / observed
+
+
 def collect(algorithm, runs):
     if TRIAL.algorithm_key(algorithm) != algorithm or not algorithm:
         raise ValueError('canonical algorithm key required')
@@ -52,6 +114,9 @@ def collect(algorithm, runs):
                 raise ValueError('incomplete board result')
             if leg.get('measurement_seconds', 0) < 1800 or leg.get('monotonic_seconds', 0) < leg['measurement_seconds']:
                 raise ValueError('incomplete measured window')
+            power = validated_power(leg.get('power')) if leg.get('power_measured') is True else None
+            if power is not None and abs(power['seconds'] - leg['monotonic_seconds']) > 0.01:
+                raise ValueError('power window does not match the trial window')
             for board in boards:
                 raw = board.get('reported_algorithm', board.get('algorithm'))
                 if TRIAL.algorithm_key(raw) != algorithm or TRIAL.algorithm_key(board.get('algorithm')) != algorithm:
@@ -68,6 +133,9 @@ def collect(algorithm, runs):
                                'bridge_artifact_sha256': leg.get('bridge_artifact_sha256', summary.get('bridge_artifact_sha256')),
                                'qualified': False, 'physical_mhz': None,
                                'frequency_status': 'unverified'})
+                if power is not None:
+                    record['power'] = power
+                    dataset['power_measured'] = True
                 dataset['observations'].append(record)
     dataset['averages'] = average_observations(dataset['observations'])
     return dataset
@@ -229,6 +297,11 @@ def public_baseline(dataset, host, bridge):
             'measured_boards': sorted(set(r['id'] for r in rows)),
             'contexts': [list(t) for t in sorted(set(tuple(r['indices']) for r in rows))],
         })
+        power = summarize_power(rows)
+        if power is not None:
+            result['rows'][-1]['average_watts'] = power
+            result['power_measured'] = True
+            result['power_scope'] = 'whole-miner-wall-power'
     return result
 
 

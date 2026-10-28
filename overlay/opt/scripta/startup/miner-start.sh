@@ -20,16 +20,21 @@
 # fighting for the USB device).
 
 set -u
+umask 0027
 
 LOG_TAG=blakestream-miner
 SGMINER=/opt/scripta/bin/sgminer
-RUNTIME_CONF=/tmp/scripta-runtime-miner.conf
+RUNTIME_DIR=/run/blakestream-miner
+RUNTIME_CONF=$RUNTIME_DIR/scripta-runtime-miner.conf
+BUILDER_ERR=
 BUILDER=/opt/scripta/bin/build-miner-runtime.py
 APPLIER=/opt/scripta/bin/apply-board-assignments.py
+PREPARE_RUNTIME=/opt/scripta/bin/prepare-runtime-dir.sh
 LOCK=/var/run/blakestream-miner-restart.lock
-FW_OPERATION_LOCK=/run/blakestream/bkb-firmware.lock
-FW_OPERATION_PID=/run/blakestream/bkb-firmware.pid
+FW_OPERATION_LOCK=/run/blakestream-firmware/bkb-firmware.lock
+FW_OPERATION_PID=/run/blakestream-firmware/bkb-firmware.pid
 FW_OPERATION_MAX_AGE=1200
+FW_RECOVERY_REQUIRED=/var/lib/blakestream-firstboot/firmware-recovery-required
 SCRIPTA_CONF=/opt/scripta/etc/scripta.conf
 LOG_WRITER=/opt/scripta/bin/capped-log-writer.py
 SGMINER_LOG_MAX=${SGMINER_LOG_MAX:-4194304}
@@ -58,11 +63,11 @@ sys.exit(0 if valid else 1)
 " 2>/dev/null) && SGMINER_LOG_CONFIG_OK=1
 case "$SGMINER_LOG_TARGET" in
     SD)
-        SGMINER_LOG=/var/log/sgminer.log
+        SGMINER_LOG=/var/log/blakestream-miner/sgminer.log
         ;;
     *)
         SGMINER_LOG_TARGET=RAM
-        SGMINER_LOG=/run/blakestream/sgminer.log
+        SGMINER_LOG=/run/blakestream-miner/sgminer.log
         ;;
 esac
 
@@ -198,6 +203,18 @@ sys.exit(1)
 PY
 }
 
+write_api_hang_count() {
+    local value="$1" tmp
+    tmp=$(mktemp "$RUNTIME_DIR/.miner-api-hang.count.XXXXXX") || return 1
+    if ! printf '%s\n' "$value" > "$tmp"; then
+        rm -f -- "$tmp"
+        return 1
+    fi
+    chown root:www-data "$tmp" 2>/dev/null || true
+    chmod 0640 "$tmp" 2>/dev/null || true
+    mv -f -- "$tmp" "$API_HANG_COUNT_FILE"
+}
+
 # Re-exec under flock if we don't already hold it. -n means non-blocking:
 # if another start/restart is already running, we exit immediately rather
 # than queue up (cron will fire us again in 30s anyway).
@@ -215,6 +232,19 @@ if [[ "${BS_FIRMWARE_RESTART:-}" != "1" ]] && firmware_operation_active; then
     exit 0
 fi
 
+# Prepare a root-owned, non-writable parent before any runtime-file read or
+# write. Never fall back to /tmp or a pre-existing insecure path.
+if [[ ! -x "$PREPARE_RUNTIME" ]] || ! "$PREPARE_RUNTIME"; then
+    log "ERROR: secure miner runtime directory could not be prepared"
+    exit 1
+fi
+
+if [[ -f "$FW_RECOVERY_REQUIRED" ]]; then
+    log "ERROR: firmware recovery required; bridge is held in DFU and miner start is refused"
+    stop_sgminer
+    exit 1
+fi
+
 cleanup_legacy_log_tails
 
 # 1. Idempotent check — is sgminer already running?
@@ -225,7 +255,7 @@ cleanup_legacy_log_tails
 #    below. The counter lives in tmpfs so a reboot clears it, and a young
 #    process (<60s) is never probed — its API may legitimately still be coming
 #    up.
-API_HANG_COUNT_FILE=/run/blakestream/miner-api-hang.count
+API_HANG_COUNT_FILE=$RUNTIME_DIR/miner-api-hang.count
 API_HANG_THRESHOLD=3
 API_HANG_MIN_UPTIME=60
 if pgrep -f "$SGMINER " >/dev/null 2>&1; then
@@ -249,7 +279,7 @@ if pgrep -f "$SGMINER " >/dev/null 2>&1; then
     FAILS=$(cat "$API_HANG_COUNT_FILE" 2>/dev/null | tr -dc '0-9')
     FAILS=$(( ${FAILS:-0} + 1 ))
     if [[ "$FAILS" -lt "$API_HANG_THRESHOLD" ]]; then
-        echo "$FAILS" > "$API_HANG_COUNT_FILE" 2>/dev/null || true
+        write_api_hang_count "$FAILS" || true
         log "sgminer running but API probe failed ($FAILS/$API_HANG_THRESHOLD); restart after $API_HANG_THRESHOLD consecutive failures"
         exit 0
     fi
@@ -267,7 +297,12 @@ sleep 1
 
 # 3. Generate the runtime config from saved-pools + assignments
 if [[ -x "$BUILDER" ]]; then
-    SUMMARY=$(/usr/bin/python "$BUILDER" 2>/tmp/build-miner-runtime.err)
+    BUILDER_ERR=$(mktemp "$RUNTIME_DIR/.build-miner-runtime.err.XXXXXX") || {
+        log "ERROR: cannot create secure builder error log"
+        exit 1
+    }
+    trap 'rm -f -- "$BUILDER_ERR"' EXIT
+    SUMMARY=$(/usr/bin/python "$BUILDER" 2>"$BUILDER_ERR")
     BUILD_RC=$?
 else
     log "ERROR: $BUILDER missing; refusing to start sgminer without a runtime config"
@@ -279,30 +314,12 @@ case $BUILD_RC in
     0)
         log "starting sgminer with runtime config: $SUMMARY"
         fix_screen_dir
-        # A target change applies only when launching, never while the old
-        # process still has its log open during an ordinary watchdog check.
-        case "$SGMINER_LOG_TARGET" in
-            RAM) OLD_SGMINER_LOG=/var/log/sgminer.log ;;
-            SD)  OLD_SGMINER_LOG=/run/blakestream/sgminer.log ;;
-        esac
-        # Keep a bounded recent tail across destination changes. A config/read/
-        # write failure must not discard the previous diagnostic evidence.
-        if [[ "$SGMINER_LOG_CONFIG_OK" == "1" && -f "$OLD_SGMINER_LOG" ]]; then
-            if (set -o pipefail
-                tail -c "$SGMINER_LOG_KEEP" "$OLD_SGMINER_LOG" \
-                    | /usr/bin/python "$LOG_WRITER" --once "$SGMINER_LOG" "$SGMINER_LOG_MAX" "$SGMINER_LOG_KEEP"
-            ); then
-                rm -f "$OLD_SGMINER_LOG" 2>/dev/null || true
-            else
-                log "WARNING: could not move previous sgminer log; original retained"
-            fi
-        fi
-        mkdir -p "$(dirname "$SGMINER_LOG")" 2>/dev/null || true
-        chown root:www-data "$(dirname "$SGMINER_LOG")" 2>/dev/null || true
-        chmod 775 "$(dirname "$SGMINER_LOG")" 2>/dev/null || true
-        : >> "$SGMINER_LOG" || true
-        chown root:www-data "$SGMINER_LOG" 2>/dev/null || true
-        chmod 664 "$SGMINER_LOG" 2>/dev/null || true
+        # Both destinations live under root-owned, non-group-writable parents.
+        # Never read legacy logs from the shared web runtime: they may be
+        # attacker-planted symlinks from an older image.
+        : >> "$SGMINER_LOG" || { log "ERROR: cannot create sealed sgminer log"; exit 1; }
+        chown root:www-data "$SGMINER_LOG" || exit 1
+        chmod 0660 "$SGMINER_LOG" || exit 1
         printf "===== %s sgminer launch =====\n" "$(date '+%Y-%m-%d %H:%M:%S')" \
             | /usr/bin/python "$LOG_WRITER" --once "$SGMINER_LOG" "$SGMINER_LOG_MAX" "$SGMINER_LOG_KEEP"
         screen -dmS sgminer bash -c "BS_SGMINER_LOG='$SGMINER_LOG' BS_SGMINER_LOG_MAX='$SGMINER_LOG_MAX' BS_SGMINER_LOG_KEEP='$SGMINER_LOG_KEEP' '$SGMINER' --text-only -c '$RUNTIME_CONF' --api-listen 2>&1 | /usr/bin/python '$LOG_WRITER' '$SGMINER_LOG' '$SGMINER_LOG_MAX' '$SGMINER_LOG_KEEP'"
@@ -312,7 +329,7 @@ case $BUILD_RC in
         exit 0
         ;;
     *)
-        ERR=$(cat /tmp/build-miner-runtime.err 2>/dev/null | head -5)
+        ERR=$(head -5 "$BUILDER_ERR" 2>/dev/null)
         log "ERROR: build-miner-runtime.py failed (rc=$BUILD_RC): $ERR"
         exit 1
         ;;

@@ -44,7 +44,7 @@ blocked.window.BlakestreamTheme.toggle();
 assert.equal(blocked.document.body.classList.contains('bs-dark'), false);
 blocked.window.BlakestreamTheme.toggle();
 assert.equal(blocked.document.body.classList.contains('bs-dark'), true);
-for (const file of ['index.php', 'login.php', 'index.html']) {
+for (const file of ['index.php', 'login.php']) {
   const html = fs.readFileSync(path.join(root, 'overlay/var/www', file), 'utf8');
   assert(/<body[^>]*class="[^"]*bs-dark/.test(html));
   assert(html.includes('window.BlakestreamTheme.init();'));
