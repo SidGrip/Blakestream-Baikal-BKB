@@ -4,7 +4,9 @@ Custom Orange Pi controller software for the **Baikal BK-B Multi (Giant B)**,
 with per-board pool routing, same-algorithm failover, adjustable Index controls,
 accepted-work monitoring, and a light/dark Scripta dashboard.
 
-**[Download Blakestream-GaintB-v2.2.img.xz](https://bootstrap.blakestream.io/firmware/Blakestream-GaintB-v2.2.img.xz)**
+Website: [Blakestream](https://blakestream.io/)
+
+**[Download Blakestream-GaintB-v2.2.img.xz](https://github.com/SidGrip/Blakestream-Baikal-BKB/releases/download/v2.2/Blakestream-GaintB-v2.2.img.xz)**
 
 Controller release **V2.2** and optional STM32 bridge firmware **V1** have
 separate version numbers. Writing the SD image does not flash the bridge.
@@ -24,7 +26,7 @@ clocks, overheating, power interruptions, or software faults can cause data loss
 hardware damage, or an unbootable device. Temperature controls and rollback
 mechanisms reduce some risks; they cannot guarantee recovery or electrical safety.
 
-Keep a known-good factory `PiZero_GB_180105_V1.0.img`, a spare SD card, and a
+Keep a known-good factory [PiZero_GB_180105_V1.0.img](https://github.com/SidGrip/Blakestream-Baikal-BKB/releases/download/stock-180105-v1.0/PiZero_GB_180105_V1.0.img.xz), a spare SD card, and a
 recovery plan before making changes. An SD rollback does not undo an STM32
 bridge flash. See [Bridge firmware and recovery](#bridge-firmware-and-recovery).
 Short lab tests are not long-term hardware qualification or guaranteed mining
@@ -40,7 +42,7 @@ including its warranty disclaimer and limitations of liability.
 
 - **Per-board pools and failover:** assign each board a primary and optional
   same-algorithm backup pool; idle boards without silently refilling their work.
-- **Clocks & Fan:** Global or Individual Index selection, compact Default buttons,
+- **Adjustable Clocks & Fan:** Global or Individual Index selection, compact Default buttons,
   read-only estimated GH/s and MHz, shared temperature limits, and fan controls.
 - **Measured work:** separate modeled Estimate from Accepted 15m/1h rates,
   with per-board graphs and share/error counters. Index tests keep graphs visible.
@@ -69,12 +71,10 @@ must not be reused as measured results for other algorithms.
 
 ### 1. Download
 
-Project information: **[Blakestream Baikal BK-B](https://explorer.blakestream.io/baikal-bkb)**.
+Direct download: **[Blakestream-GaintB-v2.2.img.xz](https://github.com/SidGrip/Blakestream-Baikal-BKB/releases/download/v2.2/Blakestream-GaintB-v2.2.img.xz)**.
 
-Direct download: **[Blakestream-GaintB-v2.2.img.xz](https://bootstrap.blakestream.io/firmware/Blakestream-GaintB-v2.2.img.xz)**.
-
-Before flashing, compare the file's SHA-256 with the checksum supplied with the
-v2.2 release:
+Before flashing, compare the file's SHA-256 with the
+[checksum supplied with the v2.2 release](https://github.com/SidGrip/Blakestream-Baikal-BKB/releases/download/v2.2/Blakestream-GaintB-v2.2.img.xz.sha256):
 
 ```bash
 sha256sum Blakestream-GaintB-v2.2.img.xz
@@ -186,7 +186,7 @@ connection status as proof that a particular board is using it.
 
 Export your application settings before replacing the SD card. Power off the
 BK-B, remove the card, and use a card reader to write a known-good
-`PiZero_GB_180105_V1.0.img` factory image with the same image-writer steps. Insert
+[PiZero_GB_180105_V1.0.img](https://github.com/SidGrip/Blakestream-Baikal-BKB/releases/download/stock-180105-v1.0/PiZero_GB_180105_V1.0.img.xz) factory image with the same image-writer steps. Insert
 the card into the controller again, then power on the miner.
 
 An SD rollback replaces the controller software only. If you flashed custom
@@ -225,8 +225,8 @@ redirects a successful login to Network for explicit confirmation.
 
 **Wi-Fi:** Settings > Wi-Fi has a radio **Off / On** control, network scanning,
 manual SSID entry, and saved-network removal. A fresh image starts **Off**;
-the selected radio state survives reboot. Open and WPA/WPA2-PSK networks require
-a compatible adapter and installed driver. Wi-Fi settings do not change the
+the selected radio state survives reboot. Open and WPA/WPA2-PSK networks are
+supported. Wi-Fi settings do not change the
 wired connection. Wireless passwords are not included in application backups.
 
 **Thermal protection:** Clocks & Fan has shared **Recover Temp / Cutoff Temp**
@@ -310,9 +310,9 @@ The SD image and STM32 firmware are separate:
 | Orange Pi controller | Write the SD image | Rewrite a known-good SD image |
 | STM32F407 USB bridge | Explicit, confirmed DFU flash | Guarded stock revert or manual ROM DFU recovery |
 
-On the first boot of a freshly written SD image, a read-only, double-read
+**On the first boot of a freshly written SD image, a read-only, double-read
 check identifies the installed bridge before the web UI and miner watchdog
-start. Verified current Custom V1 enables Adjustable Clocks at the normal
+start.** Verified current Custom V1 enables Adjustable Clocks at the normal
 400 MHz / Index 30 default. Stock leaves Adjustable Clocks disabled. Auto Fan
 and Dev Tools retain their factory defaults. This check never flashes firmware.
 Completed checks do not repeat on later boots, so saved settings are preserved.
